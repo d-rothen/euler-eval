@@ -328,9 +328,7 @@ def evaluate_depth_samples(
             return None
         return float(np.mean(valid))
 
-    def _build_depth_summary(
-        store: dict, alignment_label: str, alignment_applied_flag: bool
-    ) -> dict:
+    def _build_depth_summary(store: dict) -> dict:
         absrel_agg = aggregate_absrel(store["absrel_values"])
         rmse_agg = aggregate_rmse(store["rmse_values"])
         silog_agg = aggregate_silog(store["silog_values"])
@@ -375,15 +373,6 @@ def evaluate_depth_samples(
                     "recall": edge_f1_agg["recall"],
                     "f1": edge_f1_agg["f1"],
                 },
-            },
-            "dataset_info": {
-                "num_pairs": num_samples,
-                "gt_name": gt_name,
-                "pred_name": pred_name,
-            },
-            "alignment": {
-                "mode": alignment_label,
-                "applied": alignment_applied_flag,
             },
         }
 
@@ -566,21 +555,11 @@ def evaluate_depth_samples(
     print("Computing FID/KID (this may take a while)...")
     print("Aggregating depth results...")
 
-    depth_raw = _build_depth_summary(
-        stores["raw"], alignment_label="none", alignment_applied_flag=False
-    )
+    depth_raw = _build_depth_summary(stores["raw"])
     if alignment_applied:
-        depth_aligned = _build_depth_summary(
-            stores["aligned"],
-            alignment_label=alignment_mode,
-            alignment_applied_flag=True,
-        )
+        depth_aligned = _build_depth_summary(stores["aligned"])
     else:
         depth_aligned = copy.deepcopy(depth_raw)
-        depth_aligned["alignment"] = {
-            "mode": alignment_mode,
-            "applied": False,
-        }
 
     # Build per-file metrics
     per_file_metrics = {}
@@ -609,6 +588,15 @@ def evaluate_depth_samples(
         # Backward-compatible alias: "depth" refers to aligned depth.
         "depth": depth_aligned,
         "per_file_metrics": per_file_metrics,
+        "dataset_info": {
+            "num_pairs": num_samples,
+            "gt_name": gt_name,
+            "pred_name": pred_name,
+        },
+        "alignment": {
+            "mode": alignment_mode,
+            "applied": alignment_applied,
+        },
     }
     return results
 
@@ -909,7 +897,7 @@ def evaluate_rgb_samples(
         }
 
         db = depth_binned_per_entry[i]
-        if db is not None or has_depth:
+        if db is not None:
             rgb_metrics["depth_binned_photometric"] = db
 
         set_value(
@@ -940,11 +928,6 @@ def evaluate_rgb_samples(
             "gt_hf_ratio": _none_if_nan(high_freq_agg["gt_hf_ratio_mean"]),
             "relative_diff": _none_if_nan(high_freq_agg["relative_diff_mean"]),
         },
-        "dataset_info": {
-            "num_pairs": num_samples,
-            "gt_name": gt_name,
-            "pred_name": pred_name,
-        },
     }
 
     if depth_binned_results:
@@ -953,9 +936,13 @@ def evaluate_rgb_samples(
         )
     elif has_depth:
         print("Warning: No valid depth_binned_photometric results.")
-        rgb_results["depth_binned_photometric"] = None
 
     return {
         "rgb": rgb_results,
         "per_file_metrics": per_file_metrics,
+        "dataset_info": {
+            "num_pairs": num_samples,
+            "gt_name": gt_name,
+            "pred_name": pred_name,
+        },
     }

@@ -203,7 +203,7 @@ def test_depth_output_contains_raw_and_aligned(monkeypatch):
     raw_absrel = results["depth_raw"]["depth_metrics"]["absrel"]["median"]
     aligned_absrel = results["depth_aligned"]["depth_metrics"]["absrel"]["median"]
     assert aligned_absrel < raw_absrel
-    assert results["depth_aligned"]["alignment"]["applied"] is True
+    assert results["alignment"]["applied"] is True
 
     files = results["per_file_metrics"]["children"]["Scene01"]["children"]["clone"][
         "files"
@@ -231,4 +231,4 @@ def test_depth_alignment_none_keeps_raw_and_aligned_equal(monkeypatch):
     raw = results["depth_raw"]["depth_metrics"]["absrel"]["median"]
     aligned = results["depth_aligned"]["depth_metrics"]["absrel"]["median"]
     assert raw == aligned
-    assert results["depth_aligned"]["alignment"]["applied"] is False
+    assert results["alignment"]["applied"] is False

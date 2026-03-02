@@ -5,7 +5,9 @@ Parses config.json and runs evaluation using euler_loading datasets.
 """
 
 import argparse
+import importlib.metadata
 import json
+import math
 import sys
 import zipfile
 from pathlib import Path
@@ -25,6 +27,61 @@ try:
     import euler_train as _euler_train
 except ImportError:
     _euler_train = None
+
+
+def _get_version() -> str:
+    """Return the installed euler-eval version, falling back to ``"0.0.0"``."""
+    try:
+        return importlib.metadata.version("euler-eval")
+    except importlib.metadata.PackageNotFoundError:
+        return "0.0.0"
+
+
+def _clean_metric_tree(tree: dict) -> dict:
+    """Recursively sanitize a metric dict for JSON schema compliance.
+
+    - Removes entries where the value is ``None``
+    - Removes entries where the value is a non-finite float (NaN, Inf)
+    - Recursively processes nested dicts and list items
+    - Prunes empty dicts after cleaning
+    """
+    cleaned = {}
+    for key, value in tree.items():
+        if value is None:
+            continue
+        if isinstance(value, float) and not math.isfinite(value):
+            continue
+        if isinstance(value, dict):
+            sub = _clean_metric_tree(value)
+            if sub:
+                cleaned[key] = sub
+        elif isinstance(value, list):
+            cleaned[key] = [
+                _clean_metric_tree(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
+def _wrap_pfm_metrics(pfm: dict, wrapper_fn) -> dict:
+    """Walk a ``perFileHierarchyNode`` tree, applying *wrapper_fn* to each
+    file entry's ``metrics`` dict.  This restructures per-file metric keys
+    to match the declared namespace path without changing ``evaluate.py``.
+    """
+    result = {}
+    if "children" in pfm:
+        result["children"] = {
+            k: _wrap_pfm_metrics(v, wrapper_fn)
+            for k, v in pfm["children"].items()
+        }
+    if "files" in pfm:
+        result["files"] = [
+            {"id": f["id"], "metrics": wrapper_fn(f["metrics"])}
+            for f in pfm["files"]
+        ]
+    return result
 
 
 def resolve_device(device: str) -> str:
@@ -446,15 +503,52 @@ def main():
             if sanity_checker is not None:
                 sanity_checker.print_pair_report(ds_name, is_depth=True)
 
-            # Build per-modality results for saving
-            depth_save = {}
+            # Build per-modality results for saving.
+            # All metric names must be fully-qualified under the declared
+            # metricNamespace.  We nest raw/aligned under depth → eval so
+            # every flattened path starts with "depth.eval.".
+            alignment_info = depth_results.get("alignment", {})
+            depth_dataset_info = depth_results.get("dataset_info", {})
+
+            depth_save = {
+                "metricSet": {
+                    "metricNamespace": "depth.eval",
+                    "producerKey": "euler-eval",
+                    "producerVersion": _get_version(),
+                    "sourceKind": "computed",
+                    "metadata": {
+                        "alignment_mode": alignment_info.get("mode", "unknown"),
+                        "alignment_applied": alignment_info.get("applied", False),
+                    },
+                },
+                "dataset_info": depth_dataset_info,
+                "depth": {
+                    "eval": {
+                        "raw": _clean_metric_tree(depth_results["depth_raw"]),
+                        "aligned": _clean_metric_tree(
+                            depth_results["depth_aligned"]
+                        ),
+                    },
+                },
+            }
             for depth_key in ("depth", "depth_raw", "depth_aligned"):
                 if depth_key in depth_results:
-                    depth_save[depth_key] = depth_results[depth_key]
                     all_results[depth_key] = depth_results[depth_key]
             depth_pfm = depth_results.get("per_file_metrics", {})
             if depth_pfm:
-                depth_save["per_file_metrics"] = depth_pfm
+                depth_save["per_file_metrics"] = _clean_metric_tree(
+                    _wrap_pfm_metrics(
+                        depth_pfm,
+                        lambda m: {
+                            "depth": {
+                                "eval": {
+                                    "raw": m.get("depth_raw", {}),
+                                    "aligned": m.get("depth_aligned", {}),
+                                },
+                            },
+                        },
+                    )
+                )
             all_results.setdefault("per_file_metrics", {}).update(depth_pfm)
 
             print_results(
@@ -505,15 +599,33 @@ def main():
             if sanity_checker is not None:
                 sanity_checker.print_pair_report(ds_name, is_depth=False)
 
-            # Build per-modality results for saving
-            rgb_save = {}
+            # Build per-modality results for saving.
+            # All metric names must be fully-qualified under the declared
+            # metricNamespace.  We nest metrics under rgb → eval so every
+            # flattened path starts with "rgb.eval.".
+            rgb_dataset_info = rgb_results.get("dataset_info", {})
+
+            rgb_save = {
+                "metricSet": {
+                    "metricNamespace": "rgb.eval",
+                    "producerKey": "euler-eval",
+                    "producerVersion": _get_version(),
+                    "sourceKind": "computed",
+                },
+                "dataset_info": rgb_dataset_info,
+            }
             rgb_metrics = rgb_results.get("rgb", {})
             if rgb_metrics:
-                rgb_save["rgb"] = rgb_metrics
+                rgb_save["rgb"] = {"eval": _clean_metric_tree(rgb_metrics)}
                 all_results["rgb"] = rgb_metrics
             rgb_pfm = rgb_results.get("per_file_metrics", {})
             if rgb_pfm:
-                rgb_save["per_file_metrics"] = rgb_pfm
+                rgb_save["per_file_metrics"] = _clean_metric_tree(
+                    _wrap_pfm_metrics(
+                        rgb_pfm,
+                        lambda m: {"rgb": {"eval": m.get("rgb", {})}},
+                    )
+                )
             all_results.setdefault("per_file_metrics", {}).update(rgb_pfm)
 
             print_results(
