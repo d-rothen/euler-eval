@@ -89,5 +89,20 @@
       "warn_if_bin_empty": true,
       "description": "Depth bin thresholds in meters"
     }
+  },
+  "rays": {
+    "warn_if_norm_deviation_exceeds": 0.1,
+    "description": "Spherical direction map (ray) evaluation; direction vectors should be unit length",
+    "rho_a": {
+      "warn_if_below": 0.3,
+      "warn_if_mean_angle_exceeds": 30.0,
+      "description": "rho_A metric (AUC of angular accuracy curve); low values indicate poor angular accuracy"
+    },
+    "fov_thresholds": {
+      "sfov": 15.0,
+      "lfov": 20.0,
+      "pano": 30.0,
+      "description": "Angular threshold (degrees) per FoV domain for rho_A AUC integration"
+    }
   }
 }

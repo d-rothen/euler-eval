@@ -103,12 +103,15 @@ class SanityChecker:
         self.config = self._load_config()
         self.depth_results = SanityCheckResult()
         self.rgb_results = SanityCheckResult()
+        self.rays_results = SanityCheckResult()
 
         # Track how many warnings have been reported in intermediate reports
         self._last_reported_depth_warnings = 0
         self._last_reported_rgb_warnings = 0
+        self._last_reported_rays_warnings = 0
         self._last_reported_depth_samples = 0
         self._last_reported_rgb_samples = 0
+        self._last_reported_rays_samples = 0
 
     def _load_config(self) -> dict:
         """Load the metrics configuration file."""
@@ -146,10 +149,13 @@ class SanityChecker:
         """Reset all collected results."""
         self.depth_results = SanityCheckResult()
         self.rgb_results = SanityCheckResult()
+        self.rays_results = SanityCheckResult()
         self._last_reported_depth_warnings = 0
         self._last_reported_rgb_warnings = 0
+        self._last_reported_rays_warnings = 0
         self._last_reported_depth_samples = 0
         self._last_reported_rgb_samples = 0
+        self._last_reported_rays_samples = 0
 
     # =========================================================================
     # Depth Metric Validation
@@ -694,6 +700,112 @@ class SanityChecker:
                                 ))
 
     # =========================================================================
+    # Rays Metric Validation
+    # =========================================================================
+
+    def validate_rays_input(
+        self,
+        dirs_gt: np.ndarray,
+        dirs_pred: np.ndarray,
+        file_id: Optional[str] = None,
+    ) -> None:
+        """Validate ray direction map input data.
+
+        Args:
+            dirs_gt: Ground truth direction map ``(H, W, 3)``.
+            dirs_pred: Predicted direction map ``(H, W, 3)``.
+            file_id: Optional file identifier for warnings.
+        """
+        config = self.config.get("rays", {})
+
+        # Check norms are close to 1 (unit vectors)
+        gt_norms = np.linalg.norm(dirs_gt, axis=-1)
+        pred_norms = np.linalg.norm(dirs_pred, axis=-1)
+
+        valid_gt = np.isfinite(gt_norms) & (gt_norms > 1e-8)
+        valid_pred = np.isfinite(pred_norms) & (pred_norms > 1e-8)
+
+        if valid_gt.any():
+            gt_norm_deviation = float(np.max(np.abs(gt_norms[valid_gt] - 1.0)))
+            warn_norm = config.get("warn_if_norm_deviation_exceeds", 0.1)
+            if gt_norm_deviation > warn_norm:
+                self.rays_results.add_warning(MetricWarning(
+                    metric_name="rays_input",
+                    warning_type="gt_not_unit_vectors",
+                    message=f"GT direction vectors deviate from unit length "
+                            f"(max deviation: {gt_norm_deviation:.4f}). "
+                            f"Vectors should be normalized.",
+                    observed_value=gt_norm_deviation,
+                    expected_value=warn_norm,
+                    file_id=file_id,
+                ))
+
+        if valid_pred.any():
+            pred_norm_deviation = float(np.max(np.abs(pred_norms[valid_pred] - 1.0)))
+            warn_norm = config.get("warn_if_norm_deviation_exceeds", 0.1)
+            if pred_norm_deviation > warn_norm:
+                self.rays_results.add_warning(MetricWarning(
+                    metric_name="rays_input",
+                    warning_type="pred_not_unit_vectors",
+                    message=f"Predicted direction vectors deviate from unit length "
+                            f"(max deviation: {pred_norm_deviation:.4f}). "
+                            f"Vectors should be normalized.",
+                    observed_value=pred_norm_deviation,
+                    expected_value=warn_norm,
+                    file_id=file_id,
+                ))
+
+        valid_count = int(np.sum(valid_gt & valid_pred))
+        if valid_count == 0:
+            self.rays_results.add_warning(MetricWarning(
+                metric_name="rays_input",
+                warning_type="no_valid_pixels",
+                message="No valid pixels found in direction maps",
+                file_id=file_id,
+            ))
+
+        self.rays_results.total_samples += 1
+
+    def validate_rays_rho_a(
+        self,
+        rho_a_value: float,
+        mean_angular_error: float,
+        file_id: Optional[str] = None,
+    ) -> None:
+        """Validate ρ_A metric results.
+
+        Args:
+            rho_a_value: Computed ρ_A value.
+            mean_angular_error: Mean angular error in degrees.
+            file_id: Optional file identifier.
+        """
+        config = self.config.get("rays", {}).get("rho_a", {})
+        warn_below = config.get("warn_if_below", 0.3)
+        warn_angle = config.get("warn_if_mean_angle_exceeds", 30.0)
+
+        if np.isfinite(rho_a_value) and rho_a_value < warn_below:
+            self.rays_results.add_warning(MetricWarning(
+                metric_name="rho_a",
+                warning_type="rho_a_too_low",
+                message=f"ρ_A ({rho_a_value:.3f}) below {warn_below}. "
+                        f"This indicates poor angular accuracy of predicted rays.",
+                observed_value=rho_a_value,
+                expected_value=warn_below,
+                file_id=file_id,
+            ))
+
+        if np.isfinite(mean_angular_error) and mean_angular_error > warn_angle:
+            self.rays_results.add_warning(MetricWarning(
+                metric_name="rho_a",
+                warning_type="mean_angle_too_high",
+                message=f"Mean angular error ({mean_angular_error:.1f}°) exceeds {warn_angle}°. "
+                        f"Predicted ray directions differ significantly from GT.",
+                observed_value=mean_angular_error,
+                expected_value=warn_angle,
+                file_id=file_id,
+            ))
+
+    # =========================================================================
     # Report Generation
     # =========================================================================
 
@@ -717,7 +829,17 @@ class SanityChecker:
             "has_issues": self.rgb_results.has_warnings(),
         }
 
-    def print_pair_report(self, pair_name: str, is_depth: bool = True) -> None:
+    def get_rays_report(self) -> dict:
+        """Get the rays metrics sanity check report."""
+        summary = self.rays_results.get_warning_summary()
+        return {
+            "total_samples": self.rays_results.total_samples,
+            "total_warnings": len(self.rays_results.warnings),
+            "warnings_by_type": summary,
+            "has_issues": self.rays_results.has_warnings(),
+        }
+
+    def print_pair_report(self, pair_name: str, is_depth: bool = True, modality: Optional[str] = None) -> None:
         """Print a sanity check report for just the current dataset pair.
 
         This prints only the warnings accumulated since the last call to
@@ -727,7 +849,12 @@ class SanityChecker:
             pair_name: Name of the dataset pair being evaluated.
             is_depth: True for depth evaluation, False for RGB evaluation.
         """
-        if is_depth:
+        if modality == "rays":
+            results = self.rays_results
+            last_warnings = self._last_reported_rays_warnings
+            last_samples = self._last_reported_rays_samples
+            metric_type = "RAYS"
+        elif is_depth:
             results = self.depth_results
             last_warnings = self._last_reported_depth_warnings
             last_samples = self._last_reported_depth_samples
@@ -745,7 +872,10 @@ class SanityChecker:
         if not new_warnings:
             print(f"\n[{metric_type} SANITY CHECK] {pair_name}: All metrics passed (0 warnings)")
             # Update tracking
-            if is_depth:
+            if modality == "rays":
+                self._last_reported_rays_warnings = len(results.warnings)
+                self._last_reported_rays_samples = results.total_samples
+            elif is_depth:
                 self._last_reported_depth_warnings = len(results.warnings)
                 self._last_reported_depth_samples = results.total_samples
             else:
@@ -787,7 +917,10 @@ class SanityChecker:
         print("─" * 70)
 
         # Update tracking
-        if is_depth:
+        if modality == "rays":
+            self._last_reported_rays_warnings = len(results.warnings)
+            self._last_reported_rays_samples = results.total_samples
+        elif is_depth:
             self._last_reported_depth_warnings = len(results.warnings)
             self._last_reported_depth_samples = results.total_samples
         else:
@@ -806,8 +939,13 @@ class SanityChecker:
 
         depth_report = self.get_depth_report()
         rgb_report = self.get_rgb_report()
+        rays_report = self.get_rays_report()
 
-        has_any_issues = depth_report["has_issues"] or rgb_report["has_issues"]
+        has_any_issues = (
+            depth_report["has_issues"]
+            or rgb_report["has_issues"]
+            or rays_report["has_issues"]
+        )
 
         if not has_any_issues:
             print("\n  All metrics passed sanity checks.")
@@ -844,6 +982,21 @@ class SanityChecker:
                     vals_str = ", ".join(f"{v:.4f}" for v in info["sample_values"][:3])
                     print(f"    Sample values: {vals_str}")
 
+        # Print Rays warnings
+        if rays_report["has_issues"]:
+            print(f"\n[RAYS] {rays_report['total_warnings']} warnings "
+                  f"across {rays_report['total_samples']} samples:")
+            print("-" * 70)
+
+            for key, info in rays_report["warnings_by_type"].items():
+                ratio = info["count"] / rays_report["total_samples"]
+                print(f"\n  {info['metric']} - {info['type']}:")
+                print(f"    Occurrences: {info['count']}/{rays_report['total_samples']} ({ratio*100:.1f}%)")
+                print(f"    {info['message']}")
+                if info["sample_values"]:
+                    vals_str = ", ".join(f"{v:.4f}" for v in info["sample_values"][:3])
+                    print(f"    Sample values: {vals_str}")
+
         print("\n" + "=" * 70)
         print("  Review metrics_config.json to adjust thresholds if needed.")
         print("=" * 70)
@@ -853,4 +1006,5 @@ class SanityChecker:
         return {
             "depth": self.get_depth_report(),
             "rgb": self.get_rgb_report(),
+            "rays": self.get_rays_report(),
         }

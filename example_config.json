@@ -16,6 +16,9 @@
         },
         "calibration": {
             "path": "/path/to/gt/calibration"
+        },
+        "rays": {
+            "path": "/path/to/gt/rays"
         }
     },
     "datasets": [
@@ -39,6 +42,12 @@
             "name": "model_c_rgb_only",
             "rgb": {
                 "path": "/path/to/model_c/rgb"
+            }
+        },
+        {
+            "name": "model_d_rays_only",
+            "rays": {
+                "path": "/path/to/model_d/rays"
             }
         }
     ]

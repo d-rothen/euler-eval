@@ -1,6 +1,7 @@
-"""Depth and RGB evaluation metrics package.
+"""Depth, RGB, and rays evaluation metrics package.
 
-This package provides various metrics for comparing depth maps and RGB images:
+This package provides various metrics for comparing depth maps, RGB images,
+and spherical direction maps (camera rays):
 
 Depth metrics:
 - Image quality: PSNR, SSIM, LPIPS, FID, KID
@@ -13,6 +14,9 @@ RGB metrics:
 - Tail errors (p95/p99)
 - High-frequency energy ratio
 - Depth-binned photometric error (MAE/MSE per depth bin)
+
+Rays metrics:
+- ρ_A: AUC of angular accuracy curve between predicted and GT ray directions
 """
 
 # Depth metrics
@@ -61,6 +65,17 @@ from .high_freq_energy import (
     compute_high_freq_preservation,
     compute_frequency_spectrum_similarity,
     aggregate_high_freq_metrics,
+)
+
+# Rays metrics
+from .rho_a import (
+    compute_angular_errors,
+    compute_rho_a,
+    aggregate_rho_a,
+    aggregate_angular_errors,
+    classify_fov_domain,
+    get_threshold_for_domain,
+    FOV_THRESHOLDS,
 )
 
 # Utilities
@@ -123,6 +138,14 @@ __all__ = [
     "compute_high_freq_preservation",
     "compute_frequency_spectrum_similarity",
     "aggregate_high_freq_metrics",
+    # Rays metrics
+    "compute_angular_errors",
+    "compute_rho_a",
+    "aggregate_rho_a",
+    "aggregate_angular_errors",
+    "classify_fov_domain",
+    "get_threshold_for_domain",
+    "FOV_THRESHOLDS",
     # Utilities
     "convert_planar_to_radial",
     "normalize_depth_for_visualization",

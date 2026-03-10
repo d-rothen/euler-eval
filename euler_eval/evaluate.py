@@ -16,6 +16,7 @@ from .data import (
     compute_scale_and_shift,
     process_depth,
     to_numpy_depth,
+    to_numpy_directions,
     to_numpy_intrinsics,
     to_numpy_mask,
     to_numpy_rgb,
@@ -52,6 +53,13 @@ from .metrics import (
     aggregate_tail_errors,
     compute_high_freq_energy_comparison,
     aggregate_high_freq_metrics,
+    # Rays utilities and metrics
+    compute_angular_errors,
+    compute_rho_a,
+    aggregate_rho_a,
+    aggregate_angular_errors,
+    classify_fov_domain,
+    get_threshold_for_domain,
 )
 
 
@@ -944,5 +952,171 @@ def evaluate_rgb_samples(
             "num_pairs": num_samples,
             "gt_name": gt_name,
             "pred_name": pred_name,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Rays (spherical direction map) evaluation
+# ---------------------------------------------------------------------------
+
+
+def evaluate_rays_samples(
+    dataset: MultiModalDataset,
+    fov_domain: Optional[str] = None,
+    gt_name: str = "GT",
+    pred_name: str = "Pred",
+    verbose: bool = False,
+    sanity_checker: Optional[SanityChecker] = None,
+) -> dict:
+    """Evaluate spherical direction map (rays) metrics.
+
+    The dataset must yield samples with ``"gt"`` and ``"pred"`` keys
+    containing direction map data ``(H, W, 3)`` or ``(3, H, W)``.
+    Optionally ``"calibration"`` for automatic FoV domain classification.
+
+    The primary metric is **ρ_A**: the AUC of the angular accuracy curve
+    evaluated up to a FoV-dependent threshold (15°/20°/30°).
+
+    Args:
+        dataset: The MultiModalDataset to iterate.
+        fov_domain: Explicit FoV domain (``"sfov"``, ``"lfov"``, or
+            ``"pano"``).  When *None*, the domain is auto-detected from
+            calibration intrinsics on the first sample, falling back to
+            ``"lfov"`` if no intrinsics are available.
+        gt_name: GT dataset display name.
+        pred_name: Prediction dataset display name.
+        verbose: Enable verbose output.
+        sanity_checker: Optional SanityChecker.
+
+    Returns:
+        Dictionary containing ``rays`` aggregate metrics, ``per_file_metrics``,
+        and ``dataset_info``.
+    """
+    num_samples = len(dataset)
+    if num_samples == 0:
+        raise ValueError("Dataset has no matched samples")
+
+    rho_a_values: list[float] = []
+    angular_error_arrays: list[np.ndarray] = []
+    processed_entries: list[dict] = []
+
+    logged_stats = False
+    logged_alignment = False
+    resolved_domain: Optional[str] = fov_domain
+    threshold_deg: Optional[float] = None
+
+    if resolved_domain is not None:
+        threshold_deg = get_threshold_for_domain(resolved_domain)
+        print(f"FoV domain: {resolved_domain} (threshold: {threshold_deg}°)")
+
+    print("Computing per-image rays metrics...")
+    for i in tqdm(range(num_samples), desc="Processing rays pairs"):
+        sample = dataset[i]
+        hierarchy, entry_id = _extract_hierarchy(sample)
+
+        dirs_gt = to_numpy_directions(sample["gt"])
+        dirs_pred = to_numpy_directions(sample["pred"])
+
+        # Align GT to prediction dimensions if needed
+        if dirs_gt.shape[:2] != dirs_pred.shape[:2]:
+            if not logged_alignment:
+                print(
+                    f"  Aligning GT {dirs_gt.shape[:2]} -> "
+                    f"pred {dirs_pred.shape[:2]}"
+                )
+                logged_alignment = True
+            dirs_gt = align_to_prediction(dirs_gt, dirs_pred)
+
+        # Auto-detect FoV domain from intrinsics on first sample
+        if resolved_domain is None and i == 0:
+            intrinsics_K = _get_intrinsics_K(sample)
+            if intrinsics_K is not None:
+                h, w = dirs_gt.shape[:2]
+                resolved_domain = classify_fov_domain(intrinsics_K, h, w)
+                print(
+                    f"  FoV domain auto-detected: {resolved_domain} "
+                    f"(from intrinsics)"
+                )
+            else:
+                resolved_domain = "lfov"
+                print(
+                    "  FoV domain: defaulting to lfov "
+                    "(no intrinsics available)"
+                )
+            threshold_deg = get_threshold_for_domain(resolved_domain)
+            print(f"  Angular threshold: {threshold_deg}°")
+
+        if verbose and not logged_stats:
+            _log_sample_stats(
+                np.linalg.norm(dirs_gt, axis=-1),
+                np.linalg.norm(dirs_pred, axis=-1),
+                "RAYS (norm)",
+            )
+            logged_stats = True
+
+        processed_entries.append({"hierarchy": hierarchy, "id": entry_id})
+
+        # Compute angular errors
+        angles, meta = compute_angular_errors(
+            dirs_pred, dirs_gt, return_metadata=True
+        )
+        angular_error_arrays.append(angles)
+
+        # Compute ρ_A
+        rho_a = compute_rho_a(angles, threshold_deg)
+        rho_a_values.append(rho_a)
+
+        # Sanity check
+        if sanity_checker is not None:
+            sanity_checker.validate_rays_input(dirs_gt, dirs_pred, entry_id)
+            if meta["mean_angular_error"] is not None:
+                sanity_checker.validate_rays_rho_a(
+                    rho_a, meta["mean_angular_error"], entry_id
+                )
+
+    # Aggregate
+    print("Aggregating rays results...")
+    rho_a_agg = aggregate_rho_a(rho_a_values)
+    angular_agg = aggregate_angular_errors(angular_error_arrays)
+
+    # Build per-file metrics
+    per_file_metrics = {}
+    for i, entry in enumerate(processed_entries):
+        hierarchy = entry["hierarchy"]
+        eid = entry["id"]
+        angles = angular_error_arrays[i]
+
+        rays_metrics = {
+            "rho_a": float(rho_a_values[i])
+            if np.isfinite(rho_a_values[i])
+            else None,
+            "angular_error": {
+                "mean": float(np.mean(angles)) if len(angles) > 0 else None,
+                "median": float(np.median(angles)) if len(angles) > 0 else None,
+            },
+        }
+
+        set_value(
+            per_file_metrics,
+            hierarchy,
+            eid,
+            {"id": eid, "metrics": {"rays": rays_metrics}},
+        )
+
+    rays_results = {
+        "rho_a": rho_a_agg,
+        "angular_error": angular_agg,
+    }
+
+    return {
+        "rays": rays_results,
+        "per_file_metrics": per_file_metrics,
+        "dataset_info": {
+            "num_pairs": num_samples,
+            "gt_name": gt_name,
+            "pred_name": pred_name,
+            "fov_domain": resolved_domain,
+            "threshold_deg": threshold_deg,
         },
     }

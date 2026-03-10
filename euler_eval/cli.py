@@ -16,11 +16,13 @@ import torch
 
 from .data import (
     build_depth_eval_dataset,
+    build_rays_eval_dataset,
     build_rgb_eval_dataset,
     get_depth_metadata,
+    get_rays_metadata,
     get_rgb_metadata,
 )
-from .evaluate import evaluate_depth_samples, evaluate_rgb_samples
+from .evaluate import evaluate_depth_samples, evaluate_rays_samples, evaluate_rgb_samples
 from .sanity_checker import SanityChecker
 
 try:
@@ -133,13 +135,17 @@ def validate_gt_config(gt: dict) -> None:
     Raises:
         ValueError: If required fields are missing or paths do not exist.
     """
-    if "rgb" not in gt or "path" not in gt["rgb"]:
-        raise ValueError("gt.rgb.path is required")
-    if "depth" not in gt or "path" not in gt["depth"]:
-        raise ValueError("gt.depth.path is required")
+    has_rgb = "rgb" in gt and "path" in gt.get("rgb", {})
+    has_depth = "depth" in gt and "path" in gt.get("depth", {})
+    has_rays = "rays" in gt and "path" in gt.get("rays", {})
 
-    for modality in ("rgb", "depth", "segmentation", "calibration"):
-        if modality in gt:
+    if not has_rgb and not has_depth and not has_rays:
+        raise ValueError(
+            "gt must have at least one of 'rgb.path', 'depth.path', or 'rays.path'"
+        )
+
+    for modality in ("rgb", "depth", "rays", "segmentation", "calibration"):
+        if modality in gt and "path" in gt[modality]:
             p = Path(gt[modality]["path"])
             if not p.exists():
                 raise ValueError(f"gt.{modality}.path does not exist: {p}")
@@ -157,10 +163,13 @@ def validate_dataset_entry(entry: dict, index: int) -> None:
 
     has_rgb = "rgb" in entry and "path" in entry.get("rgb", {})
     has_depth = "depth" in entry and "path" in entry.get("depth", {})
-    if not has_rgb and not has_depth:
-        raise ValueError(f"{label} must have at least 'rgb.path' or 'depth.path'")
+    has_rays = "rays" in entry and "path" in entry.get("rays", {})
+    if not has_rgb and not has_depth and not has_rays:
+        raise ValueError(
+            f"{label} must have at least 'rgb.path', 'depth.path', or 'rays.path'"
+        )
 
-    for modality in ("rgb", "depth"):
+    for modality in ("rgb", "depth", "rays"):
         if modality in entry and "path" in entry[modality]:
             p = Path(entry[modality]["path"])
             if not p.exists():
@@ -283,7 +292,7 @@ def save_results(
             output_file = Path(dataset_config[modality]["path"]) / "eval.json"
         else:
             # Default: save alongside first available modality path
-            for mod in ("depth", "rgb"):
+            for mod in ("depth", "rgb", "rays"):
                 if mod in dataset_config and "path" in dataset_config[mod]:
                     output_file = Path(dataset_config[mod]["path"]) / "eval.json"
                     break
@@ -368,6 +377,11 @@ def main():
         help="Skip RGB evaluation",
     )
     parser.add_argument(
+        "--skip-rays",
+        action="store_true",
+        help="Skip rays (spherical direction map) evaluation",
+    )
+    parser.add_argument(
         "--mask-sky",
         action="store_true",
         help="Mask sky regions from metrics using GT segmentation",
@@ -444,8 +458,9 @@ def main():
     print("-" * 60)
 
     gt = config["gt"]
-    gt_depth_path = gt["depth"]["path"]
-    gt_rgb_path = gt["rgb"]["path"]
+    gt_depth_path = gt.get("depth", {}).get("path")
+    gt_rgb_path = gt.get("rgb", {}).get("path")
+    gt_rays_path = gt.get("rays", {}).get("path")
     calibration_path = gt.get("calibration", {}).get("path")
     segmentation_path = (
         gt.get("segmentation", {}).get("path") if args.mask_sky else None
@@ -456,10 +471,12 @@ def main():
         ds_name = dataset_config["name"]
         has_depth = "depth" in dataset_config and "path" in dataset_config["depth"]
         has_rgb = "rgb" in dataset_config and "path" in dataset_config["rgb"]
+        has_rays = "rays" in dataset_config and "path" in dataset_config["rays"]
 
         all_results = {}
         depth_save = {}
         rgb_save = {}
+        rays_save = {}
         et_eval_datasets = {}
 
         # Register evaluation as running before work begins
@@ -633,6 +650,71 @@ def main():
                 f"RGB: {ds_name}",
             )
 
+        # -- Rays (spherical direction map) evaluation --
+        rays_dataset = None
+        if has_rays and gt_rays_path and not args.skip_rays:
+            pred_rays_path = dataset_config["rays"]["path"]
+            print(f"\n[RAYS] Evaluating: '{ds_name}'")
+            print(f"  GT:   {gt_rays_path}")
+            print(f"  Pred: {pred_rays_path}")
+
+            rays_dataset = build_rays_eval_dataset(
+                gt_rays_path=gt_rays_path,
+                pred_rays_path=pred_rays_path,
+                calibration_path=calibration_path,
+            )
+            et_eval_datasets["rays"] = rays_dataset
+
+            rays_meta = get_rays_metadata(rays_dataset)
+            print(f"  fov_domain: {rays_meta['fov_domain'] or 'auto-detect'}")
+            print(f"  Matched pairs: {len(rays_dataset)}")
+
+            rays_results = evaluate_rays_samples(
+                dataset=rays_dataset,
+                fov_domain=rays_meta["fov_domain"],
+                gt_name=gt.get("name", "GT"),
+                pred_name=ds_name,
+                verbose=args.verbose,
+                sanity_checker=sanity_checker,
+            )
+
+            if sanity_checker is not None:
+                sanity_checker.print_pair_report(ds_name, modality="rays")
+
+            rays_dataset_info = rays_results.get("dataset_info", {})
+
+            rays_save = {
+                "metricSet": {
+                    "metricNamespace": "rays.eval",
+                    "producerKey": "euler-eval",
+                    "producerVersion": _get_version(),
+                    "sourceKind": "computed",
+                    "metadata": {
+                        "fov_domain": rays_dataset_info.get("fov_domain"),
+                        "threshold_deg": rays_dataset_info.get("threshold_deg"),
+                    },
+                },
+                "dataset_info": rays_dataset_info,
+            }
+            rays_metrics = rays_results.get("rays", {})
+            if rays_metrics:
+                rays_save["rays"] = {"eval": _clean_metric_tree(rays_metrics)}
+                all_results["rays"] = rays_metrics
+            rays_pfm = rays_results.get("per_file_metrics", {})
+            if rays_pfm:
+                rays_save["per_file_metrics"] = _clean_metric_tree(
+                    _wrap_pfm_metrics(
+                        rays_pfm,
+                        lambda m: {"rays": {"eval": m.get("rays", {})}},
+                    )
+                )
+            all_results.setdefault("per_file_metrics", {}).update(rays_pfm)
+
+            print_results(
+                {k: v for k, v in rays_results.items() if k != "per_file_metrics"},
+                f"RAYS: {ds_name}",
+            )
+
         # Save per-modality results to respective dataset paths
         if depth_save:
             depth_out = save_results(depth_save, dataset_config, modality="depth")
@@ -640,6 +722,9 @@ def main():
         if rgb_save:
             rgb_out = save_results(rgb_save, dataset_config, modality="rgb")
             print(f"\n  RGB results saved to: {rgb_out}")
+        if rays_save:
+            rays_out = save_results(rays_save, dataset_config, modality="rays")
+            print(f"\n  Rays results saved to: {rays_out}")
 
         # Log to euler_train
         if et_run is not None and et_eval_datasets:

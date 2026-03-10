@@ -141,6 +141,49 @@ def to_numpy_intrinsics(data: Any) -> np.ndarray:
     return np.asarray(data, dtype=np.float32)
 
 
+def to_numpy_directions(data: Any) -> np.ndarray:
+    """Convert direction map data to ``(H, W, 3)`` float32 numpy array.
+
+    Accepts torch tensors ``(3, H, W)`` or ``(H, W, 3)``, or numpy
+    arrays.  The returned vectors are **not** re-normalized; callers
+    should normalize if needed.
+    """
+    tensor_input = isinstance(data, torch.Tensor)
+    if tensor_input:
+        arr = data.detach().cpu().numpy()
+    else:
+        arr = np.asarray(data, dtype=np.float32)
+
+    if arr.ndim == 4 and arr.shape[0] == 1:
+        arr = arr[0]
+
+    if arr.ndim != 3:
+        raise ValueError(
+            f"Unsupported direction map shape {arr.shape}. "
+            "Expected (H,W,3), (3,H,W), or single-sample variants."
+        )
+
+    # Tensor from loaders is typically CHW.
+    if tensor_input and arr.shape[0] == 3:
+        arr = np.transpose(arr, (1, 2, 0))
+    elif arr.shape[-1] == 3 and arr.shape[0] != 3:
+        pass  # HWC
+    elif arr.shape[0] == 3 and arr.shape[-1] != 3:
+        arr = np.transpose(arr, (1, 2, 0))  # CHW
+    elif arr.shape[0] == 3 and arr.shape[-1] == 3:
+        raise ValueError(
+            f"Ambiguous direction map layout for shape {arr.shape}. "
+            "Please provide explicit HWC data or tensor CHW data."
+        )
+    else:
+        raise ValueError(
+            f"Unsupported direction map shape {arr.shape}. "
+            "Expected channel dimension of size 3."
+        )
+
+    return arr.astype(np.float32)
+
+
 # ---------------------------------------------------------------------------
 # Post-load depth processing
 # ---------------------------------------------------------------------------
@@ -411,4 +454,56 @@ def get_rgb_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
     meta = dataset.get_modality_metadata("gt")
     return {
         "rgb_range": meta.get("rgb_range", [0.0, 1.0]),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Rays (spherical direction map) dataset construction
+# ---------------------------------------------------------------------------
+
+
+def build_rays_eval_dataset(
+    gt_rays_path: str,
+    pred_rays_path: str,
+    calibration_path: Optional[str] = None,
+) -> MultiModalDataset:
+    """Build a MultiModalDataset for rays (spherical direction map) evaluation.
+
+    The returned dataset yields samples with keys ``"gt"``, ``"pred"``,
+    and optionally ``"calibration"``.
+
+    Args:
+        gt_rays_path: Path to GT ray direction map dataset root.
+        pred_rays_path: Path to predicted ray direction map dataset root.
+        calibration_path: Optional path to calibration dataset (used for
+            FoV domain classification).
+
+    Returns:
+        A MultiModalDataset instance.
+    """
+    modalities = {
+        "gt": Modality(path=gt_rays_path),
+        "pred": Modality(path=pred_rays_path, used_as="output"),
+    }
+
+    hierarchical = {}
+    if calibration_path is not None:
+        hierarchical["calibration"] = Modality(path=calibration_path)
+
+    return MultiModalDataset(
+        modalities=modalities,
+        hierarchical_modalities=hierarchical if hierarchical else None,
+    )
+
+
+def get_rays_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
+    """Extract rays modality metadata from a dataset.
+
+    Returns:
+        Dict with ``fov_domain`` (``"sfov"``, ``"lfov"``, or ``"pano"``).
+        Falls back to ``"lfov"`` when metadata is not available.
+    """
+    meta = dataset.get_modality_metadata("gt")
+    return {
+        "fov_domain": meta.get("fov_domain", None),
     }
