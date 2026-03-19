@@ -998,8 +998,20 @@ def evaluate_rays_samples(
         raise ValueError("Dataset has no matched samples")
 
     rho_a_values: list[float] = []
-    angular_error_arrays: list[np.ndarray] = []
-    processed_entries: list[dict] = []
+
+    # Streaming aggregate stats to avoid storing all per-pixel arrays in
+    # memory (which causes OOM on large datasets).
+    _agg_total = 0
+    _agg_sum = 0.0
+    _agg_below_5 = 0
+    _agg_below_10 = 0
+    _agg_below_15 = 0
+    _agg_below_20 = 0
+    _agg_below_30 = 0
+    # Histogram for approximate median (0.01° bins over [0, 180°])
+    _HIST_BINS = 18000
+    _HIST_MAX = 180.0
+    _agg_hist = np.zeros(_HIST_BINS, dtype=np.int64)
 
     logged_stats = False
     logged_alignment = False
@@ -1009,6 +1021,8 @@ def evaluate_rays_samples(
     if resolved_domain is not None:
         threshold_deg = get_threshold_for_domain(resolved_domain)
         print(f"FoV domain: {resolved_domain} (threshold: {threshold_deg}°)")
+
+    per_file_metrics = {}
 
     print("Computing per-image rays metrics...")
     for i in tqdm(range(num_samples), desc="Processing rays pairs"):
@@ -1055,13 +1069,33 @@ def evaluate_rays_samples(
             )
             logged_stats = True
 
-        processed_entries.append({"hierarchy": hierarchy, "id": entry_id})
-
         # Compute angular errors
         angles, meta = compute_angular_errors(
             dirs_pred, dirs_gt, return_metadata=True
         )
-        angular_error_arrays.append(angles)
+
+        # Compute per-image metrics immediately (no need to store full array)
+        per_image_mean = float(np.mean(angles)) if len(angles) > 0 else None
+        per_image_median = (
+            float(np.median(angles)) if len(angles) > 0 else None
+        )
+
+        # Update streaming aggregate stats
+        if len(angles) > 0:
+            n = len(angles)
+            _agg_total += n
+            _agg_sum += float(np.sum(angles))
+            _agg_below_5 += int(np.sum(angles < 5.0))
+            _agg_below_10 += int(np.sum(angles < 10.0))
+            _agg_below_15 += int(np.sum(angles < 15.0))
+            _agg_below_20 += int(np.sum(angles < 20.0))
+            _agg_below_30 += int(np.sum(angles < 30.0))
+            bin_idx = np.clip(
+                (angles / _HIST_MAX * _HIST_BINS).astype(np.int64),
+                0,
+                _HIST_BINS - 1,
+            )
+            np.add.at(_agg_hist, bin_idx, 1)
 
         # Compute ρ_A
         rho_a = compute_rho_a(angles, threshold_deg)
@@ -1075,34 +1109,43 @@ def evaluate_rays_samples(
                     rho_a, meta["mean_angular_error"], entry_id
                 )
 
-    # Aggregate
-    print("Aggregating rays results...")
-    rho_a_agg = aggregate_rho_a(rho_a_values)
-    angular_agg = aggregate_angular_errors(angular_error_arrays)
-
-    # Build per-file metrics
-    per_file_metrics = {}
-    for i, entry in enumerate(processed_entries):
-        hierarchy = entry["hierarchy"]
-        eid = entry["id"]
-        angles = angular_error_arrays[i]
-
+        # Build per-file entry inline
         rays_metrics = {
-            "rho_a": float(rho_a_values[i])
-            if np.isfinite(rho_a_values[i])
-            else None,
+            "rho_a": float(rho_a) if np.isfinite(rho_a) else None,
             "angular_error": {
-                "mean": float(np.mean(angles)) if len(angles) > 0 else None,
-                "median": float(np.median(angles)) if len(angles) > 0 else None,
+                "mean": per_image_mean,
+                "median": per_image_median,
             },
         }
 
         set_value(
             per_file_metrics,
             hierarchy,
-            eid,
-            {"id": eid, "metrics": {"rays": rays_metrics}},
+            entry_id,
+            {"id": entry_id, "metrics": {"rays": rays_metrics}},
         )
+
+    # Aggregate
+    print("Aggregating rays results...")
+    rho_a_agg = aggregate_rho_a(rho_a_values)
+
+    if _agg_total > 0:
+        # Approximate median from histogram
+        cumsum = np.cumsum(_agg_hist)
+        median_bin = int(np.searchsorted(cumsum, _agg_total / 2.0))
+        approx_median = (median_bin + 0.5) * _HIST_MAX / _HIST_BINS
+
+        angular_agg = {
+            "mean_angle": _agg_sum / _agg_total,
+            "median_angle": approx_median,
+            "percent_below_5": _agg_below_5 / _agg_total * 100,
+            "percent_below_10": _agg_below_10 / _agg_total * 100,
+            "percent_below_15": _agg_below_15 / _agg_total * 100,
+            "percent_below_20": _agg_below_20 / _agg_total * 100,
+            "percent_below_30": _agg_below_30 / _agg_total * 100,
+        }
+    else:
+        angular_agg = aggregate_angular_errors([])
 
     rays_results = {
         "rho_a": rho_a_agg,
