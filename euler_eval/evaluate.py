@@ -66,6 +66,8 @@ from .metrics import (
     get_threshold_for_domain,
 )
 
+SKY_MASK_ALIGNMENT_MAX_GT_PERCENTILE = 95.0
+
 
 # ---------------------------------------------------------------------------
 # Sample statistics logging
@@ -588,6 +590,11 @@ def evaluate_depth_samples(
                 else:
                     do_alignment = alignment_mode == "affine" or normalized_predictions
                     if do_alignment:
+                        if sky_mask_enabled and i == 0:
+                            print(
+                                "  Scale-and-shift: fitting on GT depth <= P95 "
+                                "when sky masking is enabled"
+                            )
                         fit_source = depth_pred if normalized_predictions else depth_pred_raw
                         fit_mask = (
                             (depth_gt > 0)
@@ -597,7 +604,14 @@ def evaluate_depth_samples(
                         if sky_valid is not None:
                             fit_mask = fit_mask & sky_valid
                         depth_pred_aligned, s, t = compute_scale_and_shift(
-                            fit_source, depth_gt, fit_mask
+                            fit_source,
+                            depth_gt,
+                            fit_mask,
+                            max_gt_percentile=(
+                                SKY_MASK_ALIGNMENT_MAX_GT_PERCENTILE
+                                if sky_mask_enabled
+                                else None
+                            ),
                         )
                         alignment_applied = True
                         if verbose and not logged_stats:

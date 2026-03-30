@@ -314,6 +314,7 @@ def compute_scale_and_shift(
     pred: np.ndarray,
     gt: np.ndarray,
     valid_mask: Optional[np.ndarray] = None,
+    max_gt_percentile: Optional[float] = None,
 ) -> tuple[np.ndarray, float, float]:
     """Align predicted depth to GT via least-squares scale and shift.
 
@@ -325,6 +326,10 @@ def compute_scale_and_shift(
         gt: Ground-truth depth in metres ``(H, W)``.
         valid_mask: Optional ``(H, W)`` bool mask.  When *None*, all
                     finite positive pixels in both arrays are used.
+        max_gt_percentile: Optional upper GT-depth percentile for the fit.
+            Pixels above this percentile are ignored when enough samples
+            remain, which is useful for suppressing residual sky-depth
+            outliers during masked evaluation.
 
     Returns:
         ``(aligned, scale, shift)`` where *aligned* is
@@ -337,6 +342,20 @@ def compute_scale_and_shift(
     n_valid = int(valid_mask.sum())
     if n_valid < 2:
         return pred.copy(), 1.0, 0.0
+
+    if max_gt_percentile is not None:
+        if not 0.0 < max_gt_percentile <= 100.0:
+            raise ValueError(
+                f"max_gt_percentile must be in (0, 100], got {max_gt_percentile}."
+            )
+
+        gt_valid = gt[valid_mask].astype(np.float64)
+        gt_cap = float(np.percentile(gt_valid, max_gt_percentile))
+        trimmed_mask = valid_mask & (gt <= gt_cap)
+        trimmed_count = int(trimmed_mask.sum())
+        if trimmed_count >= 2:
+            valid_mask = trimmed_mask
+            n_valid = trimmed_count
 
     pred_valid = pred[valid_mask].astype(np.float64)
     gt_valid = gt[valid_mask].astype(np.float64)

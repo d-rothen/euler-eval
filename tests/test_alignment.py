@@ -3,7 +3,11 @@
 import numpy as np
 import pytest
 
-from euler_eval.data import align_to_prediction, classify_spatial_alignment, compute_scale_and_shift
+from euler_eval.data import (
+    align_to_prediction,
+    classify_spatial_alignment,
+    compute_scale_and_shift,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +240,33 @@ class TestComputeScaleAndShift:
         np.testing.assert_allclose(aligned[0, 0], gt[0, 0], rtol=1e-4)
         np.testing.assert_allclose(aligned[0, 1], gt[0, 1], rtol=1e-4)
         np.testing.assert_allclose(aligned[1, 0], gt[1, 0], rtol=1e-4)
+
+    def test_max_gt_percentile_ignores_far_depth_outliers(self):
+        """Upper-tail GT trimming keeps residual sky leaks out of the fit."""
+        gt = np.linspace(5.0, 50.0, num=40 * 40, dtype=np.float32).reshape(40, 40)
+        pred = ((gt - 3.0) / 7.0).astype(np.float32)
+
+        gt[:2, :] = 1000.0
+        pred[:2, :] = 0.25
+        valid_mask = np.ones_like(gt, dtype=bool)
+
+        aligned_untrimmed, _, _ = compute_scale_and_shift(
+            pred, gt, valid_mask=valid_mask
+        )
+        aligned_trimmed, s, t = compute_scale_and_shift(
+            pred,
+            gt,
+            valid_mask=valid_mask,
+            max_gt_percentile=95.0,
+        )
+
+        np.testing.assert_allclose(s, 7.0, rtol=1e-4)
+        np.testing.assert_allclose(t, 3.0, rtol=1e-4)
+        np.testing.assert_allclose(aligned_trimmed[2:, :], gt[2:, :], rtol=1e-4)
+
+        untrimmed_mae = float(np.mean(np.abs(aligned_untrimmed[2:, :] - gt[2:, :])))
+        trimmed_mae = float(np.mean(np.abs(aligned_trimmed[2:, :] - gt[2:, :])))
+        assert trimmed_mae < untrimmed_mae * 0.05
 
     def test_sky_mask_excluded_from_fit(self):
         """Simulates sky pixels (large GT depth) excluded via mask."""

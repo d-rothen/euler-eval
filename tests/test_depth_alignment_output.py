@@ -197,6 +197,31 @@ def _make_dataset():
     return _DummyDepthDataset(samples)
 
 
+def _make_dataset_with_segmentation():
+    gt_a = np.array([[10.0, 20.0], [30.0, 40.0]], dtype=np.float32)
+    gt_b = np.array([[6.0, 12.0], [18.0, 24.0]], dtype=np.float32)
+    pred_a = ((gt_a - 5.0) / 50.0).astype(np.float32)
+    pred_b = ((gt_b - 3.0) / 30.0).astype(np.float32)
+    seg = np.zeros((2, 2), dtype=bool)
+    samples = [
+        {
+            "id": "00001",
+            "full_id": "/Scene01/clone/00001",
+            "gt": gt_a,
+            "pred": pred_a,
+            "segmentation": seg,
+        },
+        {
+            "id": "00002",
+            "full_id": "/Scene01/clone/00002",
+            "gt": gt_b,
+            "pred": pred_b,
+            "segmentation": seg,
+        },
+    ]
+    return _DummyDepthDataset(samples)
+
+
 def test_depth_output_contains_raw_and_aligned(monkeypatch):
     _patch_depth_metrics(monkeypatch)
 
@@ -261,3 +286,32 @@ def test_depth_output_contains_spatial_info(monkeypatch):
     assert si["pred_dimensions"] == {"height": 2, "width": 2}
     assert si["method"] == "none"
     assert si["evaluated_dimensions"] == {"height": 2, "width": 2}
+
+
+def test_depth_alignment_uses_p95_fit_when_sky_masking(monkeypatch):
+    _patch_depth_metrics(monkeypatch)
+
+    calls = []
+    original = eval_mod.compute_scale_and_shift
+
+    def _wrapped(pred, gt, valid_mask=None, max_gt_percentile=None):
+        calls.append(max_gt_percentile)
+        return original(
+            pred,
+            gt,
+            valid_mask=valid_mask,
+            max_gt_percentile=max_gt_percentile,
+        )
+
+    monkeypatch.setattr(eval_mod, "compute_scale_and_shift", _wrapped)
+
+    eval_mod.evaluate_depth_samples(
+        dataset=_make_dataset_with_segmentation(),
+        is_radial=True,
+        device="cpu",
+        alignment_mode="affine",
+        sky_mask_enabled=True,
+    )
+
+    assert calls
+    assert set(calls) == {eval_mod.SKY_MASK_ALIGNMENT_MAX_GT_PERCENTILE}
