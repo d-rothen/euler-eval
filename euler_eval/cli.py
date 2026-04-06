@@ -31,6 +31,227 @@ except ImportError:
     _euler_train = None
 
 
+# ── Metric namespace axes and descriptions ──────────────────────────────────
+# Axis declarations and per-metric display metadata emitted in metricSet
+# envelopes, following the Normed Metric Namespacing convention (§3.6, §5.2).
+# Description keys are *base metric names* (after stripping namespace + axes).
+
+_DEPTH_EVAL_AXES = {
+    "alignment": {
+        "position": 0,
+        "optional": False,
+        "values": ["raw", "aligned"],
+        "description": "Depth alignment mode",
+    },
+    "category": {
+        "position": 1,
+        "optional": True,
+        "values": ["image_quality", "depth_metrics", "geometric_metrics"],
+        "description": "Metric category",
+    },
+}
+
+_DEPTH_EVAL_DESCRIPTIONS = {
+    "psnr": {"isHigherBetter": True, "unit": "dB", "displayName": "PSNR"},
+    "ssim": {
+        "isHigherBetter": True,
+        "min": 0.0,
+        "max": 1.0,
+        "displayName": "SSIM",
+    },
+    "lpips": {"isHigherBetter": False, "displayName": "LPIPS"},
+    "fid": {"isHigherBetter": False, "displayName": "FID"},
+    "kid_mean": {"isHigherBetter": False, "displayName": "KID Mean"},
+    "absrel.median": {"isHigherBetter": False, "displayName": "AbsRel (Median)"},
+    "absrel.p90": {"isHigherBetter": False, "displayName": "AbsRel (P90)"},
+    "rmse.median": {
+        "isHigherBetter": False,
+        "unit": "meters",
+        "displayName": "RMSE (Median)",
+    },
+    "rmse.p90": {
+        "isHigherBetter": False,
+        "unit": "meters",
+        "displayName": "RMSE (P90)",
+    },
+    "silog.mean": {
+        "isHigherBetter": False,
+        "scale": "log",
+        "displayName": "SILog (Mean)",
+    },
+    "silog.median": {
+        "isHigherBetter": False,
+        "scale": "log",
+        "displayName": "SILog (Median)",
+    },
+    "silog.p90": {
+        "isHigherBetter": False,
+        "scale": "log",
+        "displayName": "SILog (P90)",
+    },
+    "normal_consistency.mean_angle": {
+        "isHigherBetter": False,
+        "unit": "degrees",
+        "displayName": "Normal Mean Angle",
+    },
+    "normal_consistency.median_angle": {
+        "isHigherBetter": False,
+        "unit": "degrees",
+        "displayName": "Normal Median Angle",
+    },
+    "normal_consistency.percent_below_11_25": {
+        "isHigherBetter": True,
+        "scale": "percentage",
+        "min": 0.0,
+        "max": 100.0,
+        "displayName": "Normal < 11.25°",
+    },
+    "normal_consistency.percent_below_22_5": {
+        "isHigherBetter": True,
+        "scale": "percentage",
+        "min": 0.0,
+        "max": 100.0,
+        "displayName": "Normal < 22.5°",
+    },
+    "normal_consistency.percent_below_30": {
+        "isHigherBetter": True,
+        "scale": "percentage",
+        "min": 0.0,
+        "max": 100.0,
+        "displayName": "Normal < 30°",
+    },
+    "depth_edge_f1.precision": {
+        "isHigherBetter": True,
+        "min": 0.0,
+        "max": 1.0,
+        "displayName": "Edge Precision",
+    },
+    "depth_edge_f1.recall": {
+        "isHigherBetter": True,
+        "min": 0.0,
+        "max": 1.0,
+        "displayName": "Edge Recall",
+    },
+    "depth_edge_f1.f1": {
+        "isHigherBetter": True,
+        "min": 0.0,
+        "max": 1.0,
+        "displayName": "Edge F1",
+    },
+}
+
+_RGB_EVAL_AXES = {
+    "category": {
+        "position": 0,
+        "optional": True,
+        "values": [
+            "image_quality",
+            "edge_f1",
+            "tail_errors",
+            "high_frequency",
+            "depth_binned_photometric",
+        ],
+        "description": "Metric category",
+    },
+}
+
+_RGB_EVAL_DESCRIPTIONS = {
+    "psnr": {"isHigherBetter": True, "unit": "dB", "displayName": "PSNR"},
+    "ssim": {
+        "isHigherBetter": True,
+        "min": 0.0,
+        "max": 1.0,
+        "displayName": "SSIM",
+    },
+    "sce": {"isHigherBetter": False, "displayName": "SCE"},
+    "lpips": {"isHigherBetter": False, "displayName": "LPIPS"},
+    "fid": {"isHigherBetter": False, "displayName": "FID"},
+    "precision": {
+        "isHigherBetter": True,
+        "min": 0.0,
+        "max": 1.0,
+        "displayName": "Edge Precision",
+    },
+    "recall": {
+        "isHigherBetter": True,
+        "min": 0.0,
+        "max": 1.0,
+        "displayName": "Edge Recall",
+    },
+    "f1": {
+        "isHigherBetter": True,
+        "min": 0.0,
+        "max": 1.0,
+        "displayName": "Edge F1",
+    },
+    "p95": {"isHigherBetter": False, "displayName": "Tail Error P95"},
+    "p99": {"isHigherBetter": False, "displayName": "Tail Error P99"},
+    "relative_diff": {"isHigherBetter": True, "displayName": "HF Relative Diff"},
+}
+
+_RAYS_EVAL_AXES = {}
+
+_RAYS_EVAL_DESCRIPTIONS = {
+    "rho_a.mean": {
+        "isHigherBetter": True,
+        "min": 0.0,
+        "max": 1.0,
+        "displayName": "ρ_A (Mean)",
+    },
+    "rho_a.median": {
+        "isHigherBetter": True,
+        "min": 0.0,
+        "max": 1.0,
+        "displayName": "ρ_A (Median)",
+    },
+    "angular_error.mean_angle": {
+        "isHigherBetter": False,
+        "unit": "degrees",
+        "displayName": "Mean Angular Error",
+    },
+    "angular_error.median_angle": {
+        "isHigherBetter": False,
+        "unit": "degrees",
+        "displayName": "Median Angular Error",
+    },
+    "angular_error.percent_below_5": {
+        "isHigherBetter": True,
+        "scale": "percentage",
+        "min": 0.0,
+        "max": 100.0,
+        "displayName": "< 5°",
+    },
+    "angular_error.percent_below_10": {
+        "isHigherBetter": True,
+        "scale": "percentage",
+        "min": 0.0,
+        "max": 100.0,
+        "displayName": "< 10°",
+    },
+    "angular_error.percent_below_15": {
+        "isHigherBetter": True,
+        "scale": "percentage",
+        "min": 0.0,
+        "max": 100.0,
+        "displayName": "< 15°",
+    },
+    "angular_error.percent_below_20": {
+        "isHigherBetter": True,
+        "scale": "percentage",
+        "min": 0.0,
+        "max": 100.0,
+        "displayName": "< 20°",
+    },
+    "angular_error.percent_below_30": {
+        "isHigherBetter": True,
+        "scale": "percentage",
+        "min": 0.0,
+        "max": 100.0,
+        "displayName": "< 30°",
+    },
+}
+
+
 def _get_version() -> str:
     """Return the installed euler-eval version, falling back to ``"0.0.0"``."""
     try:
@@ -566,6 +787,8 @@ def main():
                         "alignment_mode": alignment_info.get("mode", "unknown"),
                         "alignment_applied": alignment_info.get("applied", False),
                     },
+                    "axes": _DEPTH_EVAL_AXES,
+                    "metricDescriptions": _DEPTH_EVAL_DESCRIPTIONS,
                 },
                 "dataset_info": depth_dataset_info,
                 "meta": _clean_metric_tree({
@@ -694,6 +917,8 @@ def main():
                     "producerKey": "euler-eval",
                     "producerVersion": _get_version(),
                     "sourceKind": "computed",
+                    "axes": _RGB_EVAL_AXES,
+                    "metricDescriptions": _RGB_EVAL_DESCRIPTIONS,
                 },
                 "dataset_info": rgb_dataset_info,
                 "meta": _clean_metric_tree({
@@ -793,6 +1018,8 @@ def main():
                         "fov_domain": rays_dataset_info.get("fov_domain"),
                         "threshold_deg": rays_dataset_info.get("threshold_deg"),
                     },
+                    "axes": _RAYS_EVAL_AXES,
+                    "metricDescriptions": _RAYS_EVAL_DESCRIPTIONS,
                 },
                 "dataset_info": rays_dataset_info,
                 "meta": _clean_metric_tree({
