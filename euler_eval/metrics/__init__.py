@@ -86,6 +86,9 @@ from .utils import (
     get_valid_mask,
     depth_to_3channel,
     get_depth_bins,
+    get_benchmark_depth_bins,
+    format_benchmark_key,
+    _BENCHMARK_BIN_NAMES,
 )
 
 __all__ = [
@@ -154,4 +157,7 @@ __all__ = [
     "get_valid_mask",
     "depth_to_3channel",
     "get_depth_bins",
+    "get_benchmark_depth_bins",
+    "format_benchmark_key",
+    "_BENCHMARK_BIN_NAMES",
 ]

@@ -2,13 +2,17 @@
 
 from euler_eval.cli import (
     _clean_metric_tree,
-    _DEPTH_EVAL_AXES,
+    _depth_eval_axes,
     _DEPTH_EVAL_DESCRIPTIONS,
-    _RGB_EVAL_AXES,
+    _rgb_eval_axes,
     _RGB_EVAL_DESCRIPTIONS,
     _RAYS_EVAL_AXES,
     _RAYS_EVAL_DESCRIPTIONS,
 )
+
+# Build base (non-benchmark) axis dicts for testing
+_DEPTH_EVAL_AXES = _depth_eval_axes()
+_RGB_EVAL_AXES = _rgb_eval_axes()
 
 
 class TestMetaBlockStructure:
@@ -127,15 +131,15 @@ class TestAxisDeclarations:
         assert "category" in _DEPTH_EVAL_AXES
 
         alignment = _DEPTH_EVAL_AXES["alignment"]
-        assert alignment["position"] == 0
-        assert alignment["optional"] is False
-        assert "raw" in alignment["values"]
-        assert "aligned" in alignment["values"]
+        assert alignment.position == 0
+        assert alignment.optional is False
+        assert "raw" in alignment.values
+        assert "aligned" in alignment.values
 
         category = _DEPTH_EVAL_AXES["category"]
-        assert category["position"] == 1
-        assert category["optional"] is True
-        assert set(category["values"]) == {
+        assert category.position == 1
+        assert category.optional is True
+        assert set(category.values) == {
             "image_quality",
             "depth_metrics",
             "geometric_metrics",
@@ -147,13 +151,13 @@ class TestAxisDeclarations:
         assert len(_RGB_EVAL_AXES) == 1
 
         category = _RGB_EVAL_AXES["category"]
-        assert category["position"] == 0
-        assert category["optional"] is True
-        assert "image_quality" in category["values"]
-        assert "edge_f1" in category["values"]
-        assert "tail_errors" in category["values"]
-        assert "high_frequency" in category["values"]
-        assert "depth_binned_photometric" in category["values"]
+        assert category.position == 0
+        assert category.optional is True
+        assert "image_quality" in category.values
+        assert "edge_f1" in category.values
+        assert "tail_errors" in category.values
+        assert "high_frequency" in category.values
+        assert "depth_binned_photometric" in category.values
 
     def test_rays_axes_empty(self):
         """rays.eval has no axes (flat namespace)."""
@@ -164,18 +168,27 @@ class TestAxisDeclarations:
         for axes in (_DEPTH_EVAL_AXES, _RGB_EVAL_AXES):
             if not axes:
                 continue
-            positions = sorted(a["position"] for a in axes.values())
+            positions = sorted(a.position for a in axes.values())
             assert positions == list(range(len(positions)))
 
     def test_axis_values_are_nonempty_strings(self):
         """Every axis has at least one value, all lowercase strings."""
         for axes in (_DEPTH_EVAL_AXES, _RGB_EVAL_AXES, _RAYS_EVAL_AXES):
             for name, decl in axes.items():
-                assert len(decl["values"]) >= 1, f"axis {name} has no values"
-                for v in decl["values"]:
+                assert len(decl.values) >= 1, f"axis {name} has no values"
+                for v in decl.values:
                     assert isinstance(v, str) and v == v.lower(), (
                         f"axis {name} value {v!r} must be lowercase string"
                     )
+
+    def test_depth_benchmark_axes(self):
+        """When benchmark=True, depth axes include a bin axis."""
+        axes = _depth_eval_axes(benchmark=True)
+        assert "bin" in axes
+        bin_axis = axes["bin"]
+        assert bin_axis.position == 2
+        assert bin_axis.optional is True
+        assert set(bin_axis.values) == {"all", "near", "mid", "far"}
 
 
 class TestMetricDescriptions:
@@ -185,20 +198,20 @@ class TestMetricDescriptions:
         valid_scales = {"linear", "log", "percentage", "binary"}
         for key, desc in descriptions.items():
             assert isinstance(key, str) and len(key) > 0
-            if "isHigherBetter" in desc:
-                assert isinstance(desc["isHigherBetter"], bool)
-            if "scale" in desc:
-                assert desc["scale"] in valid_scales, (
-                    f"{key}: invalid scale {desc['scale']!r}"
+            if desc.is_higher_better is not None:
+                assert isinstance(desc.is_higher_better, bool)
+            if desc.scale is not None:
+                assert desc.scale in valid_scales, (
+                    f"{key}: invalid scale {desc.scale!r}"
                 )
-            if "min" in desc:
-                assert isinstance(desc["min"], (int, float))
-            if "max" in desc:
-                assert isinstance(desc["max"], (int, float))
-            if "displayName" in desc:
-                assert isinstance(desc["displayName"], str)
-            if "unit" in desc:
-                assert isinstance(desc["unit"], str)
+            if desc.min_value is not None:
+                assert isinstance(desc.min_value, (int, float))
+            if desc.max_value is not None:
+                assert isinstance(desc.max_value, (int, float))
+            if desc.display_name is not None:
+                assert isinstance(desc.display_name, str)
+            if desc.unit is not None:
+                assert isinstance(desc.unit, str)
 
     def test_depth_descriptions_valid(self):
         self._check_descriptions(_DEPTH_EVAL_DESCRIPTIONS)
@@ -210,34 +223,35 @@ class TestMetricDescriptions:
         self._check_descriptions(_RAYS_EVAL_DESCRIPTIONS)
 
     def test_depth_key_metrics_have_direction(self):
-        """Core depth metrics declare isHigherBetter."""
+        """Core depth metrics declare is_higher_better."""
         for key in ("psnr", "ssim", "lpips", "absrel.median", "rmse.median"):
-            assert "isHigherBetter" in _DEPTH_EVAL_DESCRIPTIONS[key], (
-                f"depth description {key} missing isHigherBetter"
+            assert _DEPTH_EVAL_DESCRIPTIONS[key].is_higher_better is not None, (
+                f"depth description {key} missing is_higher_better"
             )
 
     def test_rgb_key_metrics_have_direction(self):
-        """Core RGB metrics declare isHigherBetter."""
+        """Core RGB metrics declare is_higher_better."""
         for key in ("psnr", "ssim", "lpips", "f1"):
-            assert "isHigherBetter" in _RGB_EVAL_DESCRIPTIONS[key]
+            assert _RGB_EVAL_DESCRIPTIONS[key].is_higher_better is not None
 
     def test_rays_key_metrics_have_direction(self):
-        """Core rays metrics declare isHigherBetter."""
+        """Core rays metrics declare is_higher_better."""
         for key in ("rho_a.mean", "angular_error.mean_angle"):
-            assert "isHigherBetter" in _RAYS_EVAL_DESCRIPTIONS[key]
+            assert _RAYS_EVAL_DESCRIPTIONS[key].is_higher_better is not None
 
-    def test_metricset_envelope_includes_axes_and_descriptions(self):
-        """metricSet dict includes axes and metricDescriptions fields."""
-        depth_metric_set = {
-            "metricNamespace": "depth.eval",
-            "producerKey": "euler-eval",
-            "producerVersion": "1.7.0",
-            "sourceKind": "computed",
-            "metadata": {},
-            "axes": _DEPTH_EVAL_AXES,
-            "metricDescriptions": _DEPTH_EVAL_DESCRIPTIONS,
-        }
-        assert "axes" in depth_metric_set
-        assert "metricDescriptions" in depth_metric_set
-        assert depth_metric_set["axes"]["alignment"]["position"] == 0
-        assert "psnr" in depth_metric_set["metricDescriptions"]
+    def test_metricset_envelope_via_namespace(self):
+        """MetricNamespace.metric_set_envelope() produces correct structure."""
+        from euler_eval.cli import _EvalNamespace, _get_version
+
+        ns = _EvalNamespace(
+            producer="euler-eval",
+            producer_version="1.7.0",
+            modalities=("depth",),
+            axes=_depth_eval_axes(),
+            descriptions=_DEPTH_EVAL_DESCRIPTIONS,
+        )
+        envelope = ns.metric_set_envelope("depth", metadata={})
+        assert "axes" in envelope
+        assert "metricDescriptions" in envelope
+        assert envelope["axes"]["alignment"]["position"] == 0
+        assert "psnr" in envelope["metricDescriptions"]

@@ -126,3 +126,75 @@ def get_depth_bins(
         "mid": mid_mask,
         "far": far_mask,
     }
+
+
+_BENCHMARK_BIN_NAMES = ("all", "near", "mid", "far")
+
+
+def get_benchmark_depth_bins(
+    depth: np.ndarray,
+    range_min: float,
+    range_max: float,
+) -> dict:
+    """Compute near/mid/far depth bins within a benchmark range using log-scale splits.
+
+    Divides [range_min, range_max] into three bins with equal width in log10 space.
+
+    For example, [1m, 80m] yields: near=[1, 4.31), mid=[4.31, 18.57), far=[18.57, 80].
+
+    Args:
+        depth: Depth map in meters.
+        range_min: Minimum depth of benchmark range (meters, must be > 0).
+        range_max: Maximum depth of benchmark range (meters, must be > range_min).
+
+    Returns:
+        Dictionary with 'all', 'near', 'mid', 'far' boolean masks and
+        'boundaries' dict with the computed bin edges.
+    """
+    if range_min <= 0:
+        raise ValueError(f"range_min must be > 0, got {range_min}")
+    if range_max <= range_min:
+        raise ValueError(
+            f"range_max must be > range_min, got [{range_min}, {range_max}]"
+        )
+
+    valid_mask = (depth > 0) & np.isfinite(depth)
+    in_range = valid_mask & (depth >= range_min) & (depth <= range_max)
+
+    log_min = np.log10(range_min)
+    log_max = np.log10(range_max)
+    log_step = (log_max - log_min) / 3.0
+
+    near_max = 10 ** (log_min + log_step)
+    mid_max = 10 ** (log_min + 2 * log_step)
+
+    near_mask = in_range & (depth < near_max)
+    mid_mask = in_range & (depth >= near_max) & (depth < mid_max)
+    far_mask = in_range & (depth >= mid_max)
+
+    return {
+        "all": in_range,
+        "near": near_mask,
+        "mid": mid_mask,
+        "far": far_mask,
+        "boundaries": {
+            "range": [float(range_min), float(range_max)],
+            "near": [float(range_min), float(near_max)],
+            "mid": [float(near_max), float(mid_max)],
+            "far": [float(mid_max), float(range_max)],
+        },
+    }
+
+
+def format_benchmark_key(range_min: float, range_max: float) -> str:
+    """Format a benchmark namespace key from depth range bounds.
+
+    Examples:
+        (1, 80) -> 'benchmark_1m_80m'
+        (0.5, 100) -> 'benchmark_0_5m_100m'
+    """
+    def _fmt(v: float) -> str:
+        if v == int(v):
+            return str(int(v))
+        return f"{v:g}".replace(".", "_")
+    return f"benchmark_{_fmt(range_min)}m_{_fmt(range_max)}m"

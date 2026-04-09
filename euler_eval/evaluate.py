@@ -64,9 +64,88 @@ from .metrics import (
     aggregate_angular_errors,
     classify_fov_domain,
     get_threshold_for_domain,
+    # Benchmark utilities
+    get_benchmark_depth_bins,
+    _BENCHMARK_BIN_NAMES,
 )
 
 SKY_MASK_ALIGNMENT_MAX_GT_PERCENTILE = 95.0
+
+
+# ---------------------------------------------------------------------------
+# Benchmark depth-range helpers
+# ---------------------------------------------------------------------------
+
+
+def _init_benchmark_bin_store(temp_dir: Path, prefix: str) -> dict:
+    """Create streaming stores for a single benchmark depth bin."""
+    return {
+        "absrel_store": _StreamingValueStore(str(temp_dir / f"{prefix}_absrel.bin")),
+        "rmse_store": _StreamingValueStore(str(temp_dir / f"{prefix}_rmse.bin")),
+        "silog_store": _StreamingValueStore(str(temp_dir / f"{prefix}_silog.bin")),
+        "silog_full_values": [],
+        "normal_store": _StreamingValueStore(str(temp_dir / f"{prefix}_normal.bin")),
+        "normal_below_11_25": 0,
+        "normal_below_22_5": 0,
+        "normal_below_30": 0,
+    }
+
+
+def _close_benchmark_stores(stores: dict) -> None:
+    """Close all streaming stores in a benchmark store dict."""
+    for bin_name in _BENCHMARK_BIN_NAMES:
+        s = stores[bin_name]
+        s["absrel_store"].close()
+        s["rmse_store"].close()
+        s["silog_store"].close()
+        s["normal_store"].close()
+
+
+def _safe_mean_values(values: list) -> Optional[float]:
+    """Compute mean of finite values, returning None if empty."""
+    valid = [float(v) for v in values if v is not None and np.isfinite(v)]
+    return float(np.mean(valid)) if valid else None
+
+
+def _build_benchmark_bin_summary(store: dict) -> dict:
+    """Build aggregate metric summary for a single benchmark depth bin."""
+    absrel_median, absrel_p90 = store["absrel_store"].quantiles([0.5, 0.9])
+    rmse_median, rmse_p90 = store["rmse_store"].quantiles([0.5, 0.9])
+    silog_median, silog_p90 = store["silog_store"].quantiles([0.5, 0.9])
+    normal_median = store["normal_store"].quantiles([0.5])[0]
+    normal_count = store["normal_store"].count
+
+    if normal_count > 0:
+        normal_mean = store["normal_store"].mean()
+        pct_11_25 = store["normal_below_11_25"] / normal_count * 100.0
+        pct_22_5 = store["normal_below_22_5"] / normal_count * 100.0
+        pct_30 = store["normal_below_30"] / normal_count * 100.0
+    else:
+        normal_mean = float("nan")
+        pct_11_25 = float("nan")
+        pct_22_5 = float("nan")
+        pct_30 = float("nan")
+
+    return {
+        "depth_metrics": {
+            "absrel": {"median": absrel_median, "p90": absrel_p90},
+            "rmse": {"median": rmse_median, "p90": rmse_p90},
+            "silog": {
+                "mean": _safe_mean_values(store["silog_full_values"]),
+                "median": silog_median,
+                "p90": silog_p90,
+            },
+        },
+        "geometric_metrics": {
+            "normal_consistency": {
+                "mean_angle": normal_mean,
+                "median_angle": normal_median,
+                "percent_below_11_25": pct_11_25,
+                "percent_below_22_5": pct_22_5,
+                "percent_below_30": pct_30,
+            },
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +352,7 @@ def evaluate_depth_samples(
     sanity_checker: Optional[SanityChecker] = None,
     sky_mask_enabled: bool = False,
     alignment_mode: str = "auto_affine",
+    benchmark_depth_range: Optional[tuple[float, float]] = None,
 ) -> dict:
     """Evaluate all depth metrics from a MultiModalDataset.
 
@@ -292,10 +372,14 @@ def evaluate_depth_samples(
         sky_mask_enabled: If True, use segmentation for sky masking.
         alignment_mode: One of ``none``, ``auto_affine``, ``affine``.
             ``auto_affine`` aligns only if predictions look normalized.
+        benchmark_depth_range: Optional ``(min_meters, max_meters)`` tuple.
+            When set, also computes depth metrics for pixels within this
+            range, subdivided into log-scaled near/mid/far bins.
 
     Returns:
         Dictionary containing depth aggregate/per-file metrics with:
-        ``depth_raw``, ``depth_aligned``, and backward-compatible ``depth``.
+        ``depth_raw``, ``depth_aligned``, backward-compatible ``depth``,
+        and optionally ``depth_benchmark``.
     """
     valid_alignment_modes = {"none", "auto_affine", "affine"}
     if alignment_mode not in valid_alignment_modes:
@@ -530,6 +614,19 @@ def evaluate_depth_samples(
         gt_depth_paths: list[str] = []
         per_file_metrics = {}
 
+        benchmark_stores = None
+        benchmark_boundaries = None
+        if benchmark_depth_range is not None:
+            bm_min, bm_max = benchmark_depth_range
+            print(
+                f"Benchmark depth range: [{bm_min}, {bm_max}] meters "
+                f"(log-scaled near/mid/far bins)"
+            )
+            benchmark_stores = {
+                bn: _init_benchmark_bin_store(temp_dir, f"bench_{bn}")
+                for bn in _BENCHMARK_BIN_NAMES
+            }
+
         try:
             print("Computing per-image depth metrics...")
             for i in tqdm(range(num_samples), desc="Processing depth pairs"):
@@ -665,6 +762,58 @@ def evaluate_depth_samples(
                     },
                 )
 
+                # -- Benchmark depth-range metrics (aligned only) --
+                if benchmark_stores is not None:
+                    bm_bins = get_benchmark_depth_bins(
+                        depth_gt, benchmark_depth_range[0], benchmark_depth_range[1]
+                    )
+                    if benchmark_boundaries is None:
+                        benchmark_boundaries = bm_bins["boundaries"]
+
+                    for bn in _BENCHMARK_BIN_NAMES:
+                        bin_mask = bm_bins[bn].copy()
+                        bin_mask &= (depth_pred_aligned > 0) & np.isfinite(
+                            depth_pred_aligned
+                        )
+                        if sky_valid is not None:
+                            bin_mask &= sky_valid
+                        if not bin_mask.any():
+                            continue
+
+                        bm_store = benchmark_stores[bn]
+
+                        bm_absrel = compute_absrel(
+                            depth_pred_aligned, depth_gt, valid_mask=bin_mask
+                        )
+                        bm_rmse = compute_rmse_per_pixel(
+                            depth_pred_aligned, depth_gt, valid_mask=bin_mask
+                        )
+                        bm_silog_arr = compute_silog_per_pixel(
+                            depth_pred_aligned, depth_gt, valid_mask=bin_mask
+                        )
+                        bm_silog_val = compute_scale_invariant_log_error(
+                            depth_pred_aligned, depth_gt, valid_mask=bin_mask
+                        )
+                        bm_normals = compute_normal_angles(
+                            depth_pred_aligned, depth_gt, valid_mask=bin_mask
+                        )
+
+                        bm_store["absrel_store"].append(bm_absrel)
+                        bm_store["rmse_store"].append(np.sqrt(bm_rmse))
+                        bm_store["silog_store"].append(bm_silog_arr)
+                        bm_store["silog_full_values"].append(bm_silog_val)
+                        bm_store["normal_store"].append(bm_normals)
+                        if len(bm_normals) > 0:
+                            bm_store["normal_below_11_25"] += int(
+                                np.sum(bm_normals < 11.25)
+                            )
+                            bm_store["normal_below_22_5"] += int(
+                                np.sum(bm_normals < 22.5)
+                            )
+                            bm_store["normal_below_30"] += int(
+                                np.sum(bm_normals < 30.0)
+                            )
+
                 if sanity_checker is not None:
                     sanity_checker.validate_depth_input(
                         depth_gt, depth_pred_aligned, entry_id
@@ -715,10 +864,23 @@ def evaluate_depth_samples(
             else:
                 depth_aligned = copy.deepcopy(depth_raw)
 
-            return {
+            # -- Benchmark aggregation --
+            depth_benchmark = None
+            if benchmark_stores is not None:
+                print("Aggregating benchmark depth results...")
+                depth_benchmark = {
+                    "boundaries": benchmark_boundaries,
+                }
+                for bn in _BENCHMARK_BIN_NAMES:
+                    depth_benchmark[bn] = _build_benchmark_bin_summary(
+                        benchmark_stores[bn]
+                    )
+
+            result = {
                 "depth_raw": depth_raw,
                 "depth_aligned": depth_aligned,
                 "depth": depth_aligned,
+                "depth_benchmark": depth_benchmark,
                 "per_file_metrics": per_file_metrics,
                 "dataset_info": {
                     "num_pairs": num_samples,
@@ -745,12 +907,15 @@ def evaluate_depth_samples(
                     else None,
                 },
             }
+            return result
         finally:
             for branch_store in stores.values():
                 branch_store["absrel_store"].close()
                 branch_store["rmse_store"].close()
                 branch_store["silog_store"].close()
                 branch_store["normal_store"].close()
+            if benchmark_stores is not None:
+                _close_benchmark_stores(benchmark_stores)
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +935,7 @@ def evaluate_rgb_samples(
     sanity_checker: Optional[SanityChecker] = None,
     sky_mask_enabled: bool = False,
     fid_backend: str = "builtin",
+    benchmark_depth_range: Optional[tuple[float, float]] = None,
 ) -> dict:
     """Evaluate all RGB metrics from a MultiModalDataset.
 
@@ -790,9 +956,13 @@ def evaluate_rgb_samples(
         sanity_checker: Optional SanityChecker.
         sky_mask_enabled: If True, use segmentation for sky masking.
         fid_backend: RGB FID backend. One of ``"builtin"`` or ``"clean-fid"``.
+        benchmark_depth_range: Optional ``(min_meters, max_meters)`` tuple.
+            When set and depth is available, computes RGB photometric error
+            for pixels within this range, subdivided into log-scaled bins.
 
     Returns:
-        Dictionary containing aggregate and per-file metrics.
+        Dictionary containing aggregate and per-file metrics, and
+        optionally ``rgb_benchmark``.
     """
 
     def _warn_metric_failure(metric_name: str, entry_id: str, exc: Exception) -> None:
@@ -845,6 +1015,8 @@ def evaluate_rgb_samples(
     edge_f1_results = []
     high_freq_results = []
     depth_binned_results = []
+    benchmark_rgb_results = []
+    benchmark_rgb_boundaries = None
 
     logged_stats = False
     logged_alignment = False
@@ -969,6 +1141,43 @@ def evaluate_rgb_samples(
                             pred_masked, gt_masked, gt_depth
                         )
                         depth_binned_results.append(depth_binned_entry)
+
+                        # Benchmark depth-binned RGB metrics
+                        if benchmark_depth_range is not None:
+                            bm_bins = get_benchmark_depth_bins(
+                                gt_depth,
+                                benchmark_depth_range[0],
+                                benchmark_depth_range[1],
+                            )
+                            if benchmark_rgb_boundaries is None:
+                                benchmark_rgb_boundaries = bm_bins["boundaries"]
+                            abs_error = np.abs(
+                                pred_masked.astype(np.float64)
+                                - gt_masked.astype(np.float64)
+                            ).mean(axis=-1)
+                            sq_error = (
+                                (
+                                    pred_masked.astype(np.float64)
+                                    - gt_masked.astype(np.float64)
+                                )
+                                ** 2
+                            ).mean(axis=-1)
+                            bm_entry = {"mae": {}, "mse": {}}
+                            for bn in _BENCHMARK_BIN_NAMES:
+                                bm_mask = bm_bins[bn]
+                                if sky_valid is not None:
+                                    bm_mask = bm_mask & sky_valid
+                                if bm_mask.any():
+                                    bm_entry["mae"][bn] = float(
+                                        np.mean(abs_error[bm_mask])
+                                    )
+                                    bm_entry["mse"][bn] = float(
+                                        np.mean(sq_error[bm_mask])
+                                    )
+                                else:
+                                    bm_entry["mae"][bn] = 0.0
+                                    bm_entry["mse"][bn] = 0.0
+                            benchmark_rgb_results.append(bm_entry)
                     except Exception as exc:
                         _warn_metric_failure("depth_binned_photometric", entry_id, exc)
 
@@ -1115,8 +1324,29 @@ def evaluate_rgb_samples(
             elif has_depth:
                 print("Warning: No valid depth_binned_photometric results.")
 
+            # -- Benchmark RGB aggregation --
+            rgb_benchmark = None
+            if benchmark_rgb_results:
+                print("Aggregating benchmark RGB results...")
+                bm_agg = {"mae": {}, "mse": {}}
+                for bn in _BENCHMARK_BIN_NAMES:
+                    for metric in ("mae", "mse"):
+                        vals = [
+                            r[metric][bn]
+                            for r in benchmark_rgb_results
+                            if bn in r[metric] and np.isfinite(r[metric][bn])
+                        ]
+                        bm_agg[metric][bn] = (
+                            float(np.mean(vals)) if vals else float("nan")
+                        )
+                rgb_benchmark = {
+                    "boundaries": benchmark_rgb_boundaries,
+                    **bm_agg,
+                }
+
             return {
                 "rgb": rgb_results,
+                "rgb_benchmark": rgb_benchmark,
                 "per_file_metrics": per_file_metrics,
                 "dataset_info": {
                     "num_pairs": num_samples,

@@ -30,225 +30,235 @@ try:
 except ImportError:
     _euler_train = None
 
+from euler_metric_naming import AxisDeclaration, MetricDescription, MetricNamespace
 
-# ── Metric namespace axes and descriptions ──────────────────────────────────
-# Axis declarations and per-metric display metadata emitted in metricSet
-# envelopes, following the Normed Metric Namespacing convention (§3.6, §5.2).
-# Description keys are *base metric names* (after stripping namespace + axes).
 
-_DEPTH_EVAL_AXES = {
-    "alignment": {
-        "position": 0,
-        "optional": False,
-        "values": ["raw", "aligned"],
-        "description": "Depth alignment mode",
-    },
-    "category": {
-        "position": 1,
-        "optional": True,
-        "values": ["image_quality", "depth_metrics", "geometric_metrics"],
-        "description": "Metric category",
-    },
-}
+# ── Eval namespace ──────────────────────────────────────────────────────────
+# MetricNamespace subclass for eval context with custom axis declarations,
+# following the Normed Metric Namespacing convention (§3.6, §4, §5.2).
+
+
+class _EvalNamespace(MetricNamespace):
+    """MetricNamespace for eval context with caller-supplied axes."""
+
+    def __init__(
+        self,
+        *,
+        axes: dict[str, AxisDeclaration],
+        **kwargs,
+    ):
+        self._eval_axes = dict(axes)
+        super().__init__(context="eval", **kwargs)
+
+    def _build_axes(self) -> dict[str, AxisDeclaration]:
+        return dict(self._eval_axes)
+
+
+# ── Axis declarations ───────────────────────────────────────────────────────
+
+_DEPTH_ALIGNMENT_AXIS = AxisDeclaration(
+    position=0,
+    values=("raw", "aligned"),
+    optional=False,
+    description="Depth alignment mode",
+)
+
+_DEPTH_CATEGORY_AXIS = AxisDeclaration(
+    position=1,
+    values=("image_quality", "depth_metrics", "geometric_metrics"),
+    optional=True,
+    description="Metric category",
+)
+
+_BENCHMARK_BIN_AXIS = AxisDeclaration(
+    position=2,
+    values=("all", "near", "mid", "far"),
+    optional=True,
+    description="Depth benchmark bin",
+)
+
+_RGB_CATEGORY_AXIS = AxisDeclaration(
+    position=0,
+    values=(
+        "image_quality",
+        "edge_f1",
+        "tail_errors",
+        "high_frequency",
+        "depth_binned_photometric",
+    ),
+    optional=True,
+    description="Metric category",
+)
+
+_RGB_BENCHMARK_BIN_AXIS = AxisDeclaration(
+    position=1,
+    values=("all", "near", "mid", "far"),
+    optional=True,
+    description="Depth benchmark bin",
+)
+
+
+def _depth_eval_axes(*, benchmark: bool = False) -> dict[str, AxisDeclaration]:
+    axes = {"alignment": _DEPTH_ALIGNMENT_AXIS, "category": _DEPTH_CATEGORY_AXIS}
+    if benchmark:
+        axes["bin"] = _BENCHMARK_BIN_AXIS
+    return axes
+
+
+def _rgb_eval_axes(*, benchmark: bool = False) -> dict[str, AxisDeclaration]:
+    axes = {"category": _RGB_CATEGORY_AXIS}
+    if benchmark:
+        axes["bin"] = _RGB_BENCHMARK_BIN_AXIS
+    return axes
+
+
+_RAYS_EVAL_AXES: dict[str, AxisDeclaration] = {}
+
+# ── Metric descriptions ─────────────────────────────────────────────────────
+# Keys are *base metric names* (after stripping namespace + axes).
+# The same description applies across all axis combinations.
 
 _DEPTH_EVAL_DESCRIPTIONS = {
-    "psnr": {"isHigherBetter": True, "unit": "dB", "displayName": "PSNR"},
-    "ssim": {
-        "isHigherBetter": True,
-        "min": 0.0,
-        "max": 1.0,
-        "displayName": "SSIM",
-    },
-    "lpips": {"isHigherBetter": False, "displayName": "LPIPS"},
-    "fid": {"isHigherBetter": False, "displayName": "FID"},
-    "kid_mean": {"isHigherBetter": False, "displayName": "KID Mean"},
-    "absrel.median": {"isHigherBetter": False, "displayName": "AbsRel (Median)"},
-    "absrel.p90": {"isHigherBetter": False, "displayName": "AbsRel (P90)"},
-    "rmse.median": {
-        "isHigherBetter": False,
-        "unit": "meters",
-        "displayName": "RMSE (Median)",
-    },
-    "rmse.p90": {
-        "isHigherBetter": False,
-        "unit": "meters",
-        "displayName": "RMSE (P90)",
-    },
-    "silog.mean": {
-        "isHigherBetter": False,
-        "scale": "log",
-        "displayName": "SILog (Mean)",
-    },
-    "silog.median": {
-        "isHigherBetter": False,
-        "scale": "log",
-        "displayName": "SILog (Median)",
-    },
-    "silog.p90": {
-        "isHigherBetter": False,
-        "scale": "log",
-        "displayName": "SILog (P90)",
-    },
-    "normal_consistency.mean_angle": {
-        "isHigherBetter": False,
-        "unit": "degrees",
-        "displayName": "Normal Mean Angle",
-    },
-    "normal_consistency.median_angle": {
-        "isHigherBetter": False,
-        "unit": "degrees",
-        "displayName": "Normal Median Angle",
-    },
-    "normal_consistency.percent_below_11_25": {
-        "isHigherBetter": True,
-        "scale": "percentage",
-        "min": 0.0,
-        "max": 100.0,
-        "displayName": "Normal < 11.25°",
-    },
-    "normal_consistency.percent_below_22_5": {
-        "isHigherBetter": True,
-        "scale": "percentage",
-        "min": 0.0,
-        "max": 100.0,
-        "displayName": "Normal < 22.5°",
-    },
-    "normal_consistency.percent_below_30": {
-        "isHigherBetter": True,
-        "scale": "percentage",
-        "min": 0.0,
-        "max": 100.0,
-        "displayName": "Normal < 30°",
-    },
-    "depth_edge_f1.precision": {
-        "isHigherBetter": True,
-        "min": 0.0,
-        "max": 1.0,
-        "displayName": "Edge Precision",
-    },
-    "depth_edge_f1.recall": {
-        "isHigherBetter": True,
-        "min": 0.0,
-        "max": 1.0,
-        "displayName": "Edge Recall",
-    },
-    "depth_edge_f1.f1": {
-        "isHigherBetter": True,
-        "min": 0.0,
-        "max": 1.0,
-        "displayName": "Edge F1",
-    },
-}
-
-_RGB_EVAL_AXES = {
-    "category": {
-        "position": 0,
-        "optional": True,
-        "values": [
-            "image_quality",
-            "edge_f1",
-            "tail_errors",
-            "high_frequency",
-            "depth_binned_photometric",
-        ],
-        "description": "Metric category",
-    },
+    "psnr": MetricDescription(is_higher_better=True, unit="dB", display_name="PSNR"),
+    "ssim": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="SSIM"
+    ),
+    "lpips": MetricDescription(is_higher_better=False, display_name="LPIPS"),
+    "fid": MetricDescription(is_higher_better=False, display_name="FID"),
+    "kid_mean": MetricDescription(is_higher_better=False, display_name="KID Mean"),
+    "absrel.median": MetricDescription(
+        is_higher_better=False, display_name="AbsRel (Median)"
+    ),
+    "absrel.p90": MetricDescription(
+        is_higher_better=False, display_name="AbsRel (P90)"
+    ),
+    "rmse.median": MetricDescription(
+        is_higher_better=False, unit="meters", display_name="RMSE (Median)"
+    ),
+    "rmse.p90": MetricDescription(
+        is_higher_better=False, unit="meters", display_name="RMSE (P90)"
+    ),
+    "silog.mean": MetricDescription(
+        is_higher_better=False, scale="log", display_name="SILog (Mean)"
+    ),
+    "silog.median": MetricDescription(
+        is_higher_better=False, scale="log", display_name="SILog (Median)"
+    ),
+    "silog.p90": MetricDescription(
+        is_higher_better=False, scale="log", display_name="SILog (P90)"
+    ),
+    "normal_consistency.mean_angle": MetricDescription(
+        is_higher_better=False, unit="degrees", display_name="Normal Mean Angle"
+    ),
+    "normal_consistency.median_angle": MetricDescription(
+        is_higher_better=False, unit="degrees", display_name="Normal Median Angle"
+    ),
+    "normal_consistency.percent_below_11_25": MetricDescription(
+        is_higher_better=True,
+        scale="percentage",
+        min_value=0.0,
+        max_value=100.0,
+        display_name="Normal < 11.25°",
+    ),
+    "normal_consistency.percent_below_22_5": MetricDescription(
+        is_higher_better=True,
+        scale="percentage",
+        min_value=0.0,
+        max_value=100.0,
+        display_name="Normal < 22.5°",
+    ),
+    "normal_consistency.percent_below_30": MetricDescription(
+        is_higher_better=True,
+        scale="percentage",
+        min_value=0.0,
+        max_value=100.0,
+        display_name="Normal < 30°",
+    ),
+    "depth_edge_f1.precision": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="Edge Precision"
+    ),
+    "depth_edge_f1.recall": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="Edge Recall"
+    ),
+    "depth_edge_f1.f1": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="Edge F1"
+    ),
 }
 
 _RGB_EVAL_DESCRIPTIONS = {
-    "psnr": {"isHigherBetter": True, "unit": "dB", "displayName": "PSNR"},
-    "ssim": {
-        "isHigherBetter": True,
-        "min": 0.0,
-        "max": 1.0,
-        "displayName": "SSIM",
-    },
-    "sce": {"isHigherBetter": False, "displayName": "SCE"},
-    "lpips": {"isHigherBetter": False, "displayName": "LPIPS"},
-    "fid": {"isHigherBetter": False, "displayName": "FID"},
-    "precision": {
-        "isHigherBetter": True,
-        "min": 0.0,
-        "max": 1.0,
-        "displayName": "Edge Precision",
-    },
-    "recall": {
-        "isHigherBetter": True,
-        "min": 0.0,
-        "max": 1.0,
-        "displayName": "Edge Recall",
-    },
-    "f1": {
-        "isHigherBetter": True,
-        "min": 0.0,
-        "max": 1.0,
-        "displayName": "Edge F1",
-    },
-    "p95": {"isHigherBetter": False, "displayName": "Tail Error P95"},
-    "p99": {"isHigherBetter": False, "displayName": "Tail Error P99"},
-    "relative_diff": {"isHigherBetter": True, "displayName": "HF Relative Diff"},
+    "psnr": MetricDescription(is_higher_better=True, unit="dB", display_name="PSNR"),
+    "ssim": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="SSIM"
+    ),
+    "sce": MetricDescription(is_higher_better=False, display_name="SCE"),
+    "lpips": MetricDescription(is_higher_better=False, display_name="LPIPS"),
+    "fid": MetricDescription(is_higher_better=False, display_name="FID"),
+    "precision": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="Edge Precision"
+    ),
+    "recall": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="Edge Recall"
+    ),
+    "f1": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="Edge F1"
+    ),
+    "p95": MetricDescription(is_higher_better=False, display_name="Tail Error P95"),
+    "p99": MetricDescription(is_higher_better=False, display_name="Tail Error P99"),
+    "relative_diff": MetricDescription(
+        is_higher_better=True, display_name="HF Relative Diff"
+    ),
+    "mae": MetricDescription(is_higher_better=False, display_name="MAE"),
+    "mse": MetricDescription(is_higher_better=False, display_name="MSE"),
 }
 
-_RAYS_EVAL_AXES = {}
-
 _RAYS_EVAL_DESCRIPTIONS = {
-    "rho_a.mean": {
-        "isHigherBetter": True,
-        "min": 0.0,
-        "max": 1.0,
-        "displayName": "ρ_A (Mean)",
-    },
-    "rho_a.median": {
-        "isHigherBetter": True,
-        "min": 0.0,
-        "max": 1.0,
-        "displayName": "ρ_A (Median)",
-    },
-    "angular_error.mean_angle": {
-        "isHigherBetter": False,
-        "unit": "degrees",
-        "displayName": "Mean Angular Error",
-    },
-    "angular_error.median_angle": {
-        "isHigherBetter": False,
-        "unit": "degrees",
-        "displayName": "Median Angular Error",
-    },
-    "angular_error.percent_below_5": {
-        "isHigherBetter": True,
-        "scale": "percentage",
-        "min": 0.0,
-        "max": 100.0,
-        "displayName": "< 5°",
-    },
-    "angular_error.percent_below_10": {
-        "isHigherBetter": True,
-        "scale": "percentage",
-        "min": 0.0,
-        "max": 100.0,
-        "displayName": "< 10°",
-    },
-    "angular_error.percent_below_15": {
-        "isHigherBetter": True,
-        "scale": "percentage",
-        "min": 0.0,
-        "max": 100.0,
-        "displayName": "< 15°",
-    },
-    "angular_error.percent_below_20": {
-        "isHigherBetter": True,
-        "scale": "percentage",
-        "min": 0.0,
-        "max": 100.0,
-        "displayName": "< 20°",
-    },
-    "angular_error.percent_below_30": {
-        "isHigherBetter": True,
-        "scale": "percentage",
-        "min": 0.0,
-        "max": 100.0,
-        "displayName": "< 30°",
-    },
+    "rho_a.mean": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="ρ_A (Mean)"
+    ),
+    "rho_a.median": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="ρ_A (Median)"
+    ),
+    "angular_error.mean_angle": MetricDescription(
+        is_higher_better=False, unit="degrees", display_name="Mean Angular Error"
+    ),
+    "angular_error.median_angle": MetricDescription(
+        is_higher_better=False, unit="degrees", display_name="Median Angular Error"
+    ),
+    "angular_error.percent_below_5": MetricDescription(
+        is_higher_better=True,
+        scale="percentage",
+        min_value=0.0,
+        max_value=100.0,
+        display_name="< 5°",
+    ),
+    "angular_error.percent_below_10": MetricDescription(
+        is_higher_better=True,
+        scale="percentage",
+        min_value=0.0,
+        max_value=100.0,
+        display_name="< 10°",
+    ),
+    "angular_error.percent_below_15": MetricDescription(
+        is_higher_better=True,
+        scale="percentage",
+        min_value=0.0,
+        max_value=100.0,
+        display_name="< 15°",
+    ),
+    "angular_error.percent_below_20": MetricDescription(
+        is_higher_better=True,
+        scale="percentage",
+        min_value=0.0,
+        max_value=100.0,
+        display_name="< 20°",
+    ),
+    "angular_error.percent_below_30": MetricDescription(
+        is_higher_better=True,
+        scale="percentage",
+        min_value=0.0,
+        max_value=100.0,
+        display_name="< 30°",
+    ),
 }
 
 
@@ -639,6 +649,18 @@ def main():
         choices=["builtin", "clean-fid"],
         help="Backend for RGB FID computation: builtin (default) or clean-fid",
     )
+    parser.add_argument(
+        "--benchmark-depth-range",
+        type=float,
+        nargs=2,
+        metavar=("MIN", "MAX"),
+        default=None,
+        help=(
+            "Depth range [min, max] in meters for benchmark evaluation. "
+            "Computes depth and RGB metrics only for pixels within this range, "
+            "subdivided into log-scaled near/mid/far bins (additive to regular metrics)."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -655,6 +677,9 @@ def main():
     print_device_info(requested_device, args.device)
     print(f"Depth alignment: {args.depth_alignment}")
     print(f"RGB FID backend: {args.rgb_fid_backend}")
+    if args.benchmark_depth_range:
+        bdr = args.benchmark_depth_range
+        print(f"Benchmark depth range: [{bdr[0]}, {bdr[1]}] meters")
     print("-" * 60)
 
     # Check sky masking prerequisites
@@ -722,6 +747,7 @@ def main():
         rgb_save = {}
         rays_save = {}
         et_eval_datasets = {}
+        has_benchmark = args.benchmark_depth_range is not None
 
         # Register evaluation as running before work begins
         if et_run is not None:
@@ -764,6 +790,11 @@ def main():
                 sanity_checker=sanity_checker,
                 sky_mask_enabled=args.mask_sky,
                 alignment_mode=args.depth_alignment,
+                benchmark_depth_range=(
+                    tuple(args.benchmark_depth_range)
+                    if args.benchmark_depth_range
+                    else None
+                ),
             )
 
             if sanity_checker is not None:
@@ -777,19 +808,21 @@ def main():
             depth_dataset_info = depth_results.get("dataset_info", {})
 
             depth_spatial = depth_results.get("spatial_info", {})
+            depth_ns = _EvalNamespace(
+                producer="euler-eval",
+                producer_version=_get_version(),
+                modalities=("depth",),
+                axes=_depth_eval_axes(benchmark=has_benchmark),
+                descriptions=_DEPTH_EVAL_DESCRIPTIONS,
+            )
             depth_save = {
-                "metricSet": {
-                    "metricNamespace": "depth.eval",
-                    "producerKey": "euler-eval",
-                    "producerVersion": _get_version(),
-                    "sourceKind": "computed",
-                    "metadata": {
+                "metricSet": depth_ns.metric_set_envelope(
+                    "depth",
+                    metadata={
                         "alignment_mode": alignment_info.get("mode", "unknown"),
                         "alignment_applied": alignment_info.get("applied", False),
                     },
-                    "axes": _DEPTH_EVAL_AXES,
-                    "metricDescriptions": _DEPTH_EVAL_DESCRIPTIONS,
-                },
+                ),
                 "dataset_info": depth_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -817,6 +850,11 @@ def main():
                         "depth_alignment_mode": args.depth_alignment,
                         "batch_size": args.batch_size,
                         "num_workers": args.num_workers,
+                        "benchmark_depth_range": (
+                            list(args.benchmark_depth_range)
+                            if args.benchmark_depth_range
+                            else None
+                        ),
                     },
                 }),
                 "depth": {
@@ -828,8 +866,26 @@ def main():
                     },
                 },
             }
-            for depth_key in ("depth", "depth_raw", "depth_aligned"):
-                if depth_key in depth_results:
+
+            # Inject benchmark bin metrics under the existing category
+            # keys so that the bin axis decomposes correctly:
+            #   depth.eval.aligned.depth_metrics.{bin}.absrel.median
+            #   depth.eval.aligned.geometric_metrics.{bin}.normal_consistency.mean_angle
+            depth_benchmark = depth_results.get("depth_benchmark")
+            if depth_benchmark is not None:
+                aligned = depth_save["depth"]["eval"]["aligned"]
+                for bn in ("all", "near", "mid", "far"):
+                    bin_summary = depth_benchmark.get(bn, {})
+                    for category, metrics in bin_summary.items():
+                        cleaned = _clean_metric_tree(metrics)
+                        if cleaned:
+                            aligned.setdefault(category, {})[bn] = cleaned
+                depth_save["metricSet"]["metadata"]["benchmark"] = {
+                    "depth_range": depth_benchmark["boundaries"]["range"],
+                    "boundaries": depth_benchmark["boundaries"],
+                }
+            for depth_key in ("depth", "depth_raw", "depth_aligned", "depth_benchmark"):
+                if depth_key in depth_results and depth_results[depth_key] is not None:
                     all_results[depth_key] = depth_results[depth_key]
             depth_pfm = depth_results.get("per_file_metrics", {})
             if depth_pfm:
@@ -899,6 +955,11 @@ def main():
                 sanity_checker=sanity_checker,
                 sky_mask_enabled=args.mask_sky,
                 fid_backend=args.rgb_fid_backend,
+                benchmark_depth_range=(
+                    tuple(args.benchmark_depth_range)
+                    if args.benchmark_depth_range
+                    else None
+                ),
             )
 
             if sanity_checker is not None:
@@ -911,15 +972,15 @@ def main():
             rgb_dataset_info = rgb_results.get("dataset_info", {})
             rgb_spatial = rgb_results.get("spatial_info", {})
 
+            rgb_ns = _EvalNamespace(
+                producer="euler-eval",
+                producer_version=_get_version(),
+                modalities=("rgb",),
+                axes=_rgb_eval_axes(benchmark=has_benchmark),
+                descriptions=_RGB_EVAL_DESCRIPTIONS,
+            )
             rgb_save = {
-                "metricSet": {
-                    "metricNamespace": "rgb.eval",
-                    "producerKey": "euler-eval",
-                    "producerVersion": _get_version(),
-                    "sourceKind": "computed",
-                    "axes": _RGB_EVAL_AXES,
-                    "metricDescriptions": _RGB_EVAL_DESCRIPTIONS,
-                },
+                "metricSet": rgb_ns.metric_set_envelope("rgb"),
                 "dataset_info": rgb_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -947,6 +1008,11 @@ def main():
                         "fid_backend": args.rgb_fid_backend,
                         "batch_size": args.batch_size,
                         "num_workers": args.num_workers,
+                        "benchmark_depth_range": (
+                            list(args.benchmark_depth_range)
+                            if args.benchmark_depth_range
+                            else None
+                        ),
                     },
                 }),
             }
@@ -954,6 +1020,26 @@ def main():
             if rgb_metrics:
                 rgb_save["rgb"] = {"eval": _clean_metric_tree(rgb_metrics)}
                 all_results["rgb"] = rgb_metrics
+
+            # Inject benchmark RGB bin metrics directly under rgb.eval
+            # so that the bin axis decomposes correctly:
+            #   rgb.eval.{bin}.mae
+            #   rgb.eval.{bin}.mse
+            rgb_benchmark = rgb_results.get("rgb_benchmark")
+            if rgb_benchmark is not None:
+                eval_dict = rgb_save.setdefault("rgb", {}).setdefault("eval", {})
+                for bn in ("all", "near", "mid", "far"):
+                    bin_data = _clean_metric_tree({
+                        "mae": rgb_benchmark["mae"].get(bn),
+                        "mse": rgb_benchmark["mse"].get(bn),
+                    })
+                    if bin_data:
+                        eval_dict[bn] = bin_data
+                rgb_save["metricSet"]["metadata"]["benchmark"] = {
+                    "depth_range": rgb_benchmark["boundaries"]["range"],
+                    "boundaries": rgb_benchmark["boundaries"],
+                }
+                all_results["rgb_benchmark"] = rgb_benchmark
             rgb_pfm = rgb_results.get("per_file_metrics", {})
             if rgb_pfm:
                 rgb_save["per_file_metrics"] = _clean_metric_tree(
@@ -1008,19 +1094,21 @@ def main():
             rays_dataset_info = rays_results.get("dataset_info", {})
             rays_spatial = rays_results.get("spatial_info", {})
 
+            rays_ns = _EvalNamespace(
+                producer="euler-eval",
+                producer_version=_get_version(),
+                modalities=("rays",),
+                axes=_RAYS_EVAL_AXES,
+                descriptions=_RAYS_EVAL_DESCRIPTIONS,
+            )
             rays_save = {
-                "metricSet": {
-                    "metricNamespace": "rays.eval",
-                    "producerKey": "euler-eval",
-                    "producerVersion": _get_version(),
-                    "sourceKind": "computed",
-                    "metadata": {
+                "metricSet": rays_ns.metric_set_envelope(
+                    "rays",
+                    metadata={
                         "fov_domain": rays_dataset_info.get("fov_domain"),
                         "threshold_deg": rays_dataset_info.get("threshold_deg"),
                     },
-                    "axes": _RAYS_EVAL_AXES,
-                    "metricDescriptions": _RAYS_EVAL_DESCRIPTIONS,
-                },
+                ),
                 "dataset_info": rays_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
