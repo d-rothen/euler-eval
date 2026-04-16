@@ -1,15 +1,17 @@
 # euler-eval
 
-A comprehensive evaluation toolkit for comparing predicted depth maps and RGB images against ground truth, powered by [euler_loading](https://github.com/d-rothen/euler-loading) for flexible dataset loading.
+A comprehensive evaluation toolkit for comparing predicted depth maps, RGB images, and camera ray direction maps against ground truth, powered by [euler_loading](https://github.com/d-rothen/euler-loading) for flexible dataset loading.
 
 ## Features
 
 - **Depth metrics**: PSNR, SSIM, LPIPS, FID, KID, AbsRel, RMSE, Scale-Invariant Log Error, Normal Consistency, Depth Edge F1
 - **RGB metrics**: PSNR, SSIM, LPIPS, FID, SCE (Structural Chromatic Error), Edge F1, Tail Errors (p95/p99), High-Frequency Energy Ratio, Depth-Binned Photometric Error
+- **Rays metrics**: ρ_A (AUC of angular accuracy curve), Angular Error statistics and threshold percentages
+- **Benchmark binning**: Optional depth-range benchmark that subdivides metrics into log-scaled near/mid/far bins
 - **Sanity checking**: Automatic validation of metric results against configurable thresholds, with detailed warning reports
 - **Sky masking**: Optional exclusion of sky regions from metrics using GT segmentation
 - **Flexible dataset loading**: Automatic loader resolution via euler_loading and ds-crawler index metadata
-- **Per-file and aggregate results**: Outputs both per-image metrics and dataset-level aggregates to JSON
+- **Per-file and aggregate results**: Outputs both per-image metrics and dataset-level aggregates to JSON, saved per-modality
 - **euler_train integration**: Optional experiment logging via [euler_train](https://github.com/d-rothen/euler-train)
 
 ## Installation
@@ -95,11 +97,13 @@ This pre-downloads:
 | `--verbose`, `-v` | flag | off | Enable verbose output |
 | `--skip-depth` | flag | off | Skip depth evaluation |
 | `--skip-rgb` | flag | off | Skip RGB evaluation |
+| `--skip-rays` | flag | off | Skip rays (spherical direction map) evaluation |
 | `--mask-sky` | flag | off | Mask sky regions from metrics using GT segmentation |
 | `--no-sanity-check` | flag | off | Disable sanity checking of metric configurations |
 | `--metrics-config` | `str` | auto-detect | Path to `metrics_config.json` for sanity checking |
 | `--depth-alignment` | `{none,auto_affine,affine}` | `auto_affine` | Depth alignment mode (`depth` output uses aligned branch) |
 | `--rgb-fid-backend` | `{builtin,clean-fid}` | `builtin` | RGB FID backend; `clean-fid` requires optional dependency |
+| `--benchmark-depth-range` | `float float` | none | Depth range `[MIN, MAX]` in meters for benchmark evaluation; computes depth and RGB metrics for pixels within this range, subdivided into log-scaled near/mid/far bins (additive to regular metrics) |
 
 ### Examples
 
@@ -124,6 +128,12 @@ depth-eval config.json --depth-alignment affine
 
 # Use clean-fid for RGB FID computation
 depth-eval config.json --rgb-fid-backend clean-fid
+
+# Benchmark depth and RGB metrics within a depth range (near/mid/far bins)
+depth-eval config.json --benchmark-depth-range 0.5 80.0
+
+# Skip rays evaluation
+depth-eval config.json --skip-rays
 ```
 
 ## Configuration
@@ -140,6 +150,7 @@ Defines GT modalities, prediction datasets to evaluate, and optional euler_train
   "gt": {
     "rgb":          { "path": "/data/gt/rgb" },
     "depth":        { "path": "/data/gt/depth" },
+    "rays":         { "path": "/data/gt/rays" },
     "segmentation": { "path": "/data/gt/segmentation" },
     "calibration":  { "path": "/data/gt/calibration" }
   },
@@ -148,6 +159,7 @@ Defines GT modalities, prediction datasets to evaluate, and optional euler_train
       "name": "model_a",
       "rgb":   { "path": "/data/model_a/rgb" },
       "depth": { "path": "/data/model_a/depth" },
+      "rays":  { "path": "/data/model_a/rays" },
       "output_file": "/path/to/output/model_a_eval.json"
     },
     {
@@ -162,28 +174,34 @@ Defines GT modalities, prediction datasets to evaluate, and optional euler_train
 }
 ```
 
+Each modality entry can optionally include a `split` field to select a specific split from the dataset (e.g. `{ "path": "/data/gt/depth", "split": "test" }`).
+
 #### GT section
 
 | Field | Required | Description |
 |---|---|---|
-| `gt.rgb.path` | yes | Path to GT RGB dataset |
-| `gt.depth.path` | yes | Path to GT depth dataset |
+| `gt.rgb.path` | no\* | Path to GT RGB dataset |
+| `gt.depth.path` | no\* | Path to GT depth dataset |
+| `gt.rays.path` | no\* | Path to GT ray direction map dataset (for rays evaluation) |
 | `gt.segmentation.path` | no | Path to GT segmentation (needed for `--mask-sky`) |
 | `gt.calibration.path` | no | Path to calibration data (camera intrinsics matrices) |
 | `gt.name` | no | Display name for ground truth (default: `"GT"`) |
 
+\* At least one of `gt.rgb.path`, `gt.depth.path`, or `gt.rays.path` is required.
+
 #### Prediction datasets
 
-Each entry in `datasets` can include `rgb`, `depth`, or both:
+Each entry in `datasets` can include `rgb`, `depth`, `rays`, or any combination:
 
 | Field | Required | Description |
 |---|---|---|
 | `name` | yes | Display name for this prediction dataset |
 | `rgb.path` | no\* | Path to predicted RGB dataset |
 | `depth.path` | no\* | Path to predicted depth dataset |
+| `rays.path` | no\* | Path to predicted ray direction map dataset |
 | `output_file` | no | Custom output path for results JSON (default: `eval.json` inside the first available modality path) |
 
-\* At least one of `rgb.path` or `depth.path` is required.
+\* At least one of `rgb.path`, `depth.path`, or `rays.path` is required.
 
 #### `euler_train` section (optional)
 
@@ -259,9 +277,17 @@ Controls sanity check thresholds. See [metrics_config.json](metrics_config.json)
 | High-Frequency Energy | `rgb.high_frequency` | HF energy preservation ratio (pred vs GT) and relative difference |
 | Depth-Binned Photometric Error | `rgb.depth_binned_photometric` | MAE/MSE in near/mid/far depth bins (requires GT depth) |
 
+### Rays metrics
+
+| Metric | Key | Description |
+|---|---|---|
+| ρ_A | `rays.rho_a.mean`, `rho_a.median` | Area Under the angular accuracy Curve — fraction of pixels with angular error ≤ threshold, integrated from 0 to a FoV-dependent threshold (S.FoV: 15°, L.FoV: 20°, Pano: 30°) |
+| Angular Error | `rays.angular_error.mean_angle`, `median_angle` | Per-pixel angular error between predicted and GT camera ray directions (degrees) |
+| Angular Error Thresholds | `rays.angular_error.percent_below_*` | Percentage of pixels with angular error below 5°, 10°, 15°, 20°, 30° |
+
 ## Output
 
-Results are saved as JSON per prediction dataset. Default path: `eval.json` inside the first available modality path of the dataset, unless overridden by `output_file` in the config.
+Results are saved as JSON per modality per prediction dataset (one file for depth, one for RGB, one for rays). Default path: `eval.json` inside each modality's dataset path, unless overridden by `output_file` in the config.
 
 For RGB FID, two backends are available:
 - `builtin`: in-process Inception-based implementation in this repository.
