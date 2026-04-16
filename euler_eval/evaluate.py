@@ -69,6 +69,8 @@ from .metrics import (
     # Benchmark utilities
     get_benchmark_depth_bins,
     _BENCHMARK_BIN_NAMES,
+    # GPU-batched image metrics
+    GPUImageMetricsBatcher,
 )
 
 SKY_MASK_ALIGNMENT_MAX_GT_PERCENTILE = 95.0
@@ -1200,6 +1202,13 @@ def evaluate_rgb_samples(
             if lpips_metric is not None
             else None
         )
+        rgb_image_batcher = (
+            GPUImageMetricsBatcher(
+                device=device, batch_size=batch_size, modality="rgb"
+            )
+            if GPUImageMetricsBatcher.is_available(device)
+            else None
+        )
 
         try:
             print("Computing per-image RGB metrics...")
@@ -1258,12 +1267,17 @@ def evaluate_rgb_samples(
                     _write_png_image(str(fid_gt_dir), i, gt_masked)
                     _write_png_image(str(fid_pred_dir), i, pred_masked)
 
-                psnr_val = _safe_compute(
-                    "psnr", entry_id, compute_rgb_psnr, pred_masked, gt_masked
-                )
-                ssim_val = _safe_compute(
-                    "ssim", entry_id, compute_rgb_ssim, pred_masked, gt_masked
-                )
+                if rgb_image_batcher is not None:
+                    # Values patched later via enqueue callback (batched on GPU).
+                    psnr_val = float("nan")
+                    ssim_val = float("nan")
+                else:
+                    psnr_val = _safe_compute(
+                        "psnr", entry_id, compute_rgb_psnr, pred_masked, gt_masked
+                    )
+                    ssim_val = _safe_compute(
+                        "ssim", entry_id, compute_rgb_ssim, pred_masked, gt_masked
+                    )
                 sce_val = _safe_compute(
                     "sce", entry_id, compute_sce, pred_masked, gt_masked
                 )
@@ -1424,11 +1438,40 @@ def evaluate_rgb_samples(
 
                     rgb_lpips_batcher.enqueue(pred_masked, gt_masked, _rgb_lpips_cb)
 
+                # -- Enqueue batched PSNR/SSIM on GPU; callback patches placeholders --
+                if rgb_image_batcher is not None:
+                    rgb_pssim_slot = len(psnr_values) - 1
+
+                    def _rgb_pssim_cb(
+                        p,
+                        s,
+                        _slot=rgb_pssim_slot,
+                        _per_file=rgb_metrics,
+                        _entry_id=entry_id,
+                    ):
+                        pv = float(p) if np.isfinite(p) else float("nan")
+                        sv = float(s) if np.isfinite(s) else float("nan")
+                        psnr_values[_slot] = pv
+                        ssim_values[_slot] = sv
+                        iq = _per_file["image_quality"]
+                        iq["psnr"] = pv if np.isfinite(pv) else None
+                        iq["ssim"] = sv if np.isfinite(sv) else None
+                        if sanity_checker is not None:
+                            if np.isfinite(pv):
+                                sanity_checker.validate_rgb_psnr(pv, _entry_id)
+                            if np.isfinite(sv):
+                                sanity_checker.validate_rgb_ssim(sv, _entry_id)
+
+                    rgb_image_batcher.enqueue(
+                        pred_masked, gt_masked, _rgb_pssim_cb
+                    )
+
                 if sanity_checker is not None:
-                    if psnr_val is not None and np.isfinite(psnr_val):
-                        sanity_checker.validate_rgb_psnr(psnr_val, entry_id)
-                    if ssim_val is not None and np.isfinite(ssim_val):
-                        sanity_checker.validate_rgb_ssim(ssim_val, entry_id)
+                    if rgb_image_batcher is None:
+                        if psnr_val is not None and np.isfinite(psnr_val):
+                            sanity_checker.validate_rgb_psnr(psnr_val, entry_id)
+                        if ssim_val is not None and np.isfinite(ssim_val):
+                            sanity_checker.validate_rgb_ssim(ssim_val, entry_id)
                     if tail_p99 is not None and np.isfinite(tail_p99):
                         sanity_checker.validate_tail_errors(tail_p99, entry_id)
                     if high_freq is not None and np.isfinite(
@@ -1443,6 +1486,10 @@ def evaluate_rgb_samples(
             if rgb_lpips_batcher is not None:
                 print("Computing batched RGB LPIPS (tail flush)...")
                 rgb_lpips_batcher.finalize()
+
+            if rgb_image_batcher is not None:
+                print("Computing batched RGB PSNR/SSIM (tail flush)...")
+                rgb_image_batcher.finalize()
 
             print(f"Computing RGB FID using backend: {fid_backend}...")
             if fid_backend == "builtin":

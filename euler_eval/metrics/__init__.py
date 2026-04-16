@@ -19,6 +19,9 @@ Rays metrics:
 - ρ_A: AUC of angular accuracy curve between predicted and GT ray directions
 """
 
+# GPU-batched image metrics
+from .gpu_image_batch import GPUImageMetricsBatcher
+
 # Depth metrics
 from .psnr import compute_psnr
 from .ssim import compute_ssim
@@ -160,4 +163,6 @@ __all__ = [
     "get_benchmark_depth_bins",
     "format_benchmark_key",
     "_BENCHMARK_BIN_NAMES",
+    # GPU-batched image metrics
+    "GPUImageMetricsBatcher",
 ]
