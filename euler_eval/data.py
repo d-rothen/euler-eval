@@ -5,11 +5,12 @@ and convert loaded tensors to the numpy formats expected by depth-eval
 metrics.
 """
 
+from collections.abc import Mapping
 from typing import Any, Callable, Optional
 
 import numpy as np
 import torch
-from ds_crawler import index_dataset_from_path
+from ds_crawler import get_dataset_contract, index_dataset_from_path
 from euler_loading import Modality, MultiModalDataset, resolve_loader_module
 
 from .metrics.utils import convert_planar_to_radial
@@ -383,7 +384,17 @@ def _resolve_sky_mask_loader(segmentation_path: str) -> Callable[..., Any]:
     converted to a boolean sky mask at load time.
     """
     index = index_dataset_from_path(segmentation_path)
-    euler_meta = index.get("euler_loading", {})
+    # Resolve euler_loading metadata the same way euler-loading does:
+    # try the contract addon API first (handles addons.euler_loading),
+    # then fall back to top-level euler_loading for legacy indices.
+    euler_meta = None
+    try:
+        contract = get_dataset_contract(dict(index))
+        euler_meta = contract.get_addon("euler_loading")
+    except Exception:
+        pass
+    if not isinstance(euler_meta, Mapping):
+        euler_meta = index.get("euler_loading", {})
     loader_name = euler_meta.get("loader")
     if loader_name is None:
         raise ValueError(
