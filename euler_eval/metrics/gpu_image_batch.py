@@ -23,8 +23,8 @@ import numpy as np
 import torch
 
 try:
-    from torchmetrics.functional import peak_signal_noise_ratio as _tm_psnr
     from torchmetrics.functional.image import (
+        peak_signal_noise_ratio as _tm_psnr,
         structural_similarity_index_measure as _tm_ssim,
     )
 
