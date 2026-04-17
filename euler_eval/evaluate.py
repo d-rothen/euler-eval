@@ -322,6 +322,13 @@ def _ensure_file_system_sharing() -> None:
     runs accumulate FDs and eventually trip ``EMFILE`` ("Too many open
     files") mid-iteration. ``file_system`` uses ``/dev/shm`` file-backed
     storage instead, sidestepping the FD cap. Idempotent.
+
+    Caveat: activation is lazy — the strategy only flips the first time
+    a worker-spawning prefetch call runs. Any ``DataLoader`` / torch IPC
+    that fires *before* :func:`_prefetched_iter` reaches its workers
+    branch keeps the default strategy. In the current CLI flow, the
+    depth/RGB prefetch loop starts before any internal DataLoader (FID,
+    etc.), so those inherit the safe strategy by the time they run.
     """
     global _sharing_strategy_set
     if _sharing_strategy_set:
