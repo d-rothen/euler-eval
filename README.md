@@ -257,6 +257,7 @@ Controls sanity check thresholds. See [metrics_config.json](metrics_config.json)
 | LPIPS | `depth.image_quality.lpips` | Learned Perceptual Image Patch Similarity |
 | FID | `depth.image_quality.fid` | Fréchet Inception Distance (dataset-level distribution metric) |
 | KID | `depth.image_quality.kid_mean`, `kid_std` | Kernel Inception Distance (mean and std) |
+| Standard depth metrics | `depth.standard.{image_mean,image_median,pixel_pool}.*` | Monocular-depth metrics with explicit reducers: `absrel`, `sqrel`, `mae`, `rmse`, `rmse_log`, `log10`, `silog`, `delta1`, `delta2`, `delta3` |
 | AbsRel | `depth.depth_metrics.absrel` | Absolute Relative Error (\|pred-gt\|/gt), reported as median and p90 |
 | RMSE | `depth.depth_metrics.rmse` | Root Mean Square Error, reported as median and p90 |
 | SILog | `depth.depth_metrics.silog` | Scale-Invariant Log Error, reported as mean, median, and p90 |
@@ -338,6 +339,8 @@ For depth outputs:
 - `depth_raw`: metric-space depth without any post-hoc alignment.
 - `depth_aligned`: metric-space depth after configured alignment mode.
 - `depth`: backward-compatible alias of `depth_aligned`.
+- `standard`: explicit monocular-depth metrics with three reducers:
+  `image_mean`, `image_median`, and `pixel_pool`.
 
 Previous single-depth structure (kept under `depth`) is:
 
@@ -351,6 +354,44 @@ Previous single-depth structure (kept under `depth`) is:
       "fid": 12.3,
       "kid_mean": 0.005,
       "kid_std": 0.002
+    },
+    "standard": {
+      "image_mean": {
+        "absrel": 0.08,
+        "sqrel": 0.04,
+        "mae": 0.62,
+        "rmse": 1.20,
+        "rmse_log": 0.11,
+        "log10": 0.04,
+        "silog": 0.08,
+        "delta1": 0.91,
+        "delta2": 0.97,
+        "delta3": 0.99
+      },
+      "image_median": {
+        "absrel": 0.07,
+        "sqrel": 0.03,
+        "mae": 0.58,
+        "rmse": 1.10,
+        "rmse_log": 0.10,
+        "log10": 0.04,
+        "silog": 0.07,
+        "delta1": 0.92,
+        "delta2": 0.98,
+        "delta3": 0.99
+      },
+      "pixel_pool": {
+        "absrel": 0.08,
+        "sqrel": 0.04,
+        "mae": 0.61,
+        "rmse": 1.18,
+        "rmse_log": 0.11,
+        "log10": 0.04,
+        "silog": 0.08,
+        "delta1": 0.91,
+        "delta2": 0.97,
+        "delta3": 0.99
+      }
     },
     "depth_metrics": {
       "absrel": { "median": 0.05, "p90": 0.12 },

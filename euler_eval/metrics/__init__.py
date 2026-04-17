@@ -42,6 +42,13 @@ from .normal_consistency import (
     aggregate_normal_consistency,
 )
 from .depth_edge_f1 import compute_depth_edge_f1, aggregate_edge_f1
+from .depth_standard import (
+    STANDARD_DEPTH_METRIC_KEYS,
+    compute_standard_depth_metrics,
+    init_standard_depth_store,
+    append_standard_depth_metrics,
+    summarize_standard_depth_store,
+)
 
 # RGB metrics
 from .rgb_psnr_ssim import compute_rgb_psnr, compute_rgb_ssim, compute_rgb_psnr_masked
@@ -120,6 +127,11 @@ __all__ = [
     "aggregate_normal_consistency",
     "compute_depth_edge_f1",
     "aggregate_edge_f1",
+    "STANDARD_DEPTH_METRIC_KEYS",
+    "compute_standard_depth_metrics",
+    "init_standard_depth_store",
+    "append_standard_depth_metrics",
+    "summarize_standard_depth_store",
     # RGB image quality metrics
     "compute_rgb_psnr",
     "compute_rgb_ssim",

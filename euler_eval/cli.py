@@ -65,13 +65,20 @@ _DEPTH_ALIGNMENT_AXIS = AxisDeclaration(
 
 _DEPTH_CATEGORY_AXIS = AxisDeclaration(
     position=1,
-    values=("image_quality", "depth_metrics", "geometric_metrics"),
+    values=("image_quality", "standard", "depth_metrics", "geometric_metrics"),
     optional=True,
     description="Metric category",
 )
 
-_BENCHMARK_BIN_AXIS = AxisDeclaration(
+_DEPTH_REDUCTION_AXIS = AxisDeclaration(
     position=2,
+    values=("image_mean", "image_median", "pixel_pool"),
+    optional=True,
+    description="Dataset reduction mode",
+)
+
+_BENCHMARK_BIN_AXIS = AxisDeclaration(
+    position=3,
     values=("all", "near", "mid", "far"),
     optional=True,
     description="Depth benchmark bin",
@@ -99,7 +106,11 @@ _RGB_BENCHMARK_BIN_AXIS = AxisDeclaration(
 
 
 def _depth_eval_axes(*, benchmark: bool = False) -> dict[str, AxisDeclaration]:
-    axes = {"alignment": _DEPTH_ALIGNMENT_AXIS, "category": _DEPTH_CATEGORY_AXIS}
+    axes = {
+        "alignment": _DEPTH_ALIGNMENT_AXIS,
+        "category": _DEPTH_CATEGORY_AXIS,
+        "reduction": _DEPTH_REDUCTION_AXIS,
+    }
     if benchmark:
         axes["bin"] = _BENCHMARK_BIN_AXIS
     return axes
@@ -126,6 +137,46 @@ _DEPTH_EVAL_DESCRIPTIONS = {
     "lpips": MetricDescription(is_higher_better=False, display_name="LPIPS"),
     "fid": MetricDescription(is_higher_better=False, display_name="FID"),
     "kid_mean": MetricDescription(is_higher_better=False, display_name="KID Mean"),
+    "kid_std": MetricDescription(is_higher_better=False, display_name="KID Std"),
+    "absrel": MetricDescription(
+        is_higher_better=False, display_name="AbsRel"
+    ),
+    "sqrel": MetricDescription(
+        is_higher_better=False, display_name="SqRel"
+    ),
+    "mae": MetricDescription(
+        is_higher_better=False, unit="meters", display_name="MAE"
+    ),
+    "rmse": MetricDescription(
+        is_higher_better=False, unit="meters", display_name="RMSE"
+    ),
+    "rmse_log": MetricDescription(
+        is_higher_better=False, scale="log", display_name="RMSE Log"
+    ),
+    "log10": MetricDescription(
+        is_higher_better=False, scale="log", display_name="Log10 Error"
+    ),
+    "silog": MetricDescription(
+        is_higher_better=False, scale="log", display_name="SILog"
+    ),
+    "delta1": MetricDescription(
+        is_higher_better=True,
+        min_value=0.0,
+        max_value=1.0,
+        display_name="δ < 1.25",
+    ),
+    "delta2": MetricDescription(
+        is_higher_better=True,
+        min_value=0.0,
+        max_value=1.0,
+        display_name="δ < 1.25²",
+    ),
+    "delta3": MetricDescription(
+        is_higher_better=True,
+        min_value=0.0,
+        max_value=1.0,
+        display_name="δ < 1.25³",
+    ),
     "absrel.median": MetricDescription(
         is_higher_better=False, display_name="AbsRel (Median)"
     ),
@@ -869,6 +920,7 @@ def main():
 
             # Inject benchmark bin metrics under the existing category
             # keys so that the bin axis decomposes correctly:
+            #   depth.eval.aligned.standard.image_mean.{bin}.absrel
             #   depth.eval.aligned.depth_metrics.{bin}.absrel.median
             #   depth.eval.aligned.geometric_metrics.{bin}.normal_consistency.mean_angle
             depth_benchmark = depth_results.get("depth_benchmark")
@@ -879,7 +931,12 @@ def main():
                     for category, metrics in bin_summary.items():
                         cleaned = _clean_metric_tree(metrics)
                         if cleaned:
-                            aligned.setdefault(category, {})[bn] = cleaned
+                            if category == "standard":
+                                bucket = aligned.setdefault(category, {})
+                                for reduction, reduction_metrics in cleaned.items():
+                                    bucket.setdefault(reduction, {})[bn] = reduction_metrics
+                            else:
+                                aligned.setdefault(category, {})[bn] = cleaned
                 depth_save["metricSet"]["metadata"]["benchmark"] = {
                     "depth_range": depth_benchmark["boundaries"]["range"],
                     "boundaries": depth_benchmark["boundaries"],

@@ -238,7 +238,10 @@ def test_depth_output_contains_raw_and_aligned(monkeypatch):
 
     raw_absrel = results["depth_raw"]["depth_metrics"]["absrel"]["median"]
     aligned_absrel = results["depth_aligned"]["depth_metrics"]["absrel"]["median"]
+    raw_standard_absrel = results["depth_raw"]["standard"]["image_mean"]["absrel"]
+    aligned_standard_absrel = results["depth_aligned"]["standard"]["image_mean"]["absrel"]
     assert aligned_absrel < raw_absrel
+    assert aligned_standard_absrel < raw_standard_absrel
     assert results["alignment"]["applied"] is True
 
     files = results["per_file_metrics"]["children"]["Scene01"]["children"]["clone"][
@@ -251,6 +254,10 @@ def test_depth_output_contains_raw_and_aligned(monkeypatch):
     assert (
         per_file["depth_aligned"]["depth_metrics"]["absrel"]
         < per_file["depth_raw"]["depth_metrics"]["absrel"]
+    )
+    assert (
+        per_file["depth_aligned"]["standard"]["absrel"]
+        < per_file["depth_raw"]["standard"]["absrel"]
     )
 
 
@@ -266,7 +273,10 @@ def test_depth_alignment_none_keeps_raw_and_aligned_equal(monkeypatch):
 
     raw = results["depth_raw"]["depth_metrics"]["absrel"]["median"]
     aligned = results["depth_aligned"]["depth_metrics"]["absrel"]["median"]
+    raw_standard = results["depth_raw"]["standard"]["pixel_pool"]["absrel"]
+    aligned_standard = results["depth_aligned"]["standard"]["pixel_pool"]["absrel"]
     assert raw == aligned
+    assert raw_standard == aligned_standard
     assert results["alignment"]["applied"] is False
 
 

@@ -47,6 +47,10 @@ from .metrics import (
     aggregate_normal_consistency,
     compute_depth_edge_f1,
     aggregate_edge_f1,
+    compute_standard_depth_metrics,
+    init_standard_depth_store,
+    append_standard_depth_metrics,
+    summarize_standard_depth_store,
     # RGB utilities and metrics
     compute_rgb_psnr,
     compute_rgb_ssim,
@@ -93,6 +97,7 @@ def _init_benchmark_bin_store(temp_dir: Path, prefix: str) -> dict:
         "normal_below_11_25": 0,
         "normal_below_22_5": 0,
         "normal_below_30": 0,
+        "standard_store": init_standard_depth_store(),
     }
 
 
@@ -132,6 +137,7 @@ def _build_benchmark_bin_summary(store: dict) -> dict:
         pct_30 = float("nan")
 
     return {
+        "standard": summarize_standard_depth_store(store["standard_store"]),
         "depth_metrics": {
             "absrel": {"median": absrel_median, "p90": absrel_p90},
             "rmse": {"median": rmse_median, "p90": rmse_p90},
@@ -493,7 +499,8 @@ def evaluate_depth_samples(
     Returns:
         Dictionary containing depth aggregate/per-file metrics with:
         ``depth_raw``, ``depth_aligned``, backward-compatible ``depth``,
-        and optionally ``depth_benchmark``.
+        explicit ``standard`` reducers within each depth branch, and
+        optionally ``depth_benchmark``.
     """
     valid_alignment_modes = {"none", "auto_affine", "affine"}
     if alignment_mode not in valid_alignment_modes:
@@ -525,6 +532,7 @@ def evaluate_depth_samples(
             "normal_below_11_25": 0,
             "normal_below_22_5": 0,
             "normal_below_30": 0,
+            "standard_store": init_standard_depth_store(),
         }
 
     def _compute_branch_metrics(
@@ -533,6 +541,9 @@ def evaluate_depth_samples(
         valid_mask: Optional[np.ndarray],
         defer_to_batcher: bool = False,
     ) -> dict:
+        standard_metrics, standard_pool_stats = compute_standard_depth_metrics(
+            depth_pred, depth_gt, valid_mask=valid_mask
+        )
         if defer_to_batcher:
             # Batched on GPU by depth_metrics_batcher; callback patches.
             psnr_val = float("nan")
@@ -583,6 +594,8 @@ def evaluate_depth_samples(
             "rmse_arr": rmse_arr,
             "silog_arr": silog_arr,
             "silog_full": silog_val,
+            "standard_metrics": standard_metrics,
+            "standard_pool_stats": standard_pool_stats,
             "normal_angles": normal_angles,
             "normal_meta": normal_meta,
             "edge_f1": edge_f1,
@@ -595,6 +608,11 @@ def evaluate_depth_samples(
         store["silog_full_values"].append(metrics["silog_full"])
         store["edge_f1_results"].append(metrics["edge_f1"])
         store["pred_depth_paths"].append(pred_depth_path)
+        append_standard_depth_metrics(
+            store["standard_store"],
+            metrics["standard_metrics"],
+            metrics["standard_pool_stats"],
+        )
         # When deferred to the GPU depth batcher, these per-pixel arrays are
         # appended from the enqueue callback instead (order-invariant for
         # quantile aggregation).
@@ -664,6 +682,7 @@ def evaluate_depth_samples(
                 "kid_mean": kid_mean,
                 "kid_std": kid_std,
             },
+            "standard": summarize_standard_depth_store(store["standard_store"]),
             "depth_metrics": {
                 "absrel": {"median": absrel_median, "p90": absrel_p90},
                 "rmse": {"median": rmse_median, "p90": rmse_p90},
@@ -706,6 +725,10 @@ def evaluate_depth_samples(
                 "lpips": float(metrics["lpips_val"])
                 if np.isfinite(metrics["lpips_val"])
                 else None,
+            },
+            "standard": {
+                key: float(value) if np.isfinite(value) else None
+                for key, value in metrics["standard_metrics"].items()
             },
             "depth_metrics": {
                 # absrel/rmse start None when the depth batcher is deferred; the
@@ -1136,6 +1159,9 @@ def evaluate_depth_samples(
                         bm_silog_val = compute_scale_invariant_log_error(
                             depth_pred_aligned, depth_gt, valid_mask=bin_mask
                         )
+                        bm_standard, bm_standard_pool = compute_standard_depth_metrics(
+                            depth_pred_aligned, depth_gt, valid_mask=bin_mask
+                        )
                         bm_normals = compute_normal_angles(
                             depth_pred_aligned, depth_gt, valid_mask=bin_mask
                         )
@@ -1144,6 +1170,11 @@ def evaluate_depth_samples(
                         bm_store["rmse_store"].append(np.sqrt(bm_rmse))
                         bm_store["silog_store"].append(bm_silog_arr)
                         bm_store["silog_full_values"].append(bm_silog_val)
+                        append_standard_depth_metrics(
+                            bm_store["standard_store"],
+                            bm_standard,
+                            bm_standard_pool,
+                        )
                         bm_store["normal_store"].append(bm_normals)
                         if len(bm_normals) > 0:
                             bm_store["normal_below_11_25"] += int(

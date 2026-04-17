@@ -126,9 +126,10 @@ class TestAxisDeclarations:
     """Verify axis declarations follow the metric-namespacing convention."""
 
     def test_depth_axes_structure(self):
-        """depth.eval declares alignment (required) and category (optional)."""
+        """depth.eval declares alignment, category, and reduction axes."""
         assert "alignment" in _DEPTH_EVAL_AXES
         assert "category" in _DEPTH_EVAL_AXES
+        assert "reduction" in _DEPTH_EVAL_AXES
 
         alignment = _DEPTH_EVAL_AXES["alignment"]
         assert alignment.position == 0
@@ -141,8 +142,18 @@ class TestAxisDeclarations:
         assert category.optional is True
         assert set(category.values) == {
             "image_quality",
+            "standard",
             "depth_metrics",
             "geometric_metrics",
+        }
+
+        reduction = _DEPTH_EVAL_AXES["reduction"]
+        assert reduction.position == 2
+        assert reduction.optional is True
+        assert set(reduction.values) == {
+            "image_mean",
+            "image_median",
+            "pixel_pool",
         }
 
     def test_rgb_axes_structure(self):
@@ -186,7 +197,7 @@ class TestAxisDeclarations:
         axes = _depth_eval_axes(benchmark=True)
         assert "bin" in axes
         bin_axis = axes["bin"]
-        assert bin_axis.position == 2
+        assert bin_axis.position == 3
         assert bin_axis.optional is True
         assert set(bin_axis.values) == {"all", "near", "mid", "far"}
 
@@ -224,7 +235,7 @@ class TestMetricDescriptions:
 
     def test_depth_key_metrics_have_direction(self):
         """Core depth metrics declare is_higher_better."""
-        for key in ("psnr", "ssim", "lpips", "absrel.median", "rmse.median"):
+        for key in ("psnr", "ssim", "lpips", "absrel", "rmse", "delta1"):
             assert _DEPTH_EVAL_DESCRIPTIONS[key].is_higher_better is not None, (
                 f"depth description {key} missing is_higher_better"
             )
@@ -254,4 +265,5 @@ class TestMetricDescriptions:
         assert "axes" in envelope
         assert "metricDescriptions" in envelope
         assert envelope["axes"]["alignment"]["position"] == 0
+        assert envelope["axes"]["reduction"]["position"] == 2
         assert "psnr" in envelope["metricDescriptions"]
