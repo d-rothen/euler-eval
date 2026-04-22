@@ -136,23 +136,29 @@ def get_benchmark_depth_bins(
     range_min: float,
     range_max: float,
 ) -> dict:
-    """Compute near/mid/far depth bins within a benchmark range using log-scale splits.
+    """Compute near/mid/far depth bins within a benchmark range using square-root splits.
 
-    Divides [range_min, range_max] into three bins with equal width in log10 space.
+    Divides [range_min, range_max] into three bins with equal width in sqrt(z) space.
+    Square-root sits between linear (too uniform) and log (too skewed toward far):
+    it yields balanced bins across both indoor (1-10m) and outdoor (0.1-80m) scales,
+    leans a bit more range into "near" to match driving-style benchmarks, and stays
+    well-behaved as range_min approaches zero (unlike log).
 
-    For example, [1m, 80m] yields: near=[1, 4.31), mid=[4.31, 18.57), far=[18.57, 80].
+    For example:
+        [0.1, 80] -> near=[0.1, 10.19), mid=[10.19, 36.83), far=[36.83, 80].
+        [1, 80]   -> near=[1, 13.31),   mid=[13.31, 39.64), far=[39.64, 80].
 
     Args:
         depth: Depth map in meters.
-        range_min: Minimum depth of benchmark range (meters, must be > 0).
+        range_min: Minimum depth of benchmark range (meters, must be >= 0).
         range_max: Maximum depth of benchmark range (meters, must be > range_min).
 
     Returns:
         Dictionary with 'all', 'near', 'mid', 'far' boolean masks and
         'boundaries' dict with the computed bin edges.
     """
-    if range_min <= 0:
-        raise ValueError(f"range_min must be > 0, got {range_min}")
+    if range_min < 0:
+        raise ValueError(f"range_min must be >= 0, got {range_min}")
     if range_max <= range_min:
         raise ValueError(
             f"range_max must be > range_min, got [{range_min}, {range_max}]"
@@ -161,12 +167,13 @@ def get_benchmark_depth_bins(
     valid_mask = (depth > 0) & np.isfinite(depth)
     in_range = valid_mask & (depth >= range_min) & (depth <= range_max)
 
-    log_min = np.log10(range_min)
-    log_max = np.log10(range_max)
-    log_step = (log_max - log_min) / 3.0
+    # Equal-width splits in sqrt(z) space.
+    sqrt_min = np.sqrt(range_min)
+    sqrt_max = np.sqrt(range_max)
+    sqrt_step = (sqrt_max - sqrt_min) / 3.0
 
-    near_max = 10 ** (log_min + log_step)
-    mid_max = 10 ** (log_min + 2 * log_step)
+    near_max = (sqrt_min + sqrt_step) ** 2
+    mid_max = (sqrt_min + 2 * sqrt_step) ** 2
 
     near_mask = in_range & (depth < near_max)
     mid_mask = in_range & (depth >= near_max) & (depth < mid_max)

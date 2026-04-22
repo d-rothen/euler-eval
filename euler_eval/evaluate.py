@@ -553,7 +553,7 @@ def evaluate_depth_samples(
             ``auto_affine`` aligns only if predictions look normalized.
         benchmark_depth_range: Optional ``(min_meters, max_meters)`` tuple.
             When set, also computes depth metrics for pixels within this
-            range, subdivided into log-scaled near/mid/far bins.
+            range, subdivided into square-root-scaled near/mid/far bins.
 
     Returns:
         Dictionary containing depth aggregate/per-file metrics with:
@@ -931,7 +931,7 @@ def evaluate_depth_samples(
             bm_min, bm_max = benchmark_depth_range
             print(
                 f"Benchmark depth range: [{bm_min}, {bm_max}] meters "
-                f"(log-scaled near/mid/far bins)"
+                f"(square-root-scaled near/mid/far bins)"
             )
             benchmark_stores = {
                 "native": {
@@ -1500,7 +1500,7 @@ def evaluate_rgb_samples(
         fid_backend: RGB FID backend. One of ``"builtin"`` or ``"clean-fid"``.
         benchmark_depth_range: Optional ``(min_meters, max_meters)`` tuple.
             When set and depth is available, computes RGB photometric error
-            for pixels within this range, subdivided into log-scaled bins.
+            for pixels within this range, subdivided into square-root-scaled bins.
 
     Returns:
         Dictionary containing aggregate and per-file metrics, and

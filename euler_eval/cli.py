@@ -712,7 +712,7 @@ def main():
         help=(
             "Depth range [min, max] in meters for benchmark evaluation. "
             "Computes depth and RGB metrics only for pixels within this range, "
-            "subdivided into log-scaled near/mid/far bins (additive to regular metrics)."
+            "subdivided into square-root-scaled near/mid/far bins (additive to regular metrics)."
         ),
     )
 
