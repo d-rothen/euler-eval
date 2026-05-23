@@ -628,6 +628,7 @@ def validate_gt_config(gt: dict) -> None:
         "calibration",
         "intrinsics",
         "camera_extrinsics",
+        "lidar_extrinsics",
     ):
         if modality in gt and "path" in gt[modality]:
             p = normalize_modality_path(
@@ -1006,6 +1007,7 @@ def main():
     calibration_path = gt.get("calibration", {}).get("path")
     intrinsics_path = gt.get("intrinsics", {}).get("path")
     camera_extrinsics_path = gt.get("camera_extrinsics", {}).get("path")
+    lidar_extrinsics_path = gt.get("lidar_extrinsics", {}).get("path")
     segmentation_path = (
         gt.get("segmentation", {}).get("path") if args.mask_sky else None
     )
@@ -1016,6 +1018,7 @@ def main():
     calibration_split = gt.get("calibration", {}).get("split")
     intrinsics_split = gt.get("intrinsics", {}).get("split")
     camera_extrinsics_split = gt.get("camera_extrinsics", {}).get("split")
+    lidar_extrinsics_split = gt.get("lidar_extrinsics", {}).get("split")
     segmentation_split = (
         gt.get("segmentation", {}).get("split") if args.mask_sky else None
     )
@@ -1242,12 +1245,15 @@ def main():
                 print(f"  Pred depth entry:     {pred_depth_key}")
             print(f"  Intrinsics:           {intrinsics_path}")
             print(f"  Camera extrinsics:    {camera_extrinsics_path}")
+            if lidar_extrinsics_path:
+                print(f"  Lidar extrinsics:     {lidar_extrinsics_path}")
 
             sparse_depth_dataset = build_sparse_depth_eval_dataset(
                 gt_sparse_depth_path=gt_sparse_depth_path,
                 pred_depth_path=pred_depth_path,
                 intrinsics_path=intrinsics_path,
                 camera_extrinsics_path=camera_extrinsics_path,
+                lidar_extrinsics_path=lidar_extrinsics_path,
                 segmentation_path=segmentation_path,
                 pred_depth_metadata_scope=(
                     pred_depth_key if pred_depth_key != "depth" else None
@@ -1256,6 +1262,7 @@ def main():
                 pred_depth_split=pred_depth_split,
                 intrinsics_split=intrinsics_split,
                 camera_extrinsics_split=camera_extrinsics_split,
+                lidar_extrinsics_split=lidar_extrinsics_split,
                 segmentation_split=segmentation_split,
             )
             et_eval_datasets["sparse_depth"] = sparse_depth_dataset
@@ -1334,6 +1341,8 @@ def main():
                         "intrinsics_split": intrinsics_split,
                         "camera_extrinsics_path": camera_extrinsics_path,
                         "camera_extrinsics_split": camera_extrinsics_split,
+                        "lidar_extrinsics_path": lidar_extrinsics_path,
+                        "lidar_extrinsics_split": lidar_extrinsics_split,
                     },
                     "spatial_alignment": {
                         "method": sparse_depth_spatial.get(

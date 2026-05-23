@@ -203,7 +203,7 @@ Defines GT modalities, prediction datasets to evaluate, and optional euler_train
 
 Each modality entry can optionally include a `split` field to select a specific split from the dataset (e.g. `{ "path": "/data/gt/depth", "split": "test" }`). euler-loading inline selectors are also accepted in `path`, such as `/data/muses.zip:test` or `/data/muses.zip:test#scope=rgb`.
 
-For sparse pointcloud depth evaluation, use `gt.sparse_depth` instead of `gt.depth`. The prediction uses a dense depth-like map under `datasets[].depth`, `datasets[].relative_depth`, or `datasets[].affine_depth`. The evaluator projects the sparse GT point cloud into the prediction image plane using `gt.intrinsics` and `gt.camera_extrinsics`, then computes pointwise depth metrics only at projected valid pixels.
+For sparse pointcloud depth evaluation, use `gt.sparse_depth` instead of `gt.depth`. The prediction uses a dense depth-like map under `datasets[].depth`, `datasets[].relative_depth`, or `datasets[].affine_depth`. The evaluator projects the sparse GT point cloud into the prediction image plane using `gt.intrinsics` and `gt.camera_extrinsics`, then computes pointwise depth metrics only at projected valid pixels. For MUSES through `euler_loading.loaders.muses`, `gt.camera_extrinsics` normally resolves to the direct `lidar2rgb` transform and no extra lidar pose is needed. If a dataset exposes separate lidar and camera poses in a shared frame instead, provide optional `gt.lidar_extrinsics`; the evaluator composes `inv(camera_pose) @ lidar_pose` before projection.
 
 #### GT section
 
@@ -217,6 +217,7 @@ For sparse pointcloud depth evaluation, use `gt.sparse_depth` instead of `gt.dep
 | `gt.calibration.path` | no | Path to calibration data (camera intrinsics matrices) |
 | `gt.intrinsics.path` | required with `gt.sparse_depth` | Path to camera intrinsics matrices for pointcloud projection |
 | `gt.camera_extrinsics.path` | required with `gt.sparse_depth` | Path to source-to-camera extrinsics, e.g. MUSES `lidar2rgb`, for pointcloud projection |
+| `gt.lidar_extrinsics.path` | no | Optional lidar sensor pose in the same shared frame as `gt.camera_extrinsics`; when provided, `gt.camera_extrinsics` is interpreted as the camera pose and both are composed for projection |
 | `gt.name` | no | Display name for ground truth (default: `"GT"`) |
 
 \* At least one of `gt.rgb.path`, `gt.depth.path`, `gt.sparse_depth.path`, or `gt.rays.path` is required.

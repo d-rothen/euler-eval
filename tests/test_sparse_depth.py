@@ -3,6 +3,7 @@
 import numpy as np
 
 from euler_eval.data import (
+    compose_sensor_to_camera_extrinsics,
     project_point_cloud_to_depth_map,
     to_numpy_extrinsics,
     to_numpy_point_cloud,
@@ -27,6 +28,22 @@ def test_to_numpy_extrinsics_expands_3x4_matrix():
 
     assert result.shape == (4, 4)
     np.testing.assert_array_equal(result[3], np.array([0.0, 0.0, 0.0, 1.0]))
+
+
+def test_compose_sensor_to_camera_extrinsics_uses_lidar_and_camera_poses():
+    lidar_to_world = np.eye(4, dtype=np.float32)
+    lidar_to_world[0, 3] = 12.0
+    camera_to_world = np.eye(4, dtype=np.float32)
+    camera_to_world[0, 3] = 10.0
+
+    result = compose_sensor_to_camera_extrinsics(
+        lidar_to_world,
+        camera_to_world,
+    )
+
+    expected = np.eye(4, dtype=np.float32)
+    expected[0, 3] = 2.0
+    np.testing.assert_allclose(result, expected)
 
 
 def test_project_point_cloud_to_depth_map_uses_nearest_point_per_pixel():
@@ -115,6 +132,52 @@ class _AffineSparseDataset(_OneSampleSparseDataset):
         self.pred[1, 2] = np.sqrt(24.0) * 10.0 + 7.0
 
 
+class _SeparateSensorPoseSparseDataset(_OneSampleSparseDataset):
+    def __init__(self):
+        super().__init__()
+        self.point_cloud = np.array([[0.0, 1.0, 1.0, 0.0]], dtype=np.float32)
+        self.camera_extrinsics = np.eye(4, dtype=np.float32)
+        self.camera_extrinsics[0, 3] = 10.0
+        self.lidar_extrinsics = np.eye(4, dtype=np.float32)
+        self.lidar_extrinsics[0, 3] = 12.0
+        self.pred = np.zeros((3, 3), dtype=np.float32)
+        self.pred[1, 2] = np.sqrt(6.0)
+
+    def __getitem__(self, index):
+        if index != 0:
+            raise IndexError(index)
+        return {
+            "id": "000000",
+            "full_id": "/000000",
+            "gt": self.point_cloud,
+            "pred": self.pred,
+            "intrinsics": {"intrinsics": self.intrinsics},
+            "camera_extrinsics": {"camera_pose": self.camera_extrinsics},
+            "lidar_extrinsics": {"lidar_pose": self.lidar_extrinsics},
+        }
+
+
+class _SharedCalibrationSparseDataset(_SeparateSensorPoseSparseDataset):
+    def __getitem__(self, index):
+        if index != 0:
+            raise IndexError(index)
+        return {
+            "id": "000000",
+            "full_id": "/000000",
+            "gt": self.point_cloud,
+            "pred": self.pred,
+            "intrinsics": {"intrinsics": self.intrinsics},
+            "camera_extrinsics": {
+                "calib": {
+                    "extrinsics": {
+                        "lidar2ego": self.lidar_extrinsics,
+                        "rgb2ego": self.camera_extrinsics,
+                    }
+                }
+            },
+        }
+
+
 def test_sparse_depth_eval_reports_only_pointwise_depth_metrics():
     dataset = _OneSampleSparseDataset()
 
@@ -133,6 +196,47 @@ def test_sparse_depth_eval_reports_only_pointwise_depth_metrics():
     np.testing.assert_allclose(metrics["standard"]["pixel_pool"]["absrel"], 0.0)
     np.testing.assert_allclose(metrics["standard"]["pixel_pool"]["delta1"], 1.0)
     np.testing.assert_allclose(metrics["depth_metrics"]["rmse"]["median"], 0.0)
+
+
+def test_sparse_depth_eval_composes_separate_lidar_and_camera_poses():
+    result = evaluate_sparse_depth_samples(
+        _SeparateSensorPoseSparseDataset(),
+        pred_is_radial=True,
+        num_workers=0,
+        alignment_mode="none",
+    )
+
+    assert result["dataset_info"]["projected_pixels"] == 1
+    assert result["dataset_info"]["evaluated_pixels"] == 1
+    assert (
+        result["spatial_info"]["extrinsics_source"]
+        == "composed_lidar_and_camera_sensor_poses"
+    )
+    np.testing.assert_allclose(
+        result["sparse_depth_metric"]["depth_metrics"]["rmse"]["median"],
+        0.0,
+        atol=1e-6,
+    )
+
+
+def test_sparse_depth_eval_composes_sensor_poses_from_shared_calibration():
+    result = evaluate_sparse_depth_samples(
+        _SharedCalibrationSparseDataset(),
+        pred_is_radial=True,
+        num_workers=0,
+        alignment_mode="none",
+    )
+
+    assert result["dataset_info"]["projected_pixels"] == 1
+    assert (
+        result["spatial_info"]["extrinsics_source"]
+        == "composed_lidar_and_camera_sensor_poses"
+    )
+    np.testing.assert_allclose(
+        result["sparse_depth_metric"]["depth_metrics"]["rmse"]["median"],
+        0.0,
+        atol=1e-6,
+    )
 
 
 def test_sparse_depth_eval_auto_affine_aligns_relative_depth():

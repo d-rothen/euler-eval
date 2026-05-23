@@ -13,7 +13,7 @@ import torch
 from ds_crawler import get_dataset_contract, index_dataset_from_path
 from euler_loading import Modality, MultiModalDataset, resolve_loader_module
 
-from .config_paths import build_modality
+from .config_paths import build_modality, parse_modality_path
 from .metrics.utils import convert_planar_to_radial
 
 # ---------------------------------------------------------------------------
@@ -166,6 +166,26 @@ def to_numpy_extrinsics(data: Any) -> np.ndarray:
             f"Unsupported camera extrinsics shape {arr.shape}. Expected (4,4) or (3,4)."
         )
     return arr.astype(np.float32, copy=False)
+
+
+def compose_sensor_to_camera_extrinsics(
+    source_sensor_extrinsics: Any,
+    camera_extrinsics: Any,
+) -> np.ndarray:
+    """Compose per-sensor poses into a source-to-camera transform.
+
+    Both inputs are interpreted as sensor-to-common-frame transforms, e.g.
+    ``T_common_from_lidar`` and ``T_common_from_camera``.  The returned matrix
+    maps source sensor points directly into the camera frame:
+
+    ``T_camera_from_source = inv(T_common_from_camera) @ T_common_from_source``.
+    """
+    source_to_common = to_numpy_extrinsics(source_sensor_extrinsics).astype(
+        np.float64
+    )
+    camera_to_common = to_numpy_extrinsics(camera_extrinsics).astype(np.float64)
+    common_to_camera = np.linalg.inv(camera_to_common)
+    return (common_to_camera @ source_to_common).astype(np.float32)
 
 
 def to_numpy_point_cloud(data: Any) -> np.ndarray:
@@ -663,11 +683,13 @@ def build_sparse_depth_eval_dataset(
     pred_depth_path: str,
     intrinsics_path: str,
     camera_extrinsics_path: str,
+    lidar_extrinsics_path: Optional[str] = None,
     segmentation_path: Optional[str] = None,
     gt_sparse_depth_split: Optional[str] = None,
     pred_depth_split: Optional[str] = None,
     intrinsics_split: Optional[str] = None,
     camera_extrinsics_split: Optional[str] = None,
+    lidar_extrinsics_split: Optional[str] = None,
     segmentation_split: Optional[str] = None,
     pred_depth_metadata_scope: Optional[str] = None,
 ) -> MultiModalDataset:
@@ -676,6 +698,11 @@ def build_sparse_depth_eval_dataset(
     The returned dataset yields dense predicted depth under ``"pred"``,
     sparse GT point clouds under ``"gt"``, and hierarchical camera
     calibration under ``"intrinsics"`` and ``"camera_extrinsics"``.
+    When ``lidar_extrinsics_path`` is supplied, ``camera_extrinsics`` and
+    ``lidar_extrinsics`` are treated as per-sensor poses in a shared frame and
+    composed into the source-to-camera transform used for projection.  Without
+    ``lidar_extrinsics_path``, ``camera_extrinsics`` remains the direct
+    source-to-camera transform, such as MUSES ``lidar2rgb``.
     ``pred_depth_metadata_scope`` can select a depth-like prediction scope
     such as ``relative_depth`` or ``affine_depth`` while still loading it
     as a dense depth map.
@@ -707,6 +734,20 @@ def build_sparse_depth_eval_dataset(
             split=camera_extrinsics_split,
         ),
     }
+    if lidar_extrinsics_path is not None:
+        lidar_scope = (
+            parse_modality_path(
+                lidar_extrinsics_path,
+                split=lidar_extrinsics_split,
+            ).metadata_scope
+            or "lidar_extrinsics"
+        )
+        hierarchical["lidar_extrinsics"] = _modality(
+            path=lidar_extrinsics_path,
+            modality_key="camera_extrinsics",
+            metadata_scope=lidar_scope,
+            split=lidar_extrinsics_split,
+        )
     if segmentation_path is not None:
         sky_fn = _resolve_sky_mask_loader(segmentation_path)
         hierarchical["segmentation"] = _modality(

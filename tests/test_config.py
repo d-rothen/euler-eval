@@ -101,6 +101,22 @@ class TestValidateGtConfig:
         }
         validate_gt_config(gt)
 
+    def test_sparse_depth_gt_accepts_optional_lidar_extrinsics(self, tmp_path):
+        for name in (
+            "sparse_depth",
+            "intrinsics",
+            "camera_extrinsics",
+            "lidar_extrinsics",
+        ):
+            (tmp_path / name).mkdir()
+        gt = {
+            "sparse_depth": {"path": str(tmp_path / "sparse_depth")},
+            "intrinsics": {"path": str(tmp_path / "intrinsics")},
+            "camera_extrinsics": {"path": str(tmp_path / "camera_extrinsics")},
+            "lidar_extrinsics": {"path": str(tmp_path / "lidar_extrinsics")},
+        }
+        validate_gt_config(gt)
+
     def test_nonexistent_path(self, tmp_path):
         rgb_path = tmp_path / "rgb"
         rgb_path.mkdir()
