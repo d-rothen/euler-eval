@@ -12,10 +12,6 @@
         "camera_extrinsics": {
             "path": "/path/to/gt/camera_extrinsics",
             "split": "test"
-        },
-        "segmentation": {
-            "path": "/path/to/gt/segmentation",
-            "split": "test"
         }
     },
     "datasets": [

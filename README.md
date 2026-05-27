@@ -111,7 +111,7 @@ This pre-downloads:
 # Evaluate with default settings (auto-selects CUDA when available)
 depth-eval config.json --batch-size 32
 
-# Evaluate with sky masking enabled (requires gt.segmentation in config)
+# Evaluate with sky masking enabled (requires gt.segmentation or gt.semantic_segmentation)
 depth-eval config.json --mask-sky -v
 
 # Skip RGB evaluation, only evaluate depth
@@ -205,6 +205,12 @@ Each modality entry can optionally include a `split` field to select a specific 
 
 For sparse pointcloud depth evaluation, use `gt.sparse_depth` instead of `gt.depth`. The prediction uses a dense depth-like map under `datasets[].depth`, `datasets[].relative_depth`, or `datasets[].affine_depth`. The evaluator projects the sparse GT point cloud into the prediction image plane using `gt.intrinsics` and `gt.camera_extrinsics`, then computes pointwise depth metrics only at projected valid pixels. For MUSES through `euler_loading.loaders.muses`, `gt.camera_extrinsics` normally resolves to the direct `lidar2rgb` transform and no extra lidar pose is needed. If a dataset exposes separate lidar and camera poses in a shared frame instead, provide optional `gt.lidar_extrinsics`; the evaluator composes `inv(camera_pose) @ lidar_pose` before projection.
 
+Sparse depth does not require segmentation GT. `gt.segmentation` and
+`gt.semantic_segmentation` are optional aliases for the same sky-mask source.
+They are loaded only when `--mask-sky` is set; in sparse depth evaluation that
+mask excludes sky pixels from projected-point metrics and from scale/shift
+fitting. Without `--mask-sky`, the segmentation entry is not loaded or used.
+
 #### GT section
 
 | Field | Required | Description |
@@ -213,7 +219,7 @@ For sparse pointcloud depth evaluation, use `gt.sparse_depth` instead of `gt.dep
 | `gt.depth.path` | no\* | Path to GT depth dataset |
 | `gt.sparse_depth.path` | no\* | Path to sparse pointcloud GT dataset, e.g. `sparse_depth` with `(N,C)` points whose first columns are `x,y,z` in meters |
 | `gt.rays.path` | no\* | Path to GT ray direction map dataset (for rays evaluation) |
-| `gt.segmentation.path` | no | Path to GT segmentation (needed for `--mask-sky`) |
+| `gt.segmentation.path` / `gt.semantic_segmentation.path` | no | Path to GT segmentation (needed for `--mask-sky`; use one key, not both) |
 | `gt.calibration.path` | no | Path to calibration data (camera intrinsics matrices) |
 | `gt.intrinsics.path` | required with `gt.sparse_depth` | Path to camera intrinsics matrices for pointcloud projection |
 | `gt.camera_extrinsics.path` | required with `gt.sparse_depth` | Path to source-to-camera extrinsics, e.g. MUSES `lidar2rgb`, for pointcloud projection |

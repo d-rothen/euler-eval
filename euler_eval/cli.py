@@ -152,6 +152,7 @@ def _rgb_eval_axes(*, benchmark: bool = False) -> dict[str, AxisDeclaration]:
 _RAYS_EVAL_AXES: dict[str, AxisDeclaration] = {}
 
 _PRED_DEPTH_KEYS = ("depth", "relative_depth", "affine_depth")
+_GT_SEGMENTATION_KEYS = ("segmentation", "semantic_segmentation")
 
 # Downstream eval consumers validate metricSet.metricNamespace with a stricter
 # first-segment rule than euler_metric_naming's modality validator. Keep the
@@ -592,6 +593,24 @@ def _prediction_depth_space_hint(key: str | None) -> str | None:
     return None
 
 
+def _gt_segmentation_entry(gt: dict) -> tuple[str | None, dict | None]:
+    """Return the configured GT segmentation entry, accepting legacy aliases."""
+    matches = [
+        key
+        for key in _GT_SEGMENTATION_KEYS
+        if key in gt and "path" in gt.get(key, {})
+    ]
+    if not matches:
+        return None, None
+    if len(matches) > 1:
+        raise ValueError(
+            "gt contains multiple segmentation entries "
+            f"{matches}. Use only one of {list(_GT_SEGMENTATION_KEYS)}."
+        )
+    key = matches[0]
+    return key, gt[key]
+
+
 def validate_gt_config(gt: dict) -> None:
     """Validate the ``gt`` section of the configuration.
 
@@ -619,12 +638,15 @@ def validate_gt_config(gt: dict) -> None:
             "gt.camera_extrinsics.path for pointcloud projection"
         )
 
+    _gt_segmentation_entry(gt)
+
     for modality in (
         "rgb",
         "depth",
         "sparse_depth",
         "rays",
         "segmentation",
+        "semantic_segmentation",
         "calibration",
         "intrinsics",
         "camera_extrinsics",
@@ -963,16 +985,18 @@ def main():
     print("-" * 60)
 
     # Check sky masking prerequisites
+    segmentation_key, segmentation_entry = _gt_segmentation_entry(config["gt"])
     if args.mask_sky:
-        if "segmentation" not in config["gt"]:
+        if segmentation_entry is None:
             print(
-                "Warning: --mask-sky requires gt.segmentation in config. "
+                "Warning: --mask-sky requires gt.segmentation or "
+                "gt.semantic_segmentation in config. "
                 "Sky masking disabled.",
                 file=sys.stderr,
             )
             args.mask_sky = False
         else:
-            print("Sky masking enabled")
+            print(f"Sky masking enabled ({segmentation_key})")
     print("-" * 60)
 
     # Initialize sanity checker if not disabled
@@ -1009,7 +1033,9 @@ def main():
     camera_extrinsics_path = gt.get("camera_extrinsics", {}).get("path")
     lidar_extrinsics_path = gt.get("lidar_extrinsics", {}).get("path")
     segmentation_path = (
-        gt.get("segmentation", {}).get("path") if args.mask_sky else None
+        segmentation_entry.get("path")
+        if args.mask_sky and segmentation_entry is not None
+        else None
     )
     gt_depth_split = gt.get("depth", {}).get("split")
     gt_sparse_depth_split = gt.get("sparse_depth", {}).get("split")
@@ -1020,7 +1046,9 @@ def main():
     camera_extrinsics_split = gt.get("camera_extrinsics", {}).get("split")
     lidar_extrinsics_split = gt.get("lidar_extrinsics", {}).get("split")
     segmentation_split = (
-        gt.get("segmentation", {}).get("split") if args.mask_sky else None
+        segmentation_entry.get("split")
+        if args.mask_sky and segmentation_entry is not None
+        else None
     )
 
     # Evaluate each prediction dataset
@@ -1066,6 +1094,7 @@ def main():
                 pred_depth_metadata_scope=(
                     pred_depth_key if pred_depth_key != "depth" else None
                 ),
+                segmentation_modality_key=segmentation_key or "segmentation",
                 gt_depth_split=gt_depth_split,
                 pred_depth_split=pred_depth_split,
                 calibration_split=calibration_split,
@@ -1258,6 +1287,7 @@ def main():
                 pred_depth_metadata_scope=(
                     pred_depth_key if pred_depth_key != "depth" else None
                 ),
+                segmentation_modality_key=segmentation_key or "segmentation",
                 gt_sparse_depth_split=gt_sparse_depth_split,
                 pred_depth_split=pred_depth_split,
                 intrinsics_split=intrinsics_split,
@@ -1459,6 +1489,7 @@ def main():
                 gt_depth_split=gt_depth_split,
                 calibration_split=calibration_split,
                 segmentation_split=segmentation_split,
+                segmentation_modality_key=segmentation_key or "segmentation",
             )
             et_eval_datasets["rgb"] = rgb_dataset
 

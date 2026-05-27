@@ -538,7 +538,11 @@ def compute_scale_and_shift(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_sky_mask_loader(segmentation_path: str) -> Callable[..., Any]:
+def _resolve_sky_mask_loader(
+    segmentation_path: str,
+    *,
+    modality_key: str = "segmentation",
+) -> Callable[..., Any]:
     """Resolve the ``sky_mask`` loader for a segmentation dataset.
 
     The segmentation dataset's ds-crawler index declares a loader module
@@ -546,7 +550,7 @@ def _resolve_sky_mask_loader(segmentation_path: str) -> Callable[..., Any]:
     its ``sky_mask`` function so that raw class-segmentation data is
     converted to a boolean sky mask at load time.
     """
-    modality = _modality(path=segmentation_path, modality_key="segmentation")
+    modality = _modality(path=segmentation_path, modality_key=modality_key)
     try:
         index = index_dataset_from_path(
             modality.path,
@@ -616,6 +620,7 @@ def build_depth_eval_dataset(
     calibration_split: Optional[str] = None,
     segmentation_split: Optional[str] = None,
     pred_depth_metadata_scope: Optional[str] = None,
+    segmentation_modality_key: str = "segmentation",
 ) -> MultiModalDataset:
     """Build a MultiModalDataset for depth evaluation.
 
@@ -664,10 +669,13 @@ def build_depth_eval_dataset(
             split=calibration_split,
         )
     if segmentation_path is not None:
-        sky_fn = _resolve_sky_mask_loader(segmentation_path)
+        sky_fn = _resolve_sky_mask_loader(
+            segmentation_path,
+            modality_key=segmentation_modality_key,
+        )
         hierarchical["segmentation"] = _modality(
             path=segmentation_path,
-            modality_key="segmentation",
+            modality_key=segmentation_modality_key,
             loader=sky_fn,
             split=segmentation_split,
         )
@@ -692,6 +700,7 @@ def build_sparse_depth_eval_dataset(
     lidar_extrinsics_split: Optional[str] = None,
     segmentation_split: Optional[str] = None,
     pred_depth_metadata_scope: Optional[str] = None,
+    segmentation_modality_key: str = "segmentation",
 ) -> MultiModalDataset:
     """Build a MultiModalDataset for sparse pointcloud depth evaluation.
 
@@ -705,7 +714,8 @@ def build_sparse_depth_eval_dataset(
     source-to-camera transform, such as MUSES ``lidar2rgb``.
     ``pred_depth_metadata_scope`` can select a depth-like prediction scope
     such as ``relative_depth`` or ``affine_depth`` while still loading it
-    as a dense depth map.
+    as a dense depth map. Segmentation remains optional for sparse depth and is
+    only loaded by callers that request sky masking.
     """
     modalities = {
         "gt": _modality(
@@ -749,10 +759,13 @@ def build_sparse_depth_eval_dataset(
             split=lidar_extrinsics_split,
         )
     if segmentation_path is not None:
-        sky_fn = _resolve_sky_mask_loader(segmentation_path)
+        sky_fn = _resolve_sky_mask_loader(
+            segmentation_path,
+            modality_key=segmentation_modality_key,
+        )
         hierarchical["segmentation"] = _modality(
             path=segmentation_path,
-            modality_key="segmentation",
+            modality_key=segmentation_modality_key,
             loader=sky_fn,
             split=segmentation_split,
         )
@@ -774,6 +787,7 @@ def build_rgb_eval_dataset(
     gt_depth_split: Optional[str] = None,
     calibration_split: Optional[str] = None,
     segmentation_split: Optional[str] = None,
+    segmentation_modality_key: str = "segmentation",
 ) -> MultiModalDataset:
     """Build a MultiModalDataset for RGB evaluation.
 
@@ -826,10 +840,13 @@ def build_rgb_eval_dataset(
             split=calibration_split,
         )
     if segmentation_path is not None:
-        sky_fn = _resolve_sky_mask_loader(segmentation_path)
+        sky_fn = _resolve_sky_mask_loader(
+            segmentation_path,
+            modality_key=segmentation_modality_key,
+        )
         hierarchical["segmentation"] = _modality(
             path=segmentation_path,
-            modality_key="segmentation",
+            modality_key=segmentation_modality_key,
             loader=sky_fn,
             split=segmentation_split,
         )

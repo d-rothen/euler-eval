@@ -35,7 +35,7 @@ def test_depth_builder_sets_modality_scopes(monkeypatch):
     monkeypatch.setattr(
         data,
         "_resolve_sky_mask_loader",
-        lambda path: sky_loader,
+        lambda path, *, modality_key="segmentation": sky_loader,
     )
 
     dataset = data.build_depth_eval_dataset(
@@ -100,6 +100,7 @@ def test_sparse_depth_builder_sets_projection_modality_scopes(monkeypatch):
         key="camera_extrinsics",
         split="pose",
     )
+    assert "segmentation" not in dataset.hierarchical_modalities
 
 
 def test_sparse_depth_builder_adds_optional_lidar_extrinsics(monkeypatch):
@@ -138,6 +139,40 @@ def test_sparse_depth_builder_can_load_relative_depth_prediction_scope(monkeypat
         key="depth",
         scope="relative_depth",
         used_as="output",
+    )
+
+
+def test_sparse_depth_builder_uses_semantic_segmentation_scope(monkeypatch):
+    _install_captured_dataset(monkeypatch)
+    calls = []
+
+    def sky_loader(path, meta=None):
+        return None
+
+    def resolve_sky_mask_loader(path, *, modality_key="segmentation"):
+        calls.append((path, modality_key))
+        return sky_loader
+
+    monkeypatch.setattr(
+        data,
+        "_resolve_sky_mask_loader",
+        resolve_sky_mask_loader,
+    )
+
+    dataset = data.build_sparse_depth_eval_dataset(
+        gt_sparse_depth_path="/datasets/shared",
+        pred_depth_path="/predictions/shared",
+        intrinsics_path="/datasets/shared",
+        camera_extrinsics_path="/datasets/shared",
+        segmentation_path="/datasets/shared",
+        segmentation_modality_key="semantic_segmentation",
+    )
+
+    assert calls == [("/datasets/shared", "semantic_segmentation")]
+    _assert_modality(
+        dataset.hierarchical_modalities["segmentation"],
+        key="semantic_segmentation",
+        loader=sky_loader,
     )
 
 
@@ -232,6 +267,35 @@ def test_sky_mask_loader_resolution_strips_inline_split(monkeypatch):
     assert data._resolve_sky_mask_loader("/datasets/shared.zip:fog_day") is sky_mask
     assert calls == [
         ("/datasets/shared.zip", {"metadata_scope": "segmentation"}),
+    ]
+
+
+def test_sky_mask_loader_resolution_accepts_semantic_segmentation_scope(monkeypatch):
+    calls = []
+
+    def fake_index_dataset_from_path(path, **kwargs):
+        calls.append((path, kwargs))
+        return {"euler_loading": {"loader": "muses"}}
+
+    def sky_mask(path, meta=None):
+        return None
+
+    monkeypatch.setattr(data, "index_dataset_from_path", fake_index_dataset_from_path)
+    monkeypatch.setattr(
+        data,
+        "resolve_loader_module",
+        lambda name: SimpleNamespace(sky_mask=sky_mask),
+    )
+
+    assert (
+        data._resolve_sky_mask_loader(
+            "/datasets/shared",
+            modality_key="semantic_segmentation",
+        )
+        is sky_mask
+    )
+    assert calls == [
+        ("/datasets/shared", {"metadata_scope": "semantic_segmentation"}),
     ]
 
 
