@@ -17,16 +17,19 @@ import torch
 from .config_paths import normalize_modality_path
 from .data import (
     build_depth_eval_dataset,
+    build_points_3d_eval_dataset,
     build_rays_eval_dataset,
     build_rgb_eval_dataset,
     build_sparse_depth_eval_dataset,
     get_depth_metadata,
+    get_points_3d_metadata,
     get_rays_metadata,
     get_rgb_metadata,
     get_sparse_depth_metadata,
 )
 from .evaluate import (
     evaluate_depth_samples,
+    evaluate_points_3d_samples,
     evaluate_rays_samples,
     evaluate_rgb_samples,
     evaluate_sparse_depth_samples,
@@ -39,7 +42,6 @@ except ImportError:
     _euler_train = None
 
 from euler_metric_naming import AxisDeclaration, MetricDescription, MetricNamespace
-
 
 # ── Eval namespace ──────────────────────────────────────────────────────────
 # MetricNamespace subclass for eval context with custom axis declarations,
@@ -151,6 +153,41 @@ def _rgb_eval_axes(*, benchmark: bool = False) -> dict[str, AxisDeclaration]:
 
 _RAYS_EVAL_AXES: dict[str, AxisDeclaration] = {}
 
+_POINTS_3D_SPACE_AXIS = AxisDeclaration(
+    position=0,
+    values=("native", "metric"),
+    optional=False,
+    description="Point-map gauge space semantics",
+)
+
+_POINTS_3D_CATEGORY_AXIS = AxisDeclaration(
+    position=1,
+    values=(
+        "point_error",
+        "error_decomposition",
+        "geometric",
+        "cloud_distance",
+    ),
+    optional=True,
+    description="Metric category",
+)
+
+_POINTS_3D_REDUCTION_AXIS = AxisDeclaration(
+    position=2,
+    values=("image_mean", "image_median", "pixel_pool"),
+    optional=True,
+    description="Dataset reduction mode (point_error only)",
+)
+
+
+def _points_3d_eval_axes() -> dict[str, AxisDeclaration]:
+    return {
+        "space": _POINTS_3D_SPACE_AXIS,
+        "category": _POINTS_3D_CATEGORY_AXIS,
+        "reduction": _POINTS_3D_REDUCTION_AXIS,
+    }
+
+
 _PRED_DEPTH_KEYS = ("depth", "relative_depth", "affine_depth")
 _GT_SEGMENTATION_KEYS = ("segmentation", "semantic_segmentation")
 
@@ -160,6 +197,12 @@ _GT_SEGMENTATION_KEYS = ("segmentation", "semantic_segmentation")
 # in eval.json so flattened metric paths live under the declared namespace.
 _SPARSE_DEPTH_METRIC_ROOT = "sparsedepth"
 _SPARSE_DEPTH_METRIC_NAMESPACE = f"{_SPARSE_DEPTH_METRIC_ROOT}.eval"
+
+# points_3d serializes under a wire-safe root (no underscore) so flattened
+# metric paths satisfy the stricter first-segment namespace rule, mirroring
+# the sparse-depth handling above.
+_POINTS_3D_METRIC_ROOT = "points3d"
+_POINTS_3D_METRIC_NAMESPACE = f"{_POINTS_3D_METRIC_ROOT}.eval"
 
 # ── Metric descriptions ─────────────────────────────────────────────────────
 # Keys are *base metric names* (after stripping namespace + axes).
@@ -378,6 +421,129 @@ _RAYS_EVAL_DESCRIPTIONS = {
 }
 
 
+def _points_3d_descriptions() -> dict:
+    """Build the points_3d metric descriptions (base names after axes)."""
+    descriptions = {
+        # point_error
+        "mae3d": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="3D EPE (MAE)"
+        ),
+        "rmse3d": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="3D RMSE"
+        ),
+        "median3d": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="3D Median Error"
+        ),
+        "p90": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="3D Error P90"
+        ),
+        "p95": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="3D Error P95"
+        ),
+        "rel_median": MetricDescription(
+            is_higher_better=False, display_name="Relative 3D Error (Median)"
+        ),
+        "rel_p90": MetricDescription(
+            is_higher_better=False, display_name="Relative 3D Error (P90)"
+        ),
+        # error_decomposition
+        "radial_mae": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="Radial MAE (depth)"
+        ),
+        "radial_rmse": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="Radial RMSE (depth)"
+        ),
+        "lateral_mae": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="Lateral MAE (camera)"
+        ),
+        "lateral_rmse": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="Lateral RMSE (camera)"
+        ),
+        "lateral_fraction": MetricDescription(
+            is_higher_better=False,
+            min_value=0.0,
+            max_value=1.0,
+            display_name="Lateral Error Fraction",
+        ),
+        "angular_error.mean_angle": MetricDescription(
+            is_higher_better=False, unit="degrees", display_name="Mean Ray Angle Error"
+        ),
+        "angular_error.median_angle": MetricDescription(
+            is_higher_better=False, unit="degrees",
+            display_name="Median Ray Angle Error",
+        ),
+        "rho_a.mean": MetricDescription(
+            is_higher_better=True, min_value=0.0, max_value=1.0,
+            display_name="ρ_A (Mean)",
+        ),
+        "rho_a.median": MetricDescription(
+            is_higher_better=True, min_value=0.0, max_value=1.0,
+            display_name="ρ_A (Median)",
+        ),
+        # geometric
+        "normal_consistency.mean_angle": MetricDescription(
+            is_higher_better=False, unit="degrees",
+            display_name="Normal Mean Angle",
+        ),
+        "normal_consistency.median_angle": MetricDescription(
+            is_higher_better=False, unit="degrees",
+            display_name="Normal Median Angle",
+        ),
+        # geometric + cloud F-score share precision/recall/f1 leaf names
+        "precision": MetricDescription(
+            is_higher_better=True, min_value=0.0, max_value=1.0,
+            display_name="Precision",
+        ),
+        "recall": MetricDescription(
+            is_higher_better=True, min_value=0.0, max_value=1.0,
+            display_name="Recall",
+        ),
+        "f1": MetricDescription(
+            is_higher_better=True, min_value=0.0, max_value=1.0, display_name="F1"
+        ),
+        # cloud_distance
+        "chamfer.accuracy": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="Chamfer Accuracy"
+        ),
+        "chamfer.completeness": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="Chamfer Completeness"
+        ),
+        "chamfer.distance": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="Chamfer Distance"
+        ),
+        "chamfer.median": MetricDescription(
+            is_higher_better=False, unit="meters", display_name="Chamfer Median"
+        ),
+    }
+    # δ-style absolute and relative accuracy thresholds (percentages).
+    for tau in (0.05, 0.1, 0.25, 0.5, 1.0):
+        key = "acc_" + ("%g" % tau).replace(".", "_")
+        descriptions[key] = MetricDescription(
+            is_higher_better=True, scale="percentage", min_value=0.0,
+            max_value=100.0, display_name=f"3D Acc < {tau}m",
+        )
+    for tau in (0.05, 0.1, 0.25):
+        key = "acc_rel_" + ("%g" % tau).replace(".", "_")
+        descriptions[key] = MetricDescription(
+            is_higher_better=True, scale="percentage", min_value=0.0,
+            max_value=100.0, display_name=f"3D Rel Acc < {tau}",
+        )
+    for thr in (5, 10, 15, 20, 30):
+        descriptions[f"angular_error.percent_below_{thr}"] = MetricDescription(
+            is_higher_better=True, scale="percentage", min_value=0.0,
+            max_value=100.0, display_name=f"Ray < {thr}°",
+        )
+    for thr in ("11_25", "22_5", "30"):
+        descriptions[f"normal_consistency.percent_below_{thr}"] = MetricDescription(
+            is_higher_better=True, scale="percentage", min_value=0.0,
+            max_value=100.0, display_name=f"Normal < {thr.replace('_', '.')}°",
+        )
+    return descriptions
+
+
+_POINTS_3D_EVAL_DESCRIPTIONS = _points_3d_descriptions()
+
+
 def _get_version() -> str:
     """Return the installed euler-eval version, falling back to ``"0.0.0"``."""
     try:
@@ -394,6 +560,17 @@ def _sparse_depth_metric_set_envelope(
     """Return the sparse-depth metricSet envelope with a compliant namespace."""
     envelope = namespace.metric_set_envelope("sparse_depth", metadata=metadata)
     envelope["metricNamespace"] = _SPARSE_DEPTH_METRIC_NAMESPACE
+    return envelope
+
+
+def _points_3d_metric_set_envelope(
+    namespace: _EvalNamespace,
+    *,
+    metadata: dict | None = None,
+) -> dict:
+    """Return the points_3d metricSet envelope with a compliant namespace."""
+    envelope = namespace.metric_set_envelope("points_3d", metadata=metadata)
+    envelope["metricNamespace"] = _POINTS_3D_METRIC_NAMESPACE
     return envelope
 
 
@@ -621,15 +798,22 @@ def validate_gt_config(gt: dict) -> None:
     has_depth = "depth" in gt and "path" in gt.get("depth", {})
     has_sparse_depth = "sparse_depth" in gt and "path" in gt.get("sparse_depth", {})
     has_rays = "rays" in gt and "path" in gt.get("rays", {})
+    has_points_3d = "points_3d" in gt and "path" in gt.get("points_3d", {})
     has_intrinsics = "intrinsics" in gt and "path" in gt.get("intrinsics", {})
     has_camera_extrinsics = (
         "camera_extrinsics" in gt and "path" in gt.get("camera_extrinsics", {})
     )
 
-    if not has_rgb and not has_depth and not has_sparse_depth and not has_rays:
+    if (
+        not has_rgb
+        and not has_depth
+        and not has_sparse_depth
+        and not has_rays
+        and not has_points_3d
+    ):
         raise ValueError(
             "gt must have at least one of 'rgb.path', 'depth.path', "
-            "'sparse_depth.path', or 'rays.path'"
+            "'sparse_depth.path', 'rays.path', or 'points_3d.path'"
         )
 
     if has_sparse_depth and (not has_intrinsics or not has_camera_extrinsics):
@@ -645,6 +829,7 @@ def validate_gt_config(gt: dict) -> None:
         "depth",
         "sparse_depth",
         "rays",
+        "points_3d",
         "segmentation",
         "semantic_segmentation",
         "calibration",
@@ -675,13 +860,15 @@ def validate_dataset_entry(entry: dict, index: int) -> None:
     depth_key, _ = _prediction_depth_entry(entry, label=label)
     has_depth = depth_key is not None
     has_rays = "rays" in entry and "path" in entry.get("rays", {})
-    if not has_rgb and not has_depth and not has_rays:
+    has_points_3d = "points_3d" in entry and "path" in entry.get("points_3d", {})
+    if not has_rgb and not has_depth and not has_rays and not has_points_3d:
         raise ValueError(
             f"{label} must have at least 'rgb.path', 'depth.path', "
-            "'relative_depth.path', 'affine_depth.path', or 'rays.path'"
+            "'relative_depth.path', 'affine_depth.path', 'rays.path', "
+            "or 'points_3d.path'"
         )
 
-    for modality in ("rgb", *_PRED_DEPTH_KEYS, "rays"):
+    for modality in ("rgb", *_PRED_DEPTH_KEYS, "rays", "points_3d"):
         if modality in entry and "path" in entry[modality]:
             p = normalize_modality_path(
                 entry[modality]["path"],
@@ -919,6 +1106,11 @@ def main():
         help="Skip rays (spherical direction map) evaluation",
     )
     parser.add_argument(
+        "--skip-points-3d",
+        action="store_true",
+        help="Skip points_3d (per-pixel 3D point map) evaluation",
+    )
+    parser.add_argument(
         "--mask-sky",
         action="store_true",
         help="Mask sky regions from metrics using GT segmentation",
@@ -942,6 +1134,17 @@ def main():
         help=(
             "Depth calibration mode: none, auto_affine (default), or affine. "
             "Output is emitted in semantic native/metric spaces."
+        ),
+    )
+    parser.add_argument(
+        "--points-3d-alignment",
+        type=str,
+        default="auto",
+        choices=["none", "scale", "similarity", "auto"],
+        help=(
+            "points_3d gauge alignment: none, scale, similarity (Umeyama), or "
+            "auto (default). auto applies similarity only for declared-relative "
+            "predictions, else none. Outputs native/metric spaces."
         ),
     )
     parser.add_argument(
@@ -1028,6 +1231,7 @@ def main():
     gt_sparse_depth_path = gt.get("sparse_depth", {}).get("path")
     gt_rgb_path = gt.get("rgb", {}).get("path")
     gt_rays_path = gt.get("rays", {}).get("path")
+    gt_points_3d_path = gt.get("points_3d", {}).get("path")
     calibration_path = gt.get("calibration", {}).get("path")
     intrinsics_path = gt.get("intrinsics", {}).get("path")
     camera_extrinsics_path = gt.get("camera_extrinsics", {}).get("path")
@@ -1041,6 +1245,7 @@ def main():
     gt_sparse_depth_split = gt.get("sparse_depth", {}).get("split")
     gt_rgb_split = gt.get("rgb", {}).get("split")
     gt_rays_split = gt.get("rays", {}).get("split")
+    gt_points_3d_split = gt.get("points_3d", {}).get("split")
     calibration_split = gt.get("calibration", {}).get("split")
     intrinsics_split = gt.get("intrinsics", {}).get("split")
     camera_extrinsics_split = gt.get("camera_extrinsics", {}).get("split")
@@ -1058,11 +1263,16 @@ def main():
         has_depth = pred_depth_config is not None
         has_rgb = "rgb" in dataset_config and "path" in dataset_config["rgb"]
         has_rays = "rays" in dataset_config and "path" in dataset_config["rays"]
+        has_points_3d = (
+            "points_3d" in dataset_config
+            and "path" in dataset_config["points_3d"]
+        )
 
         all_results = {}
         depth_save = {}
         rgb_save = {}
         rays_save = {}
+        points_3d_save = {}
         et_eval_datasets = {}
         has_benchmark = args.benchmark_depth_range is not None
 
@@ -1720,6 +1930,186 @@ def main():
                 f"RAYS: {ds_name}",
             )
 
+        # -- Points-3D (per-pixel 3D point map) evaluation --
+        # GT is either an explicit gt.points_3d map, or synthesized on the fly
+        # by unprojecting gt.depth with intrinsics (gt.intrinsics or
+        # gt.calibration) when no precomputed point map is available.
+        p3d_intrinsics_path = intrinsics_path or calibration_path
+        p3d_intrinsics_split = (
+            intrinsics_split if intrinsics_path else calibration_split
+        )
+        p3d_gt_synth = (
+            gt_points_3d_path is None
+            and gt_depth_path is not None
+            and p3d_intrinsics_path is not None
+        )
+        if (
+            has_points_3d
+            and not args.skip_points_3d
+            and (gt_points_3d_path or p3d_gt_synth)
+        ):
+            pred_points_3d_path = dataset_config["points_3d"]["path"]
+            pred_points_3d_split = dataset_config["points_3d"].get("split")
+            p3d_gt_is_depth = gt_points_3d_path is None
+            p3d_gt_path = gt_depth_path if p3d_gt_is_depth else gt_points_3d_path
+            p3d_gt_split = gt_depth_split if p3d_gt_is_depth else gt_points_3d_split
+            print(f"\n[POINTS_3D] Evaluating: '{ds_name}'")
+            if p3d_gt_is_depth:
+                print(f"  GT:   {gt_depth_path} (synthesized from depth + intrinsics)")
+            else:
+                print(f"  GT:   {gt_points_3d_path}")
+            print(f"  Pred: {pred_points_3d_path}")
+
+            points_3d_dataset = build_points_3d_eval_dataset(
+                pred_points_3d_path=pred_points_3d_path,
+                gt_points_3d_path=gt_points_3d_path,
+                gt_depth_path=gt_depth_path if p3d_gt_is_depth else None,
+                intrinsics_path=p3d_intrinsics_path,
+                calibration_path=calibration_path,
+                segmentation_path=segmentation_path,
+                pred_points_3d_split=pred_points_3d_split,
+                gt_points_3d_split=gt_points_3d_split,
+                gt_depth_split=gt_depth_split,
+                intrinsics_split=p3d_intrinsics_split,
+                calibration_split=calibration_split,
+                segmentation_split=segmentation_split,
+                segmentation_modality_key=segmentation_key or "segmentation",
+            )
+            et_eval_datasets["points_3d"] = points_3d_dataset
+
+            points_3d_meta = get_points_3d_metadata(points_3d_dataset)
+            p3d_gt_radial = True
+            if p3d_gt_is_depth:
+                p3d_gt_radial = get_depth_metadata(points_3d_dataset)["radial_depth"]
+                print(f"  GT depth radial: {p3d_gt_radial}")
+            print(f"  fov_domain: {points_3d_meta['fov_domain'] or 'auto-detect'}")
+            print(f"  Matched pairs: {len(points_3d_dataset)}")
+
+            points_3d_results = evaluate_points_3d_samples(
+                dataset=points_3d_dataset,
+                fov_domain=points_3d_meta["fov_domain"],
+                gt_name=gt.get("name", "GT"),
+                pred_name=ds_name,
+                num_workers=args.num_workers,
+                verbose=args.verbose,
+                sanity_checker=sanity_checker,
+                sky_mask_enabled=args.mask_sky,
+                alignment_mode=args.points_3d_alignment,
+                gt_is_depth=p3d_gt_is_depth,
+                gt_depth_is_radial=p3d_gt_radial,
+            )
+
+            if sanity_checker is not None:
+                sanity_checker.print_pair_report(ds_name, modality="points_3d")
+
+            p3_space_info = points_3d_results.get("space_info", {})
+            p3_dataset_info = points_3d_results.get("dataset_info", {})
+            p3_spatial = points_3d_results.get("spatial_info", {})
+
+            points_3d_ns = _EvalNamespace(
+                producer="euler-eval",
+                producer_version=_get_version(),
+                modalities=("points_3d",),
+                axes=_points_3d_eval_axes(),
+                descriptions=_POINTS_3D_EVAL_DESCRIPTIONS,
+            )
+            points_3d_save = {
+                "metricSet": _points_3d_metric_set_envelope(
+                    points_3d_ns,
+                    metadata={
+                        "input_space_detected": p3_space_info.get(
+                            "input_space_detected", "unknown"
+                        ),
+                        "calibration_mode": p3_space_info.get(
+                            "calibration_mode", "unknown"
+                        ),
+                        "calibration_applied": p3_space_info.get(
+                            "calibration_applied", False
+                        ),
+                        "emitted_spaces": p3_space_info.get("emitted_spaces", []),
+                        "canonical_space": p3_space_info.get(
+                            "canonical_space", "native"
+                        ),
+                        "fov_domain": p3_dataset_info.get("fov_domain"),
+                        "threshold_deg": p3_dataset_info.get("threshold_deg"),
+                    },
+                ),
+                "dataset_info": p3_dataset_info,
+                "meta": _clean_metric_tree({
+                    "version": _get_version(),
+                    "modality": "points_3d",
+                    "device": args.device,
+                    "gt": {
+                        "path": p3d_gt_path,
+                        "split": p3d_gt_split,
+                        "synthesized_from_depth": p3d_gt_is_depth,
+                        "dimensions": p3_spatial.get("gt_dimensions"),
+                    },
+                    "pred": {
+                        "path": pred_points_3d_path,
+                        "split": pred_points_3d_split,
+                        "dimensions": p3_spatial.get("pred_dimensions"),
+                    },
+                    "spatial_alignment": {
+                        "method": p3_spatial.get("method", "none"),
+                        "evaluated_dimensions": p3_spatial.get(
+                            "evaluated_dimensions"
+                        ),
+                    },
+                    "modality_params": points_3d_meta,
+                    "eval_params": {
+                        "sky_masking": args.mask_sky,
+                        "points_3d_alignment_mode": args.points_3d_alignment,
+                        "num_workers": args.num_workers,
+                    },
+                }),
+                "points3d": {"eval": {}},
+            }
+            for space_name, result_key in (
+                ("native", "points_3d_native"),
+                ("metric", "points_3d_metric"),
+            ):
+                branch = points_3d_results.get(result_key)
+                if branch is not None:
+                    points_3d_save["points3d"]["eval"][space_name] = (
+                        _clean_metric_tree(branch)
+                    )
+            for p3_key in ("points_3d", "points_3d_native", "points_3d_metric"):
+                if (
+                    p3_key in points_3d_results
+                    and points_3d_results[p3_key] is not None
+                ):
+                    all_results[p3_key] = points_3d_results[p3_key]
+            points_3d_pfm = points_3d_results.get("per_file_metrics", {})
+            if points_3d_pfm:
+                canonical_space = p3_space_info.get("canonical_space", "native")
+                points_3d_save["per_file_metrics"] = _clean_per_file_metrics(
+                    _wrap_pfm_metrics(
+                        points_3d_pfm,
+                        lambda m: _wrap_depth_space_pfm_metrics(
+                            m,
+                            metric_root="points3d",
+                            canonical_key="points_3d",
+                            canonical_space=canonical_space,
+                        ),
+                    ),
+                    label="points_3d per_file_metrics",
+                )
+            all_results.setdefault("per_file_metrics", {}).update(points_3d_pfm)
+
+            print_results(
+                {k: v for k, v in points_3d_results.items()
+                 if k not in ("per_file_metrics", "spatial_info")},
+                f"POINTS_3D: {ds_name}",
+            )
+
+        elif has_points_3d and not args.skip_points_3d:
+            print(
+                f"\n[POINTS_3D] Skipping '{ds_name}': no usable GT. Provide "
+                "gt.points_3d, or gt.depth with gt.intrinsics/gt.calibration to "
+                "synthesize the GT point map."
+            )
+
         # Save per-modality results to respective dataset paths
         if depth_save:
             depth_out = save_results(
@@ -1739,6 +2129,11 @@ def main():
         if rays_save:
             rays_out = save_results(rays_save, dataset_config, modality="rays")
             print(f"\n  Rays results saved to: {rays_out}")
+        if points_3d_save:
+            points_3d_out = save_results(
+                points_3d_save, dataset_config, modality="points_3d"
+            )
+            print(f"\n  Points-3D results saved to: {points_3d_out}")
 
         # Log to euler_train
         if et_run is not None and et_eval_datasets:

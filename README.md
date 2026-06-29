@@ -7,6 +7,7 @@ A comprehensive evaluation toolkit for comparing predicted depth maps, RGB image
 - **Depth metrics**: PSNR, SSIM, LPIPS, FID, KID, AbsRel, RMSE, Scale-Invariant Log Error, Normal Consistency, Depth Edge F1
 - **RGB metrics**: PSNR, SSIM, LPIPS, FID, SCE (Structural Chromatic Error), Edge F1, Tail Errors (p95/p99), High-Frequency Energy Ratio, Depth-Binned Photometric Error
 - **Rays metrics**: ρ_A (AUC of angular accuracy curve), Angular Error statistics and threshold percentages
+- **Points-3D metrics**: for models that predict a per-pixel 3D point map *and their own camera*: Euclidean 3D error (EPE/RMSE/3D δ-accuracy), radial-vs-lateral error decomposition (depth vs camera-model attribution) with ρ_A, true-3D surface normals, 3D edge F1, and correspondence-free Chamfer / F-score. Native + similarity-gauge-aligned (Umeyama) metric spaces.
 - **Benchmark binning**: Optional depth-range benchmark that subdivides metrics into square-root-scaled near/mid/far bins
 - **Sanity checking**: Automatic validation of metric results against configurable thresholds, with detailed warning reports
 - **Sky masking**: Optional exclusion of sky regions from metrics using GT segmentation
@@ -98,10 +99,12 @@ This pre-downloads:
 | `--skip-depth` | flag | off | Skip depth evaluation |
 | `--skip-rgb` | flag | off | Skip RGB evaluation |
 | `--skip-rays` | flag | off | Skip rays (spherical direction map) evaluation |
+| `--skip-points-3d` | flag | off | Skip points_3d (per-pixel 3D point map) evaluation |
 | `--mask-sky` | flag | off | Mask sky regions from metrics using GT segmentation |
 | `--no-sanity-check` | flag | off | Disable sanity checking of metric configurations |
 | `--metrics-config` | `str` | auto-detect | Path to `metrics_config.json` for sanity checking |
 | `--depth-alignment` | `{none,auto_affine,affine}` | `auto_affine` | Depth calibration mode; outputs are emitted in semantic `native`/`metric` spaces and `depth` aliases the canonical branch |
+| `--points-3d-alignment` | `{none,scale,similarity,auto}` | `auto` | points_3d gauge alignment. `none` scores raw points (metric models); `scale` fits a global scalar; `similarity` fits a 7-DoF Umeyama transform (relative models); `auto` applies `similarity` only for declared-relative predictions, else `none`. Outputs `native`/`metric` spaces with a `points_3d` canonical alias |
 | `--rgb-fid-backend` | `{builtin,clean-fid}` | `builtin` | RGB FID backend; `clean-fid` requires optional dependency |
 | `--benchmark-depth-range` | `float float` | none | Depth range `[MIN, MAX]` in meters for benchmark evaluation; computes depth and RGB metrics for pixels within this range, subdivided into square-root-scaled near/mid/far bins (additive to regular metrics) |
 
@@ -137,6 +140,12 @@ depth-eval example_sparse_depth_config.json --skip-rgb --skip-rays
 
 # Skip rays evaluation
 depth-eval config.json --skip-rays
+
+# Evaluate per-pixel 3D point maps (predict-your-own-camera models)
+depth-eval example_points_3d_config.json --skip-depth --skip-rgb --skip-rays
+
+# Align relative point maps to GT with a similarity (Umeyama) gauge
+depth-eval example_points_3d_config.json --points-3d-alignment similarity
 ```
 
 ### Benchmark Depth Bins
@@ -219,6 +228,7 @@ fitting. Without `--mask-sky`, the segmentation entry is not loaded or used.
 | `gt.depth.path` | no\* | Path to GT depth dataset |
 | `gt.sparse_depth.path` | no\* | Path to sparse pointcloud GT dataset, e.g. `sparse_depth` with `(N,C)` points whose first columns are `x,y,z` in meters |
 | `gt.rays.path` | no\* | Path to GT ray direction map dataset (for rays evaluation) |
+| `gt.points_3d.path` | no\* | Path to GT per-pixel 3D point map dataset `(H,W,3)` in camera-frame metres (for points_3d evaluation) |
 | `gt.segmentation.path` / `gt.semantic_segmentation.path` | no | Path to GT segmentation (needed for `--mask-sky`; use one key, not both) |
 | `gt.calibration.path` | no | Path to calibration data (camera intrinsics matrices) |
 | `gt.intrinsics.path` | required with `gt.sparse_depth` | Path to camera intrinsics matrices for pointcloud projection |
@@ -226,7 +236,7 @@ fitting. Without `--mask-sky`, the segmentation entry is not loaded or used.
 | `gt.lidar_extrinsics.path` | no | Optional lidar sensor pose in the same shared frame as `gt.camera_extrinsics`; when provided, `gt.camera_extrinsics` is interpreted as the camera pose and both are composed for projection |
 | `gt.name` | no | Display name for ground truth (default: `"GT"`) |
 
-\* At least one of `gt.rgb.path`, `gt.depth.path`, `gt.sparse_depth.path`, or `gt.rays.path` is required.
+\* At least one of `gt.rgb.path`, `gt.depth.path`, `gt.sparse_depth.path`, `gt.rays.path`, or `gt.points_3d.path` is required.
 
 #### Prediction datasets
 
@@ -240,9 +250,17 @@ Each entry in `datasets` can include `rgb`, one dense depth-like prediction (`de
 | `relative_depth.path` | no\* | Path to predicted dense relative depth dataset; evaluated through the same depth pipeline with scale/shift alignment support |
 | `affine_depth.path` | no\* | Path to predicted dense affine-depth dataset; evaluated through the same depth pipeline with scale/shift alignment support |
 | `rays.path` | no\* | Path to predicted ray direction map dataset |
+| `points_3d.path` | no\* | Path to predicted per-pixel 3D point map dataset `(H,W,3)` |
 | `output_file` | no | Custom output path for results JSON (default: `eval.json` inside the first available modality path) |
 
-\* At least one of `rgb.path`, `depth.path`, `relative_depth.path`, `affine_depth.path`, or `rays.path` is required. Use only one dense depth-like entry per prediction dataset.
+\* At least one of `rgb.path`, `depth.path`, `relative_depth.path`, `affine_depth.path`, `rays.path`, or `points_3d.path` is required. Use only one dense depth-like entry per prediction dataset.
+
+When evaluating a `points_3d` prediction, the GT point map comes from one of two sources:
+
+1. **Explicit GT point map** — `gt.points_3d.path` (a stored `(H,W,3)` map).
+2. **Synthesized from depth (fallback)** — if `gt.points_3d` is absent but `gt.depth.path` and intrinsics (`gt.intrinsics.path` or `gt.calibration.path`) are present, the evaluator unprojects GT depth with the intrinsics into a GT point map on the fly. This lets you score a `points_3d` prediction against a conventional depth + intrinsics ground truth without precomputing point maps. Whether the GT depth is radial or planar is read from its dataset metadata (`radial_depth`).
+
+GT intrinsics under `gt.calibration` (or `gt.intrinsics`) are also used to auto-detect the FoV domain for the angular ρ_A sub-metric; for the explicit-point-map path they are optional and default to the `lfov` threshold when absent, but for the depth-synthesis fallback they are required. The gauge alignment is controlled by `--points-3d-alignment` (see [Points-3D gauge alignment](#points-3d-gauge-alignment)).
 
 When `relative_depth` or `affine_depth` is used, `--depth-alignment auto_affine` treats the entry as declared non-metric depth and runs scale/shift alignment even if the raw value range is not normalized. `--depth-alignment none` still disables calibration.
 
@@ -336,6 +354,37 @@ Serialized `eval.json` sparse-depth metrics use the namespace root `sparsedepth`
 | Angular Error | `rays.angular_error.mean_angle`, `median_angle` | Per-pixel angular error between predicted and GT camera ray directions (degrees) |
 | Angular Error Thresholds | `rays.angular_error.percent_below_*` | Percentage of pixels with angular error below 5°, 10°, 15°, 20°, 30° |
 
+### Points-3D metrics
+
+For per-pixel 3D point maps `P(u,v) = (X,Y,Z)` in camera-frame metres. Metrics are
+emitted in two gauge spaces (`native` raw prediction, `metric` after alignment) with
+a `points_3d` canonical alias, keyed as
+`points3d.eval.{native,metric}.{category}…`. Categories:
+
+| Category | Key (per space) | Description |
+|---|---|---|
+| Euclidean 3D agreement | `point_error.{image_mean,image_median,pixel_pool}.*` | 3D EPE `mae3d`, `rmse3d`, `median3d`/`p90`/`p95`, relative error `rel_median`/`rel_p90`, and 3D δ-accuracy `acc_<τ>` (within τ m) / `acc_rel_<τ>` |
+| Error decomposition | `error_decomposition.{radial_*,lateral_*,lateral_fraction}` + `angular_error.*` + `rho_a.*` | Splits each error vector into a **radial** (≈ depth) and **lateral** (≈ camera-model) component; `lateral_fraction ∈ [0,1]` attributes blame. Angular ray error and ρ_A (on native directions) measure the implied camera model |
+| Geometric | `geometric.normal_consistency.*`, `geometric.point_edge_f1.*` | True-3D surface normals (cross-product of point-map tangents, no focal assumption) and a 3D discontinuity F1 |
+| Cloud distance | `cloud_distance.chamfer.*`, `cloud_distance.fscore.tau_<τ>.*` | Correspondence-free Chamfer (accuracy/completeness/distance/median) and F-score (precision/recall/f1) at distance thresholds τ |
+
+#### Points-3D gauge alignment
+
+Point maps from different model families live in different frames, so `points_3d`
+resolves an unknown **similarity gauge** (the 3D generalization of depth's
+scale-and-shift) before the `metric`-space comparison:
+
+- `none` — score the raw points as-is (metric, predict-your-own-camera models).
+- `scale` — fit a single global scalar `s` (least squares).
+- `similarity` — fit a 7-DoF Umeyama transform `s·R·p + t` over the known per-pixel
+  correspondences (relative / free-frame models).
+- `auto` (default) — apply `similarity` for declared-relative predictions, else
+  `none`.
+
+The angular `error_decomposition` ray metrics and `rho_a` are computed on the
+**native** point-map directions (the camera-faithful frame); the radial/lateral and
+Euclidean metrics are reported per space.
+
 ## Output
 
 Results are saved as JSON per modality per prediction dataset (one file for depth or sparse depth, one for RGB, one for rays). Default path: `eval.json` inside each modality's dataset path, unless overridden by `output_file` in the config.
@@ -360,6 +409,12 @@ When `--rgb-fid-backend clean-fid` is used, `euler-eval` will honor `CLEANFID_CA
   },
   "sparsedepth": {
     "eval": { "...": "serialized sparse-depth metrics when gt.sparse_depth is used" }
+  },
+  "points3d": {
+    "eval": {
+      "native": { "...": "raw-prediction point-map metrics" },
+      "metric": { "...": "gauge-aligned point-map metrics, when alignment ran" }
+    }
   },
   "rgb": {
     "...": "..."
@@ -397,6 +452,8 @@ For depth outputs:
   `image_mean`, `image_median`, and `pixel_pool`.
 
 For sparse depth outputs, the internal Python result dict still uses `sparse_depth_native`, `sparse_depth_metric`, and `sparse_depth`, but serialized `eval.json` metric paths are rooted at `sparsedepth.eval` to satisfy external namespace validation. Only `standard` and `depth_metrics` categories are present.
+
+For points_3d outputs, the internal Python result dict uses `points_3d_native`, `points_3d_metric`, and `points_3d` (canonical alias), but serialized `eval.json` metric paths are rooted at `points3d.eval` (no underscore) to satisfy the namespace first-segment rule, mirroring `sparsedepth`. The `metric` space is emitted only when a gauge alignment is applied; otherwise only `native` is present and aliased.
 
 Previous single-depth structure (kept under `depth`) is:
 

@@ -90,6 +90,25 @@ from .rho_a import (
     FOV_THRESHOLDS,
 )
 
+# Points-3D metrics
+from .points3d_distance import (
+    compute_point_error_metrics,
+    threshold_key as points3d_threshold_key,
+    ABS_THRESHOLDS as POINTS3D_ABS_THRESHOLDS,
+    REL_THRESHOLDS as POINTS3D_REL_THRESHOLDS,
+)
+from .points3d_decomposition import compute_decomposition_metrics
+from .points3d_geometry import (
+    points_to_normals,
+    compute_point_normal_angles,
+    compute_point_edge_f1,
+)
+from .points3d_cloud import (
+    compute_cloud_distance_metrics,
+    FSCORE_THRESHOLDS as POINTS3D_FSCORE_THRESHOLDS,
+    DEFAULT_MAX_POINTS as POINTS3D_DEFAULT_MAX_POINTS,
+)
+
 # Utilities
 from .utils import (
     convert_planar_to_radial,
@@ -167,6 +186,18 @@ __all__ = [
     "classify_fov_domain",
     "get_threshold_for_domain",
     "FOV_THRESHOLDS",
+    # Points-3D metrics
+    "compute_point_error_metrics",
+    "points3d_threshold_key",
+    "POINTS3D_ABS_THRESHOLDS",
+    "POINTS3D_REL_THRESHOLDS",
+    "compute_decomposition_metrics",
+    "points_to_normals",
+    "compute_point_normal_angles",
+    "compute_point_edge_f1",
+    "compute_cloud_distance_metrics",
+    "POINTS3D_FSCORE_THRESHOLDS",
+    "POINTS3D_DEFAULT_MAX_POINTS",
     # Utilities
     "convert_planar_to_radial",
     "normalize_depth_for_visualization",

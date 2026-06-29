@@ -1,0 +1,30 @@
+{
+    "gt": {
+        "name": "GT point maps",
+        "points_3d": {
+            "path": "/path/to/gt/points_3d",
+            "split": "test"
+        },
+        "calibration": {
+            "path": "/path/to/gt/calibration",
+            "split": "test"
+        }
+    },
+    "datasets": [
+        {
+            "name": "model_a_pointmap",
+            "points_3d": {
+                "path": "/path/to/model_a/points_3d",
+                "split": "test"
+            },
+            "output_file": "/path/to/output/model_a_points_3d_eval.json"
+        },
+        {
+            "name": "model_b_relative_pointmap",
+            "points_3d": {
+                "path": "/path/to/model_b/points_3d",
+                "split": "test"
+            }
+        }
+    ]
+}

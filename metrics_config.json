@@ -104,5 +104,22 @@
       "pano": 30.0,
       "description": "Angular threshold (degrees) per FoV domain for rho_A AUC integration"
     }
+  },
+  "points_3d": {
+    "warn_if_valid_points_below": 100,
+    "warn_if_mae3d_exceeds": 5.0,
+    "warn_if_lateral_fraction_above": 0.7,
+    "description": "Per-pixel 3D point map evaluation; metrics computed in metres after optional similarity-gauge alignment. High lateral_fraction indicates camera-model-dominated error.",
+    "rho_a": {
+      "warn_if_below": 0.3,
+      "warn_if_mean_angle_exceeds": 30.0,
+      "description": "rho_A on point-map ray directions; low values indicate a poor implied camera model"
+    },
+    "fov_thresholds": {
+      "sfov": 15.0,
+      "lfov": 20.0,
+      "pano": 30.0,
+      "description": "Angular threshold (degrees) per FoV domain for the points_3d rho_A sub-metric"
+    }
   }
 }

@@ -438,8 +438,9 @@ def align_to_prediction(gt: np.ndarray, pred: np.ndarray) -> np.ndarray:
         return gt[:pred_h, :pred_w]
 
     # Fallback: resize GT to match prediction dimensions.
-    import cv2
     import warnings
+
+    import cv2
 
     # Warn when aspect ratio distortion is significant (>5%).
     gt_ar = gt_w / gt_h
@@ -967,4 +968,301 @@ def get_rays_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
     meta = dataset.get_modality_metadata("gt")
     return {
         "fov_domain": meta.get("fov_domain", None),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Points-3D (per-pixel 3D point map) construction and geometry
+# ---------------------------------------------------------------------------
+
+
+def to_numpy_points_3d(data: Any) -> np.ndarray:
+    """Convert a per-pixel 3D point map to ``(H, W, 3)`` float32 numpy array.
+
+    A ``points_3d`` map stores camera-frame ``(X, Y, Z)`` coordinates in
+    metres at every pixel.  Accepts torch tensors ``(3, H, W)`` or
+    ``(H, W, 3)``, or numpy arrays, plus single-sample variants.  The
+    returned points are **not** re-scaled or re-centred; callers apply gauge
+    alignment explicitly.
+    """
+    # Layout handling is identical to direction maps (HWC vs CHW, batch dim).
+    return to_numpy_directions(data)
+
+
+def unproject_depth_to_points(
+    depth: np.ndarray,
+    intrinsics_K: np.ndarray,
+    depth_is_radial: bool = False,
+) -> np.ndarray:
+    """Unproject a depth map into a ``(H, W, 3)`` camera-frame point map.
+
+    Args:
+        depth: Depth map ``(H, W)`` in metres.
+        intrinsics_K: ``(3, 3)`` pinhole camera matrix.
+        depth_is_radial: If True, ``depth`` stores Euclidean (radial)
+            distance from the camera centre and is converted back to planar
+            ``Z`` before unprojection.  If False, ``depth`` is planar ``Z``.
+
+    Returns:
+        ``(H, W, 3)`` float32 point map.  Pixels with non-finite or
+        non-positive depth are set to ``0``.
+    """
+    height, width = depth.shape
+    fx = float(intrinsics_K[0, 0])
+    fy = float(intrinsics_K[1, 1])
+    cx = float(intrinsics_K[0, 2])
+    cy = float(intrinsics_K[1, 2])
+
+    u, v = np.meshgrid(np.arange(width), np.arange(height))
+    x_norm = (u - cx) / fx
+    y_norm = (v - cy) / fy
+
+    z = depth.astype(np.float32)
+    if depth_is_radial:
+        ray_norm = np.sqrt(x_norm**2 + y_norm**2 + 1.0)
+        z = z / ray_norm.astype(np.float32)
+
+    points = np.stack([x_norm * z, y_norm * z, z], axis=-1).astype(np.float32)
+    invalid = ~(np.isfinite(depth) & (depth > 0))
+    points[invalid] = 0.0
+    return points
+
+
+def fit_scale_transform(
+    pred_points: np.ndarray,
+    gt_points: np.ndarray,
+) -> float:
+    """Fit a single global isotropic scale mapping *pred* onto *gt*.
+
+    Solves ``min_s Σ ‖s·p_i − g_i‖²`` in closed form, which gives
+    ``s = Σ(p_i·g_i) / Σ‖p_i‖²``.
+
+    Args:
+        pred_points: ``(N, 3)`` predicted points.
+        gt_points: ``(N, 3)`` ground-truth points.
+
+    Returns:
+        The fitted scalar scale ``s`` (``1.0`` if degenerate).
+    """
+    pred = np.asarray(pred_points, dtype=np.float64)
+    gt = np.asarray(gt_points, dtype=np.float64)
+    if pred.shape[0] < 1:
+        return 1.0
+    denom = float(np.sum(pred * pred))
+    if denom <= 1e-12:
+        return 1.0
+    return float(np.sum(pred * gt) / denom)
+
+
+def fit_similarity_transform(
+    pred_points: np.ndarray,
+    gt_points: np.ndarray,
+    with_scale: bool = True,
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Fit a similarity transform ``g ≈ s·R·p + t`` (Umeyama, 1991).
+
+    Closed-form least-squares estimate of scale ``s``, rotation ``R``
+    (``3×3``), and translation ``t`` (``3``) that best map predicted points
+    onto ground-truth points, given known correspondence.
+
+    Args:
+        pred_points: ``(N, 3)`` predicted (source) points.
+        gt_points: ``(N, 3)`` ground-truth (target) points.
+        with_scale: If False, fix ``s = 1`` (rigid transform).
+
+    Returns:
+        ``(s, R, t)``.  Falls back to identity if the problem is degenerate
+        (fewer than 3 points or a rank-deficient point set).
+    """
+    pred = np.asarray(pred_points, dtype=np.float64)
+    gt = np.asarray(gt_points, dtype=np.float64)
+
+    identity = (1.0, np.eye(3, dtype=np.float32), np.zeros(3, dtype=np.float32))
+    n = pred.shape[0]
+    if n < 3:
+        return identity
+
+    mu_p = pred.mean(axis=0)
+    mu_g = gt.mean(axis=0)
+    pred_c = pred - mu_p
+    gt_c = gt - mu_g
+
+    var_p = float(np.mean(np.sum(pred_c**2, axis=1)))
+    if var_p <= 1e-12:
+        return identity
+
+    sigma = (gt_c.T @ pred_c) / n
+    U, D, Vt = np.linalg.svd(sigma)
+
+    S = np.eye(3)
+    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
+        S[2, 2] = -1.0
+    R = U @ S @ Vt
+
+    if with_scale:
+        s = float(np.trace(np.diag(D) @ S) / var_p)
+    else:
+        s = 1.0
+
+    t = mu_g - s * (R @ mu_p)
+    return s, R.astype(np.float32), t.astype(np.float32)
+
+
+def apply_point_transform(
+    points: np.ndarray,
+    scale: float,
+    rotation: np.ndarray,
+    translation: np.ndarray,
+) -> np.ndarray:
+    """Apply ``s·R·p + t`` to a point array of shape ``(..., 3)``."""
+    pts = np.asarray(points, dtype=np.float32)
+    rotated = pts @ np.asarray(rotation, dtype=np.float32).T
+    return (scale * rotated + np.asarray(translation, dtype=np.float32)).astype(
+        np.float32
+    )
+
+
+def decompose_point_errors(
+    pred_points: np.ndarray,
+    gt_points: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Decompose per-point 3D errors relative to the GT ray direction.
+
+    For each corresponding pair, the error vector ``d = pred − gt`` is split
+    into the component **along** the GT ray (radial ≈ depth error) and the
+    component **perpendicular** to it (lateral ≈ camera-model error).
+
+    Args:
+        pred_points: ``(N, 3)`` predicted points.
+        gt_points: ``(N, 3)`` ground-truth points.
+
+    Returns:
+        Dict of per-point ``(N,)`` arrays: ``euclidean`` (‖d‖), ``radial``
+        (signed along the GT ray), ``lateral`` (perpendicular magnitude),
+        ``relative`` (‖d‖ / ‖gt‖), and ``gt_norm`` (‖gt‖).
+    """
+    pred = np.asarray(pred_points, dtype=np.float64)
+    gt = np.asarray(gt_points, dtype=np.float64)
+
+    diff = pred - gt
+    euclidean = np.linalg.norm(diff, axis=1)
+    gt_norm = np.linalg.norm(gt, axis=1)
+    safe_norm = np.clip(gt_norm, 1e-8, None)
+    ray = gt / safe_norm[:, None]
+
+    radial = np.sum(diff * ray, axis=1)
+    lateral_vec = diff - radial[:, None] * ray
+    lateral = np.linalg.norm(lateral_vec, axis=1)
+    relative = euclidean / safe_norm
+
+    return {
+        "euclidean": euclidean.astype(np.float32),
+        "radial": radial.astype(np.float32),
+        "lateral": lateral.astype(np.float32),
+        "relative": relative.astype(np.float32),
+        "gt_norm": gt_norm.astype(np.float32),
+    }
+
+
+def build_points_3d_eval_dataset(
+    pred_points_3d_path: str,
+    gt_points_3d_path: Optional[str] = None,
+    gt_depth_path: Optional[str] = None,
+    intrinsics_path: Optional[str] = None,
+    calibration_path: Optional[str] = None,
+    segmentation_path: Optional[str] = None,
+    pred_points_3d_split: Optional[str] = None,
+    gt_points_3d_split: Optional[str] = None,
+    gt_depth_split: Optional[str] = None,
+    intrinsics_split: Optional[str] = None,
+    calibration_split: Optional[str] = None,
+    segmentation_split: Optional[str] = None,
+    segmentation_modality_key: str = "segmentation",
+) -> MultiModalDataset:
+    """Build a MultiModalDataset for points_3d (3D point map) evaluation.
+
+    The prediction is always a ``(H, W, 3)`` camera-frame point map under
+    ``"pred"``.  The ground truth comes from one of two sources:
+
+    - **Explicit point map** — pass ``gt_points_3d_path``; ``"gt"`` is loaded as
+      a ``points_3d`` modality directly.
+    - **Synthesized from depth** — pass ``gt_depth_path`` (and intrinsics via
+      ``intrinsics_path`` or ``calibration_path``); ``"gt"`` is loaded as a
+      ``depth`` modality and the evaluator unprojects it to a point map on the
+      fly. Use this when no precomputed GT point map exists.
+
+    Optional ``"calibration"``/``"intrinsics"`` are used for FoV-domain
+    classification of the angular metrics (and are *required* for the depth
+    synthesis path), and ``"segmentation"`` enables sky masking.
+    """
+    if gt_points_3d_path is not None:
+        gt_modality = _modality(
+            path=gt_points_3d_path,
+            modality_key="points_3d",
+            split=gt_points_3d_split,
+        )
+    elif gt_depth_path is not None:
+        gt_modality = _modality(
+            path=gt_depth_path,
+            modality_key="depth",
+            split=gt_depth_split,
+        )
+    else:
+        raise ValueError(
+            "build_points_3d_eval_dataset requires either gt_points_3d_path or "
+            "gt_depth_path (with intrinsics) for the ground-truth point map."
+        )
+
+    modalities = {
+        "gt": gt_modality,
+        "pred": _modality(
+            path=pred_points_3d_path,
+            modality_key="points_3d",
+            used_as="output",
+            split=pred_points_3d_split,
+        ),
+    }
+
+    hierarchical = {}
+    if intrinsics_path is not None:
+        hierarchical["intrinsics"] = _modality(
+            path=intrinsics_path,
+            modality_key="intrinsics",
+            split=intrinsics_split,
+        )
+    if calibration_path is not None:
+        hierarchical["calibration"] = _modality(
+            path=calibration_path,
+            modality_key="calibration",
+            split=calibration_split,
+        )
+    if segmentation_path is not None:
+        sky_fn = _resolve_sky_mask_loader(
+            segmentation_path,
+            modality_key=segmentation_modality_key,
+        )
+        hierarchical["segmentation"] = _modality(
+            path=segmentation_path,
+            modality_key=segmentation_modality_key,
+            loader=sky_fn,
+            split=segmentation_split,
+        )
+
+    return MultiModalDataset(
+        modalities=modalities,
+        hierarchical_modalities=hierarchical if hierarchical else None,
+    )
+
+
+def get_points_3d_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
+    """Extract points_3d modality metadata from a dataset.
+
+    Returns:
+        Dict with ``fov_domain`` (``"sfov"``/``"lfov"``/``"pano"`` or None)
+        and ``coordinate_unit`` (default ``"meters"``).
+    """
+    meta = dataset.get_modality_metadata("gt")
+    return {
+        "fov_domain": meta.get("fov_domain", None),
+        "coordinate_unit": meta.get("coordinate_unit", "meters"),
     }

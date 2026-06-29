@@ -451,3 +451,76 @@ These metrics operate on per-pixel direction maps with shape `(H, W, 3)`. Vector
   - `[0, 1]`.
   - `1` is perfect.
   - Higher is better.
+
+## Points-3D metrics
+
+These metrics operate on per-pixel 3D point maps with shape `(H, W, 3)` storing
+camera-frame `(X, Y, Z)` coordinates in metres, as produced by models that predict
+a point map together with their own camera model. Ground truth is either an
+explicit per-pixel point map (`gt.points_3d`) or, when no point map is configured,
+synthesized on the fly by unprojecting GT depth (`gt.depth`) with GT intrinsics
+(`gt.intrinsics` or `gt.calibration`) — radial vs planar GT depth is read from the
+depth dataset metadata.
+
+### Shared conventions
+
+- GT is spatially aligned to the prediction grid exactly as for the other modalities.
+- A pixel is valid when both GT and prediction are finite and the GT point has
+  non-zero norm (intersected with the non-sky mask when `--mask-sky` is set).
+- A **gauge alignment** is resolved before the `metric`-space comparison, the 3D
+  analog of depth scale-and-shift:
+  - `none`: compare raw points (metric models).
+  - `scale`: fit a single global scalar `s` minimizing `Σ‖s·p − g‖²`.
+  - `similarity`: fit a 7-DoF Umeyama transform `s·R·p + t` over the known per-pixel
+    correspondences (relative models).
+  - `auto`: `similarity` for declared-relative predictions, else `none`.
+- Two spaces are emitted: `native` (raw) and, when alignment runs, `metric`
+  (aligned), with `points_3d` aliasing the canonical (metric when present, else
+  native). The similarity fit is per image.
+- Let `d = pred − gt` per valid pixel, `e = ‖d‖`, and `r = gt / ‖gt‖` the GT ray.
+
+### Euclidean 3D agreement (`point_error`)
+
+- `mae3d` / `rmse3d`: mean and root-mean-square of `e` (3D end-point error), metres.
+- `median3d`, `p90`, `p95`: pooled percentiles of `e`.
+- `rel_median`, `rel_p90`: percentiles of `e / ‖gt‖` (scale-invariant, AbsRel analog).
+- `acc_<τ>`: percentage of points with `e < τ` metres (3D δ-accuracy), for
+  `τ ∈ {0.05, 0.1, 0.25, 0.5, 1.0}`; `acc_rel_<τ>` uses the relative error for
+  `τ ∈ {0.05, 0.1, 0.25}`.
+- Reported with three reducers: `image_mean` and `image_median` (per-image scalars
+  averaged / medianed across images) and `pixel_pool` (pooled over all valid points).
+- Lower error / higher accuracy is better.
+
+### Error decomposition (`error_decomposition`)
+
+- The error vector is split relative to the GT ray:
+  - radial `a = d · r` (≈ depth error): `radial_mae = mean|a|`, `radial_rmse`.
+  - lateral `l = ‖d − a·r‖` (≈ camera-model error): `lateral_mae`, `lateral_rmse`.
+- `lateral_fraction = mean(l) / (mean|a| + mean(l)) ∈ [0, 1]`: near 0 the error is
+  depth-dominated, near 1 it is camera-model-dominated.
+- `angular_error` and `rho_a`: the ray angular error and ρ_A (identical to the rays
+  modality) computed on the **native** point-map directions — the camera-faithful
+  frame — and attached to every emitted space.
+- Intuition: tells you whether a model should fix its depth head or its camera head.
+
+### Geometric (`geometric`)
+
+- `normal_consistency`: surface normals computed **directly from the point map** via
+  the cross product of central-difference tangents (no assumed focal length, unlike
+  the depth `normal_consistency`). Reports `mean_angle`, `median_angle`, and
+  `percent_below_{11.25, 22.5, 30}°` over an eroded valid mask.
+- `point_edge_f1`: precision/recall/F1 of 3D discontinuities, where an edge is a
+  pixel whose maximum 4-neighbour 3D distance exceeds `0.1·‖P‖`, matched with a
+  1-pixel dilation tolerance.
+
+### Cloud distance (`cloud_distance`)
+
+- Correspondence-free set agreement, robust to camera mis-parameterization that
+  merely slides points along the surface (which `point_error` penalizes hard).
+- `chamfer`: `accuracy` (mean nearest-neighbour distance pred→gt), `completeness`
+  (gt→pred), `distance` (their mean), and `median` of the pooled distances, metres.
+- `fscore.tau_<τ>`: precision/recall/F1 of points within `τ` metres of the other
+  cloud, for `τ ∈ {0.05, 0.1, 0.25, 0.5}`. F-score is the bounded, outlier-robust
+  headline; raw Chamfer is the diagnostic.
+- Clouds are deterministically subsampled (default cap 50k points/cloud) to bound
+  the KD-tree cost.

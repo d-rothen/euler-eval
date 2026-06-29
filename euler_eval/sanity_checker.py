@@ -104,14 +104,17 @@ class SanityChecker:
         self.depth_results = SanityCheckResult()
         self.rgb_results = SanityCheckResult()
         self.rays_results = SanityCheckResult()
+        self.points_3d_results = SanityCheckResult()
 
         # Track how many warnings have been reported in intermediate reports
         self._last_reported_depth_warnings = 0
         self._last_reported_rgb_warnings = 0
         self._last_reported_rays_warnings = 0
+        self._last_reported_points_3d_warnings = 0
         self._last_reported_depth_samples = 0
         self._last_reported_rgb_samples = 0
         self._last_reported_rays_samples = 0
+        self._last_reported_points_3d_samples = 0
 
     def _load_config(self) -> dict:
         """Load the metrics configuration file."""
@@ -150,12 +153,15 @@ class SanityChecker:
         self.depth_results = SanityCheckResult()
         self.rgb_results = SanityCheckResult()
         self.rays_results = SanityCheckResult()
+        self.points_3d_results = SanityCheckResult()
         self._last_reported_depth_warnings = 0
         self._last_reported_rgb_warnings = 0
         self._last_reported_rays_warnings = 0
+        self._last_reported_points_3d_warnings = 0
         self._last_reported_depth_samples = 0
         self._last_reported_rgb_samples = 0
         self._last_reported_rays_samples = 0
+        self._last_reported_points_3d_samples = 0
 
     # =========================================================================
     # Depth Metric Validation
@@ -806,6 +812,137 @@ class SanityChecker:
             ))
 
     # =========================================================================
+    # Points-3D Metric Validation
+    # =========================================================================
+
+    def validate_points_3d_input(
+        self,
+        points_pred: np.ndarray,
+        points_gt: np.ndarray,
+        file_id: Optional[str] = None,
+    ) -> None:
+        """Validate per-pixel 3D point map input data.
+
+        Args:
+            points_pred: Predicted point map ``(H, W, 3)``.
+            points_gt: Ground-truth point map ``(H, W, 3)``.
+            file_id: Optional file identifier for warnings.
+        """
+        config = self.config.get("points_3d", {})
+        warn_below = config.get("warn_if_valid_points_below", 100)
+
+        finite = (
+            np.isfinite(points_gt).all(axis=-1)
+            & np.isfinite(points_pred).all(axis=-1)
+        )
+        gt_norm = np.linalg.norm(points_gt, axis=-1)
+        valid = finite & (gt_norm > 0)
+        valid_count = int(np.sum(valid))
+
+        if valid_count == 0:
+            self.points_3d_results.add_warning(MetricWarning(
+                metric_name="points_3d_input",
+                warning_type="no_valid_points",
+                message="No valid 3D points found in point maps",
+                file_id=file_id,
+            ))
+        elif valid_count < warn_below:
+            self.points_3d_results.add_warning(MetricWarning(
+                metric_name="points_3d_input",
+                warning_type="few_valid_points",
+                message=f"Only {valid_count} valid 3D points "
+                        f"(below {warn_below}); metrics may be unstable.",
+                observed_value=valid_count,
+                expected_value=warn_below,
+                file_id=file_id,
+            ))
+
+        self.points_3d_results.total_samples += 1
+
+    def validate_points_3d_metrics(
+        self,
+        mae3d: Optional[float] = None,
+        lateral_fraction: Optional[float] = None,
+        rho_a: Optional[float] = None,
+        mean_angle: Optional[float] = None,
+        file_id: Optional[str] = None,
+    ) -> None:
+        """Validate canonical-space points_3d metric results.
+
+        Args:
+            mae3d: Mean 3D Euclidean error (metres).
+            lateral_fraction: Lateral error fraction in ``[0, 1]``.
+            rho_a: Per-image ρ_A on the point-map directions.
+            mean_angle: Mean ray angular error (degrees).
+            file_id: Optional file identifier.
+        """
+        config = self.config.get("points_3d", {})
+        warn_mae = config.get("warn_if_mae3d_exceeds")
+        warn_lat = config.get("warn_if_lateral_fraction_above")
+        rho_config = config.get("rho_a", {})
+        warn_rho_below = rho_config.get("warn_if_below", 0.3)
+        warn_angle = rho_config.get("warn_if_mean_angle_exceeds", 30.0)
+
+        if (
+            warn_mae is not None
+            and mae3d is not None
+            and np.isfinite(mae3d)
+            and mae3d > warn_mae
+        ):
+            self.points_3d_results.add_warning(MetricWarning(
+                metric_name="points_3d",
+                warning_type="mae3d_too_high",
+                message=f"3D EPE ({mae3d:.3f} m) exceeds {warn_mae} m. "
+                        f"Predicted points are far from GT in metric space.",
+                observed_value=mae3d,
+                expected_value=warn_mae,
+                file_id=file_id,
+            ))
+
+        if (
+            warn_lat is not None
+            and lateral_fraction is not None
+            and np.isfinite(lateral_fraction)
+            and lateral_fraction > warn_lat
+        ):
+            self.points_3d_results.add_warning(MetricWarning(
+                metric_name="points_3d",
+                warning_type="camera_dominated_error",
+                message=f"Lateral error fraction ({lateral_fraction:.2f}) exceeds "
+                        f"{warn_lat}; error is camera-model-dominated rather than "
+                        f"depth-dominated.",
+                observed_value=lateral_fraction,
+                expected_value=warn_lat,
+                file_id=file_id,
+            ))
+
+        if rho_a is not None and np.isfinite(rho_a) and rho_a < warn_rho_below:
+            self.points_3d_results.add_warning(MetricWarning(
+                metric_name="points_3d",
+                warning_type="rho_a_too_low",
+                message=f"ρ_A ({rho_a:.3f}) below {warn_rho_below}. "
+                        f"The implied camera model has poor angular accuracy.",
+                observed_value=rho_a,
+                expected_value=warn_rho_below,
+                file_id=file_id,
+            ))
+
+        if (
+            mean_angle is not None
+            and np.isfinite(mean_angle)
+            and mean_angle > warn_angle
+        ):
+            self.points_3d_results.add_warning(MetricWarning(
+                metric_name="points_3d",
+                warning_type="mean_angle_too_high",
+                message=f"Mean ray angular error ({mean_angle:.1f}°) exceeds "
+                        f"{warn_angle}°.",
+                observed_value=mean_angle,
+                expected_value=warn_angle,
+                file_id=file_id,
+            ))
+
+    # =========================================================================
     # Report Generation
     # =========================================================================
 
@@ -839,6 +976,16 @@ class SanityChecker:
             "has_issues": self.rays_results.has_warnings(),
         }
 
+    def get_points_3d_report(self) -> dict:
+        """Get the points_3d metrics sanity check report."""
+        summary = self.points_3d_results.get_warning_summary()
+        return {
+            "total_samples": self.points_3d_results.total_samples,
+            "total_warnings": len(self.points_3d_results.warnings),
+            "warnings_by_type": summary,
+            "has_issues": self.points_3d_results.has_warnings(),
+        }
+
     def print_pair_report(self, pair_name: str, is_depth: bool = True, modality: Optional[str] = None) -> None:
         """Print a sanity check report for just the current dataset pair.
 
@@ -854,6 +1001,11 @@ class SanityChecker:
             last_warnings = self._last_reported_rays_warnings
             last_samples = self._last_reported_rays_samples
             metric_type = "RAYS"
+        elif modality == "points_3d":
+            results = self.points_3d_results
+            last_warnings = self._last_reported_points_3d_warnings
+            last_samples = self._last_reported_points_3d_samples
+            metric_type = "POINTS_3D"
         elif is_depth:
             results = self.depth_results
             last_warnings = self._last_reported_depth_warnings
@@ -875,6 +1027,9 @@ class SanityChecker:
             if modality == "rays":
                 self._last_reported_rays_warnings = len(results.warnings)
                 self._last_reported_rays_samples = results.total_samples
+            elif modality == "points_3d":
+                self._last_reported_points_3d_warnings = len(results.warnings)
+                self._last_reported_points_3d_samples = results.total_samples
             elif is_depth:
                 self._last_reported_depth_warnings = len(results.warnings)
                 self._last_reported_depth_samples = results.total_samples
@@ -920,6 +1075,9 @@ class SanityChecker:
         if modality == "rays":
             self._last_reported_rays_warnings = len(results.warnings)
             self._last_reported_rays_samples = results.total_samples
+        elif modality == "points_3d":
+            self._last_reported_points_3d_warnings = len(results.warnings)
+            self._last_reported_points_3d_samples = results.total_samples
         elif is_depth:
             self._last_reported_depth_warnings = len(results.warnings)
             self._last_reported_depth_samples = results.total_samples
@@ -940,11 +1098,13 @@ class SanityChecker:
         depth_report = self.get_depth_report()
         rgb_report = self.get_rgb_report()
         rays_report = self.get_rays_report()
+        points_3d_report = self.get_points_3d_report()
 
         has_any_issues = (
             depth_report["has_issues"]
             or rgb_report["has_issues"]
             or rays_report["has_issues"]
+            or points_3d_report["has_issues"]
         )
 
         if not has_any_issues:
@@ -997,6 +1157,21 @@ class SanityChecker:
                     vals_str = ", ".join(f"{v:.4f}" for v in info["sample_values"][:3])
                     print(f"    Sample values: {vals_str}")
 
+        # Print Points-3D warnings
+        if points_3d_report["has_issues"]:
+            print(f"\n[POINTS_3D] {points_3d_report['total_warnings']} warnings "
+                  f"across {points_3d_report['total_samples']} samples:")
+            print("-" * 70)
+
+            for key, info in points_3d_report["warnings_by_type"].items():
+                ratio = info["count"] / points_3d_report["total_samples"]
+                print(f"\n  {info['metric']} - {info['type']}:")
+                print(f"    Occurrences: {info['count']}/{points_3d_report['total_samples']} ({ratio*100:.1f}%)")
+                print(f"    {info['message']}")
+                if info["sample_values"]:
+                    vals_str = ", ".join(f"{v:.4f}" for v in info["sample_values"][:3])
+                    print(f"    Sample values: {vals_str}")
+
         print("\n" + "=" * 70)
         print("  Review metrics_config.json to adjust thresholds if needed.")
         print("=" * 70)
@@ -1007,4 +1182,5 @@ class SanityChecker:
             "depth": self.get_depth_report(),
             "rgb": self.get_rgb_report(),
             "rays": self.get_rays_report(),
+            "points_3d": self.get_points_3d_report(),
         }
