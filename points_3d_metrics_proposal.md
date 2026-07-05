@@ -9,14 +9,18 @@ model**. It is written against the current code in `euler_eval/evaluate.py`,
 > **Implementation status (landed).** Categories A–D (`point_error`,
 > `error_decomposition`, `geometric`, `cloud_distance`), the
 > `none`/`scale`/`similarity`/`auto` gauge alignment with `native`/`metric`
-> spaces, **both GT sources** — the explicit `gt.points_3d ↔
-> datasets[].points_3d` path **and** on-the-fly GT synthesis from `gt.depth` +
-> intrinsics (`gt.intrinsics`/`gt.calibration`) — full CLI + output
-> (`points3d.eval`) + sanity + docs + tests are implemented
-> (`tests/test_points_3d.py`). **Deferred follow-ups:** category E
-> (`camera_model` recovered-intrinsics fidelity), benchmark depth-range bins for
-> points_3d, and the sparse-LiDAR (`gt.sparse_depth`) cloud_distance path — all
-> noted inline below.
+> spaces, **three GT sources** — the explicit `gt.points_3d ↔
+> datasets[].points_3d` path, on-the-fly GT synthesis from `gt.depth` +
+> intrinsics (`gt.intrinsics`/`gt.calibration`), **and the sparse-LiDAR
+> `gt.sparse_depth` path** (§4-D): a dense depth prediction is unprojected with
+> the GT intrinsics and scored in 3D against the sparse cloud via directed
+> (completeness/recall) `cloud_distance` plus per-correspondence `point_error` /
+> `error_decomposition` (`evaluate_points_3d_sparse_samples`, depth-affine
+> `native`/`metric` gauge) — full CLI + output (`points3d.eval`) + sanity + docs
+> + tests are implemented (`tests/test_points_3d.py`,
+> `tests/test_points_3d_sparse.py`). **Deferred follow-ups:** category E
+> (`camera_model` recovered-intrinsics fidelity) and benchmark depth-range bins
+> for points_3d — noted inline below.
 
 ---
 
@@ -259,12 +263,19 @@ Design notes (the parts that make Chamfer behave):
   random) to ~50–100k points/cloud and `log()` the rate (the repo's no-silent-caps
   habit). Per-image NN distances still feed `_StreamingValueStore` for pooled
   percentiles; only one image's two clouds are resident at a time.
-- **Sparse LiDAR GT** (`gt.sparse_depth`): here there is no dense correspondence,
-  so cloud_distance is the **primary** geometry metric, not a complement. Lead with
-  **completeness / recall** (is every LiDAR return covered?); plain
-  `accuracy` / `precision` is misleading because a correct *dense* prediction has
-  many legitimate points far from any *sparse* GT point — restrict it to the GT's
-  frustum/support or omit it.
+- **Sparse LiDAR GT** (`gt.sparse_depth`) — *landed* via
+  `evaluate_points_3d_sparse_samples` + `compute_sparse_cloud_distance_metrics`.
+  Here there is no dense correspondence, so cloud_distance is the **primary**
+  geometry metric, not a complement. The implementation leads with
+  **completeness / recall** (is every LiDAR return covered?) and **omits** the
+  misleading `accuracy` / `precision` / `f1` side, because a correct *dense*
+  prediction has many legitimate points far from any *sparse* GT point. The
+  dense depth prediction is unprojected with the GT intrinsics into a point map;
+  the sparse GT cloud is projected into that camera frame, yielding the visible
+  GT cloud (for completeness) and per-pixel correspondences (for `point_error` /
+  `error_decomposition`). The `native`/`metric` gauge is the depth affine
+  scale-and-shift (`--depth-alignment`), since the prediction is a depth map.
+  Dense-neighbourhood `geometric` metrics (normals, edge F1) are omitted.
 
 ### E. `camera_model` — recovered-camera fidelity — **P2 (optional)**
 

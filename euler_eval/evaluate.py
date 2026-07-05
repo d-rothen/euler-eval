@@ -26,6 +26,7 @@ from .data import (
     fit_similarity_transform,
     process_depth,
     project_point_cloud_to_depth_map,
+    project_point_cloud_to_point_map,
     to_numpy_depth,
     to_numpy_directions,
     to_numpy_extrinsics,
@@ -84,6 +85,7 @@ from .metrics import (
     compute_scale_invariant_log_error,
     compute_sce,
     compute_silog_per_pixel,
+    compute_sparse_cloud_distance_metrics,
     compute_ssim,
     compute_standard_depth_metrics,
     # Benchmark utilities
@@ -739,6 +741,46 @@ def _extract_hierarchy(sample: dict) -> tuple[list[str], str]:
     if len(parts) > 1:
         return parts[:-1], parts[-1]
     return [], file_id
+
+
+def _reduce_metric_dicts(dict_list: list, reducer) -> dict:
+    """Recursively reduce a list of like-shaped metric dicts leaf-wise.
+
+    Shared by the dense and sparse ``points_3d`` evaluators to aggregate
+    per-image metric dicts (e.g. ``image_mean`` / ``image_median`` of the
+    per-file point-error blocks) into a single dataset-level dict, skipping
+    ``None`` and non-finite leaves.
+    """
+    keys: list = []
+    for d in dict_list:
+        if isinstance(d, dict):
+            for k in d:
+                if k not in keys:
+                    keys.append(k)
+    out: dict = {}
+    for k in keys:
+        vals = [
+            d[k]
+            for d in dict_list
+            if isinstance(d, dict) and d.get(k) is not None
+        ]
+        if not vals:
+            continue
+        if isinstance(vals[0], dict):
+            sub = _reduce_metric_dicts(vals, reducer)
+            if sub:
+                out[k] = sub
+        else:
+            finite = [
+                float(v)
+                for v in vals
+                if isinstance(v, (int, float))
+                and not isinstance(v, bool)
+                and np.isfinite(v)
+            ]
+            if finite:
+                out[k] = float(reducer(finite))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -3114,38 +3156,7 @@ def evaluate_points_3d_samples(
         get_threshold_for_domain(resolved_domain) if resolved_domain else None
     )
 
-    def _reduce_dicts(dict_list: list, reducer) -> dict:
-        """Recursively reduce a list of like-shaped metric dicts leaf-wise."""
-        keys: list = []
-        for d in dict_list:
-            if isinstance(d, dict):
-                for k in d:
-                    if k not in keys:
-                        keys.append(k)
-        out: dict = {}
-        for k in keys:
-            vals = [
-                d[k]
-                for d in dict_list
-                if isinstance(d, dict) and d.get(k) is not None
-            ]
-            if not vals:
-                continue
-            if isinstance(vals[0], dict):
-                sub = _reduce_dicts(vals, reducer)
-                if sub:
-                    out[k] = sub
-            else:
-                finite = [
-                    float(v)
-                    for v in vals
-                    if isinstance(v, (int, float))
-                    and not isinstance(v, bool)
-                    and np.isfinite(v)
-                ]
-                if finite:
-                    out[k] = float(reducer(finite))
-        return out
+    _reduce_dicts = _reduce_metric_dicts
 
     def _init_space(temp_dir: Path, name: str) -> dict:
         return {
@@ -3565,3 +3576,535 @@ def evaluate_points_3d_samples(
                 st["e_store"].close()
                 st["rel_store"].close()
                 st["normal_store"].close()
+
+
+def evaluate_points_3d_sparse_samples(
+    dataset: MultiModalDataset,
+    pred_is_radial: bool,
+    fov_domain: Optional[str] = None,
+    gt_name: str = "GT",
+    pred_name: str = "Pred",
+    num_workers: int = 4,
+    verbose: bool = False,
+    sanity_checker: Optional[SanityChecker] = None,
+    sky_mask_enabled: bool = False,
+    alignment_mode: str = "auto_affine",
+    input_space_hint: Optional[str] = None,
+    max_cloud_points: int = POINTS3D_DEFAULT_MAX_POINTS,
+) -> dict:
+    """Evaluate a dense depth prediction as ``points_3d`` against sparse GT.
+
+    This is the sparse-LiDAR counterpart of :func:`evaluate_points_3d_samples`
+    (see ``points_3d_metrics_proposal.md`` §4-D).  The ground truth is a sparse
+    point cloud (``gt.sparse_depth``); the prediction is a dense (planar or
+    radial) depth map that is **unprojected with the GT intrinsics** into a
+    per-pixel 3D point map.  The GT cloud is transformed into the same camera
+    frame and projected into the prediction plane, giving both a visible GT
+    point cloud and per-pixel correspondences at the hit pixels.
+
+    Emitted metric categories (all under the ``points3d`` namespace, in
+    ``native``/``metric`` gauge spaces with a canonical alias):
+
+      - ``cloud_distance`` — the **primary** geometry metric here.  Because the
+        GT is sparse and the prediction dense, only the correspondence-free
+        ``gt→pred`` direction is meaningful, so this reports **completeness**
+        (mean/median nearest-predicted distance per GT return) and **recall**
+        at each threshold (see :func:`compute_sparse_cloud_distance_metrics`).
+      - ``point_error`` — Euclidean 3D agreement (EPE/RMSE/percentiles/δ-acc)
+        computed at the projected sparse correspondences.
+      - ``error_decomposition`` — radial (≈depth) vs lateral (≈camera-model)
+        split, ``lateral_fraction``, plus ray angular error and ρ_A on the
+        native point-map directions.
+
+    Dense-neighbourhood ``geometric`` metrics (normals, edge F1) are omitted,
+    exactly as the sparse-depth pipeline omits SSIM/normals/edge F1.
+
+    Args:
+        dataset: MultiModalDataset with a sparse ``gt`` point cloud, a dense
+            ``pred`` depth map, and hierarchical ``intrinsics`` /
+            ``camera_extrinsics`` (optionally ``lidar_extrinsics`` /
+            ``segmentation``) — i.e. the same shape as
+            :func:`evaluate_sparse_depth_samples`.
+        pred_is_radial: Whether the prediction stores radial (Euclidean) depth.
+        alignment_mode: Depth calibration mode ``none``/``auto_affine``/
+            ``affine``.  When calibration runs, the affine-aligned depth is
+            unprojected to form the ``metric`` space.
+        input_space_hint: Optional declared prediction space (``relative`` /
+            ``affine``) that forces calibration under ``auto_affine``.
+        max_cloud_points: Per-cloud subsample cap for the cloud-distance query.
+
+    Returns:
+        Dict shaped like :func:`evaluate_points_3d_samples`:
+        ``points_3d_native`` / ``points_3d_metric`` / ``points_3d`` summaries,
+        ``per_file_metrics``, ``dataset_info``, ``space_info`` and
+        ``spatial_info``.
+    """
+    valid_alignment_modes = {"none", "auto_affine", "affine"}
+    if alignment_mode not in valid_alignment_modes:
+        raise ValueError(
+            f"Invalid alignment_mode '{alignment_mode}'. "
+            f"Expected one of {sorted(valid_alignment_modes)}."
+        )
+    valid_input_space_hints = {None, "relative", "affine"}
+    if input_space_hint not in valid_input_space_hints:
+        raise ValueError(
+            f"Invalid input_space_hint '{input_space_hint}'. "
+            "Expected None, 'relative', or 'affine'."
+        )
+
+    num_samples = len(dataset)
+    if num_samples == 0:
+        raise ValueError("Dataset has no matched samples")
+
+    resolved_domain: Optional[str] = fov_domain
+    threshold_deg: Optional[float] = (
+        get_threshold_for_domain(resolved_domain) if resolved_domain else None
+    )
+
+    def _init_space(temp_dir: Path, name: str) -> dict:
+        return {
+            "pe_images": [],
+            "dec_images": [],
+            "cloud_images": [],
+            "e_store": _StreamingValueStore(str(temp_dir / f"p3ds_{name}_e.bin")),
+            "rel_store": _StreamingValueStore(str(temp_dir / f"p3ds_{name}_rel.bin")),
+            "acc_counts": {tau: 0 for tau in POINTS3D_ABS_THRESHOLDS},
+            "acc_rel_counts": {tau: 0 for tau in POINTS3D_REL_THRESHOLDS},
+            "n_points": 0,
+        }
+
+    def _summarize_space(store: dict, angular_agg: dict, rho_a_agg: dict) -> dict:
+        point_error: dict = {}
+        pe_image_mean = _reduce_metric_dicts(store["pe_images"], np.mean)
+        pe_image_median = _reduce_metric_dicts(store["pe_images"], np.median)
+        if pe_image_mean:
+            point_error["image_mean"] = pe_image_mean
+        if pe_image_median:
+            point_error["image_median"] = pe_image_median
+        n_pts = store["n_points"]
+        if n_pts > 0:
+            e_med, e_p90, e_p95 = store["e_store"].quantiles([0.5, 0.9, 0.95])
+            rel_med, rel_p90 = store["rel_store"].quantiles([0.5, 0.9])
+            pixel_pool = {
+                "mae3d": store["e_store"].mean(),
+                "median3d": e_med,
+                "p90": e_p90,
+                "p95": e_p95,
+                "rel_median": rel_med,
+                "rel_p90": rel_p90,
+            }
+            for tau in POINTS3D_ABS_THRESHOLDS:
+                pixel_pool[points3d_threshold_key("acc", tau)] = (
+                    store["acc_counts"][tau] / n_pts * 100.0
+                )
+            for tau in POINTS3D_REL_THRESHOLDS:
+                pixel_pool[points3d_threshold_key("acc_rel", tau)] = (
+                    store["acc_rel_counts"][tau] / n_pts * 100.0
+                )
+            point_error["pixel_pool"] = pixel_pool
+
+        decomposition = _reduce_metric_dicts(store["dec_images"], np.mean)
+        decomposition["angular_error"] = angular_agg
+        decomposition["rho_a"] = rho_a_agg
+
+        cloud = _reduce_metric_dicts(store["cloud_images"], np.mean)
+
+        summary: dict = {}
+        if point_error:
+            summary["point_error"] = point_error
+        if decomposition:
+            summary["error_decomposition"] = decomposition
+        if cloud:
+            summary["cloud_distance"] = cloud
+        return summary
+
+    def _compute_space_metrics(
+        store, pred_map, space_depth, gt_point_map, gt_valid, gt_cloud, sky_valid
+    ):
+        """Compute + accumulate one gauge space's metrics for a sample.
+
+        Validity is resolved *per space* from that space's depth so a negative
+        affine shift (which can drive aligned depth non-positive) never leaks a
+        zeroed unprojected point into the correspondences or the cloud.
+        """
+        pred_ok = np.isfinite(space_depth) & (space_depth > 0)
+        if sky_valid is not None:
+            pred_ok = pred_ok & sky_valid
+        corr_valid = gt_valid & pred_ok
+
+        fval: dict = {}
+        pv = pred_map[corr_valid]
+        gv = gt_point_map[corr_valid]
+        if pv.shape[0] > 0:
+            dd = decompose_point_errors(pv, gv)
+            pe = compute_point_error_metrics(dd["euclidean"], dd["relative"])
+            dec = compute_decomposition_metrics(dd["radial"], dd["lateral"])
+            store["e_store"].append(dd["euclidean"])
+            store["rel_store"].append(dd["relative"])
+            store["n_points"] += int(dd["euclidean"].size)
+            for tau in POINTS3D_ABS_THRESHOLDS:
+                store["acc_counts"][tau] += int(np.sum(dd["euclidean"] < tau))
+            for tau in POINTS3D_REL_THRESHOLDS:
+                store["acc_rel_counts"][tau] += int(np.sum(dd["relative"] < tau))
+            if pe:
+                store["pe_images"].append(pe)
+                fval["point_error"] = pe
+            if dec:
+                store["dec_images"].append(dec)
+                fval["error_decomposition"] = dict(dec)
+        cd = compute_sparse_cloud_distance_metrics(
+            pred_map[pred_ok], gt_cloud, max_points=max_cloud_points
+        )
+        if cd:
+            store["cloud_images"].append(cd)
+            fval["cloud_distance"] = cd
+        return fval, int(corr_valid.sum())
+
+    # Native-frame angular accumulators (rays-style streaming), shared across
+    # spaces because ray direction is (near-)invariant to the depth gauge.
+    _agg_total = 0
+    _agg_sum = 0.0
+    _agg_below = {5: 0, 10: 0, 15: 0, 20: 0, 30: 0}
+    _HIST_BINS = 18000
+    _HIST_MAX = 180.0
+    _agg_hist = np.zeros(_HIST_BINS, dtype=np.int64)
+    rho_a_values: list[float] = []
+
+    per_file_metrics: dict = {}
+    pred_native_dims: Optional[tuple[int, int]] = None
+    normalized_predictions = False
+    alignment_applied = False
+    input_space_detected = "unknown"
+    logged_stats = False
+    total_input_points = 0
+    total_projected_pixels = 0
+    total_evaluated_points = 0
+    projection_extrinsics_source: Optional[str] = None
+
+    if alignment_mode == "none":
+        print("Sparse points_3d alignment mode: none")
+    elif alignment_mode == "auto_affine":
+        print(
+            "Sparse points_3d alignment mode: auto_affine "
+            "(normalized-depth detection)"
+        )
+    else:
+        print("Sparse points_3d alignment mode: affine (always apply scale-and-shift)")
+
+    with tempfile.TemporaryDirectory(prefix="euler_eval_points_3d_sparse_") as td_str:
+        temp_dir = Path(td_str)
+        stores = {sp: _init_space(temp_dir, sp) for sp in ("native", "metric")}
+        try:
+            print("Computing sparse points_3d metrics...")
+            points_iter = _prefetched_iter(dataset, num_workers)
+            for i, sample in tqdm(
+                points_iter,
+                total=num_samples,
+                desc="Processing sparse points_3d pairs",
+            ):
+                hierarchy, entry_id = _extract_hierarchy(sample)
+
+                point_cloud = to_numpy_point_cloud(sample["gt"])
+                depth_pred = to_numpy_depth(sample["pred"])
+                intrinsics_K = _get_intrinsics_K(sample)
+                camera_extrinsics, extrinsics_source = (
+                    _get_pointcloud_to_camera_extrinsics(sample)
+                )
+                if intrinsics_K is None:
+                    raise ValueError(
+                        f"Sample {entry_id!r} is missing intrinsics for sparse "
+                        "points_3d projection/unprojection."
+                    )
+                if camera_extrinsics is None:
+                    raise ValueError(
+                        f"Sample {entry_id!r} is missing usable camera_extrinsics "
+                        "for sparse points_3d projection. Provide a direct "
+                        "source-to-camera transform (for MUSES, lidar2rgb) or "
+                        "separate lidar_extrinsics and camera_extrinsics poses."
+                    )
+                if projection_extrinsics_source is None:
+                    projection_extrinsics_source = extrinsics_source
+
+                if i == 0:
+                    pred_native_dims = depth_pred.shape[:2]
+                    finite_pred = depth_pred[np.isfinite(depth_pred)]
+                    if input_space_hint in {"relative", "affine"} and finite_pred.size:
+                        normalized_predictions = True
+                        input_space_detected = input_space_hint
+                    elif (
+                        finite_pred.size
+                        and finite_pred.max() <= 1.0 + 1e-3
+                        and finite_pred.min() >= -1.0 - 1e-3
+                    ):
+                        normalized_predictions = True
+                        input_space_detected = "normalized"
+                    elif finite_pred.size:
+                        input_space_detected = "metric"
+                    print(f"  Detected native depth space: {input_space_detected}")
+
+                # Project the sparse GT cloud into the prediction camera frame.
+                gt_point_map, sparse_mask, projection_meta = (
+                    project_point_cloud_to_point_map(
+                        point_cloud,
+                        intrinsics_K,
+                        camera_extrinsics,
+                        depth_pred.shape[:2],
+                    )
+                )
+                total_input_points += projection_meta["input_points"]
+                total_projected_pixels += projection_meta["projected_pixels"]
+
+                if resolved_domain is None and i == 0:
+                    h, w = depth_pred.shape[:2]
+                    resolved_domain = classify_fov_domain(intrinsics_K, h, w)
+                    threshold_deg = get_threshold_for_domain(resolved_domain)
+                    print(f"  FoV domain auto-detected: {resolved_domain}")
+
+                sky_valid = None
+                if sky_mask_enabled:
+                    sky_valid = _get_sky_mask(sample)
+                    if (
+                        sky_valid is not None
+                        and sky_valid.shape[:2] != depth_pred.shape[:2]
+                    ):
+                        sky_valid = align_to_prediction(sky_valid, depth_pred)
+
+                # Raw prediction depth in radial metres, then affine-aligned.
+                depth_pred_raw = process_depth(
+                    depth_pred, 1.0, pred_is_radial, intrinsics_K
+                )
+                gt_radial = np.linalg.norm(gt_point_map, axis=-1)
+                if alignment_mode == "none":
+                    depth_pred_aligned = depth_pred_raw
+                else:
+                    do_alignment = alignment_mode == "affine" or normalized_predictions
+                    if do_alignment:
+                        fit_source = (
+                            depth_pred if normalized_predictions else depth_pred_raw
+                        )
+                        fit_mask = (
+                            sparse_mask
+                            & (gt_radial > 0)
+                            & np.isfinite(gt_radial)
+                            & np.isfinite(fit_source)
+                        )
+                        if sky_valid is not None:
+                            fit_mask &= sky_valid
+                        depth_pred_aligned, s_fit, t_fit = compute_scale_and_shift(
+                            fit_source,
+                            gt_radial,
+                            fit_mask,
+                            max_gt_percentile=(
+                                SKY_MASK_ALIGNMENT_MAX_GT_PERCENTILE
+                                if sky_mask_enabled
+                                else None
+                            ),
+                        )
+                        alignment_applied = True
+                        if verbose and not logged_stats:
+                            print(f"  Fitted scale={s_fit:.4f}, shift={t_fit:.4f}")
+                    else:
+                        depth_pred_aligned = depth_pred_raw
+
+                if verbose and not logged_stats:
+                    _log_sample_stats(gt_radial, depth_pred_raw, "SPARSE POINTS_3D")
+                    logged_stats = True
+
+                # Unproject both depth branches into camera-frame point maps.
+                pred_map_native = unproject_depth_to_points(
+                    depth_pred_raw, intrinsics_K, depth_is_radial=True
+                )
+                aligned_is_raw = depth_pred_aligned is depth_pred_raw
+                pred_map_metric = (
+                    pred_map_native
+                    if aligned_is_raw
+                    else unproject_depth_to_points(
+                        depth_pred_aligned, intrinsics_K, depth_is_radial=True
+                    )
+                )
+
+                # Visible GT returns (projection ∩ sky): defines the GT cloud
+                # for cloud-distance completeness, independent of the gauge.
+                gt_valid = (
+                    sparse_mask
+                    & (gt_radial > 0)
+                    & np.isfinite(gt_radial)
+                )
+                if sky_valid is not None:
+                    gt_valid = gt_valid & sky_valid
+                gt_cloud = gt_point_map[gt_valid]
+
+                # Native correspondence mask drives the shared angular metrics.
+                native_corr = (
+                    gt_valid & (depth_pred_raw > 0) & np.isfinite(depth_pred_raw)
+                )
+                total_evaluated_points += int(native_corr.sum())
+
+                # Angular ray error on native directions (camera-faithful).
+                angles = compute_angular_errors(
+                    pred_map_native, gt_point_map, valid_mask=native_corr
+                )
+                per_img_ang_mean = float(np.mean(angles)) if angles.size else None
+                per_img_ang_median = (
+                    float(np.median(angles)) if angles.size else None
+                )
+                if angles.size:
+                    _agg_total += int(angles.size)
+                    _agg_sum += float(np.sum(angles))
+                    for thr in (5, 10, 15, 20, 30):
+                        _agg_below[thr] += int(np.sum(angles < thr))
+                    bin_idx = np.clip(
+                        (angles / _HIST_MAX * _HIST_BINS).astype(np.int64),
+                        0,
+                        _HIST_BINS - 1,
+                    )
+                    np.add.at(_agg_hist, bin_idx, 1)
+                rho_a_img = (
+                    compute_rho_a(angles, threshold_deg)
+                    if (threshold_deg is not None and angles.size)
+                    else float("nan")
+                )
+                rho_a_values.append(rho_a_img)
+
+                sample_aligned = not aligned_is_raw
+                file_space_values: dict = {}
+                native_fval, _ = _compute_space_metrics(
+                    stores["native"],
+                    pred_map_native,
+                    depth_pred_raw,
+                    gt_point_map,
+                    gt_valid,
+                    gt_cloud,
+                    sky_valid,
+                )
+                file_space_values["native"] = native_fval
+                if sample_aligned:
+                    metric_fval, _ = _compute_space_metrics(
+                        stores["metric"],
+                        pred_map_metric,
+                        depth_pred_aligned,
+                        gt_point_map,
+                        gt_valid,
+                        gt_cloud,
+                        sky_valid,
+                    )
+                    file_space_values["metric"] = metric_fval
+
+                # Attach shared angular error / rho_a to each space's per-file dict.
+                for fval in file_space_values.values():
+                    dval = fval.get("error_decomposition", {})
+                    if per_img_ang_mean is not None:
+                        dval["angular_error"] = {
+                            "mean": per_img_ang_mean,
+                            "median": per_img_ang_median,
+                        }
+                    if np.isfinite(rho_a_img):
+                        dval["rho_a"] = float(rho_a_img)
+                    if dval:
+                        fval["error_decomposition"] = dval
+
+                canonical_sp = "metric" if sample_aligned else "native"
+                canon = file_space_values.get(canonical_sp, {})
+                if sanity_checker is not None and canon:
+                    pe_c = canon.get("point_error", {})
+                    dec_c = canon.get("error_decomposition", {})
+                    sanity_checker.validate_points_3d_metrics(
+                        mae3d=pe_c.get("mae3d"),
+                        lateral_fraction=dec_c.get("lateral_fraction"),
+                        rho_a=dec_c.get("rho_a"),
+                        mean_angle=per_img_ang_mean,
+                        file_id=entry_id,
+                    )
+
+                metrics_dict = {"points_3d": canon}
+                metrics_dict["points_3d_native"] = file_space_values.get("native", {})
+                if sample_aligned:
+                    metrics_dict["points_3d_metric"] = file_space_values.get(
+                        "metric", {}
+                    )
+                set_value(
+                    per_file_metrics,
+                    hierarchy,
+                    entry_id,
+                    {"id": entry_id, "metrics": metrics_dict},
+                )
+
+            print("Aggregating sparse points_3d results...")
+            if _agg_total > 0:
+                cumsum = np.cumsum(_agg_hist)
+                median_bin = int(np.searchsorted(cumsum, _agg_total / 2.0))
+                approx_median = (median_bin + 0.5) * _HIST_MAX / _HIST_BINS
+                angular_agg = {
+                    "mean_angle": _agg_sum / _agg_total,
+                    "median_angle": approx_median,
+                    "percent_below_5": _agg_below[5] / _agg_total * 100,
+                    "percent_below_10": _agg_below[10] / _agg_total * 100,
+                    "percent_below_15": _agg_below[15] / _agg_total * 100,
+                    "percent_below_20": _agg_below[20] / _agg_total * 100,
+                    "percent_below_30": _agg_below[30] / _agg_total * 100,
+                }
+            else:
+                angular_agg = aggregate_angular_errors([])
+            rho_a_agg = aggregate_rho_a(rho_a_values)
+
+            emit_metric = alignment_applied
+            native_summary = _summarize_space(
+                stores["native"], angular_agg, rho_a_agg
+            )
+            metric_summary = (
+                _summarize_space(stores["metric"], angular_agg, rho_a_agg)
+                if emit_metric
+                else None
+            )
+            canonical_summary = metric_summary if emit_metric else native_summary
+            emitted_spaces = ["native"] + (["metric"] if emit_metric else [])
+
+            return {
+                "points_3d_native": native_summary,
+                "points_3d_metric": metric_summary,
+                "points_3d": canonical_summary,
+                "per_file_metrics": per_file_metrics,
+                "dataset_info": {
+                    "num_pairs": num_samples,
+                    "gt_name": gt_name,
+                    "pred_name": pred_name,
+                    "gt_representation": "point_cloud",
+                    "fov_domain": resolved_domain,
+                    "threshold_deg": threshold_deg,
+                    "input_points": total_input_points,
+                    "projected_pixels": total_projected_pixels,
+                    "evaluated_points": total_evaluated_points,
+                    "gt_synthesized_from_depth": False,
+                },
+                "space_info": {
+                    "input_space_detected": input_space_detected,
+                    "metric_space_source": (
+                        "scale_shift" if alignment_applied else None
+                    ),
+                    "calibration_mode": alignment_mode,
+                    "calibration_applied": alignment_applied,
+                    "emitted_spaces": emitted_spaces,
+                    "canonical_space": "metric" if emit_metric else "native",
+                },
+                "spatial_info": {
+                    "gt_dimensions": None,
+                    "pred_dimensions": {
+                        "height": pred_native_dims[0],
+                        "width": pred_native_dims[1],
+                    }
+                    if pred_native_dims
+                    else None,
+                    "method": "pointcloud_projection",
+                    "extrinsics_source": projection_extrinsics_source,
+                    "evaluated_dimensions": {
+                        "height": pred_native_dims[0],
+                        "width": pred_native_dims[1],
+                    }
+                    if pred_native_dims
+                    else None,
+                },
+            }
+        finally:
+            for st in stores.values():
+                st["e_store"].close()
+                st["rel_store"].close()

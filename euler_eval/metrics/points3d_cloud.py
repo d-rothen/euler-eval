@@ -99,3 +99,65 @@ def compute_cloud_distance_metrics(
         }
 
     return {"chamfer": chamfer, "fscore": fscore}
+
+
+def compute_sparse_cloud_distance_metrics(
+    pred_points: np.ndarray,
+    gt_points: np.ndarray,
+    max_points: int = DEFAULT_MAX_POINTS,
+    thresholds: tuple = FSCORE_THRESHOLDS,
+) -> Optional[dict]:
+    """Directed (GT→pred) cloud agreement for a sparse GT point set.
+
+    When the ground truth is a sparse LiDAR cloud but the prediction is a
+    *dense* surface, the symmetric Chamfer distance is misleading: a perfectly
+    correct dense prediction still has many legitimate points far from any
+    sparse GT return, so the ``pred→gt`` (accuracy / precision) side is
+    dominated by that sparsity rather than by error.  This function therefore
+    reports only the meaningful ``gt→pred`` direction — **completeness** (is
+    every GT return covered by a nearby predicted point?) and the matching
+    **recall** at each distance threshold — mirroring the recommendation in
+    ``points_3d_metrics_proposal.md`` §4-D ("lead with completeness / recall;
+    restrict or omit accuracy / precision").
+
+    The result reuses the dense ``cloud_distance`` schema so the two paths share
+    metric descriptions: ``chamfer.completeness`` / ``chamfer.median`` carry the
+    GT→pred nearest-neighbour statistics and ``fscore.tau_<τ>.recall`` the
+    coverage fractions.
+
+    Args:
+        pred_points: ``(N, 3)`` predicted (dense) points.
+        gt_points: ``(M, 3)`` ground-truth (sparse) points.
+        max_points: Per-cloud subsample cap (``None`` to disable).
+        thresholds: Recall distance thresholds in metres.
+
+    Returns:
+        Dict with a ``chamfer`` block (``completeness``, ``median``) and an
+        ``fscore`` block keyed by threshold (``recall`` only).  ``None`` if
+        either set is empty.
+    """
+    from scipy.spatial import cKDTree
+
+    pred = np.asarray(pred_points, dtype=np.float64)
+    gt = np.asarray(gt_points, dtype=np.float64)
+    if pred.shape[0] == 0 or gt.shape[0] == 0:
+        return None
+
+    pred = _subsample(pred, max_points)
+    gt = _subsample(gt, max_points)
+
+    tree_pred = cKDTree(pred)
+    # completeness: each GT point to its nearest predicted point.
+    dist_gt_to_pred, _ = tree_pred.query(gt, k=1)
+
+    chamfer = {
+        "completeness": float(np.mean(dist_gt_to_pred)),
+        "median": float(np.median(dist_gt_to_pred)),
+    }
+
+    fscore = {}
+    for tau in thresholds:
+        recall = float(np.mean(dist_gt_to_pred < tau))
+        fscore[threshold_key(tau)] = {"recall": recall}
+
+    return {"chamfer": chamfer, "fscore": fscore}

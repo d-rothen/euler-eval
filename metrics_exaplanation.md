@@ -524,3 +524,30 @@ depth dataset metadata.
   headline; raw Chamfer is the diagnostic.
 - Clouds are deterministically subsampled (default cap 50k points/cloud) to bound
   the KD-tree cost.
+
+### Sparse pointcloud GT (`gt.sparse_depth`)
+
+When the ground truth is a sparse LiDAR cloud and the prediction is a dense depth
+map, the same `points3d.eval` metric set is produced by unprojecting the dense
+depth with the GT intrinsics into a point map and comparing it to the sparse GT
+cloud (implemented in `evaluate_points_3d_sparse_samples`). The differences from
+the dense-GT path above:
+
+- **GT is a cloud, not a dense map.** The sparse GT is transformed into the
+  prediction's camera frame with `gt.camera_extrinsics` (composing
+  `gt.lidar_extrinsics` when supplied) and projected into the image plane. The
+  nearest return per pixel gives the *visible* GT cloud and per-pixel
+  correspondences.
+- **Gauge is depth affine, not similarity.** Because the prediction is a depth
+  map (unprojected with the *GT* intrinsics, so it already shares the GT frame),
+  the `native`/`metric` split is the depth scale-and-shift selected by
+  `--depth-alignment` — `metric` unprojects the affine-aligned depth.
+- **`cloud_distance` is directed.** Only the `gt→pred` side is reported —
+  `chamfer.completeness` (mean) and `chamfer.median` of each GT return's nearest
+  predicted point, and `fscore.tau_<τ>.recall` (fraction of GT returns covered
+  within `τ`). The `pred→gt` `accuracy`/`precision`/`f1` side is **omitted**
+  because a correct dense prediction legitimately has many points far from any
+  sparse GT return, which would make those numbers misleading.
+- `point_error` and `error_decomposition` are computed at the projected
+  correspondences; the dense-neighbourhood `geometric` metrics (normals, edge
+  F1) are skipped, mirroring how sparse-depth omits SSIM/normals/edge F1.

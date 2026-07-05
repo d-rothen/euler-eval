@@ -30,6 +30,7 @@ from .data import (
 from .evaluate import (
     evaluate_depth_samples,
     evaluate_points_3d_samples,
+    evaluate_points_3d_sparse_samples,
     evaluate_rays_samples,
     evaluate_rgb_samples,
     evaluate_sparse_depth_samples,
@@ -973,7 +974,12 @@ def _save_json_to_zip(zip_path: Path, internal_name: str, data: dict) -> None:
 
 
 def save_results(
-    results: dict, dataset_config: dict, modality: str | None = None
+    results: dict,
+    dataset_config: dict,
+    modality: str | None = None,
+    *,
+    default_basename: str = "eval.json",
+    output_file_suffix: str | None = None,
 ) -> Path:
     """Save results to output file.
 
@@ -987,6 +993,14 @@ def save_results(
         modality: When set, save to this specific modality's path
             (e.g. ``"depth"`` or ``"rgb"``).  Falls back to the first
             available modality path when *None*.
+        default_basename: File name used when no explicit ``output_file`` is
+            configured (default ``"eval.json"``).  Lets a second modality that
+            shares a prediction path (e.g. sparse ``points_3d`` alongside sparse
+            ``depth``) write to a distinct file instead of clobbering it.
+        output_file_suffix: When an explicit ``output_file`` is configured, this
+            suffix is inserted before its extension (e.g. ``"_points3d"`` turns
+            ``model_a.json`` into ``model_a_points3d.json``) so multiple
+            modalities can honour a single configured path without collision.
 
     Returns:
         Path where results were saved.
@@ -1006,7 +1020,7 @@ def save_results(
                     dataset_config[selected_modality]["path"],
                     split=dataset_config[selected_modality].get("split"),
                 )
-                / "eval.json"
+                / default_basename
             )
         else:
             # Default: save alongside first available modality path
@@ -1017,13 +1031,17 @@ def save_results(
                             dataset_config[mod]["path"],
                             split=dataset_config[mod].get("split"),
                         )
-                        / "eval.json"
+                        / default_basename
                     )
                     break
         if output_file is None:
-            output_file = Path("eval.json")
+            output_file = Path(default_basename)
     else:
         output_file = Path(output_file)
+        if output_file_suffix:
+            output_file = output_file.with_name(
+                f"{output_file.stem}{output_file_suffix}{output_file.suffix}"
+            )
 
     zip_path, internal_name = _find_zip_ancestor(output_file)
     if zip_path is not None and internal_name:
@@ -1273,6 +1291,7 @@ def main():
         rgb_save = {}
         rays_save = {}
         points_3d_save = {}
+        points_3d_sparse_save = {}
         et_eval_datasets = {}
         has_benchmark = args.benchmark_depth_range is not None
 
@@ -2110,6 +2129,169 @@ def main():
                 "synthesize the GT point map."
             )
 
+        # -- Points-3D against sparse pointcloud GT --
+        # When the GT is a sparse LiDAR cloud (gt.sparse_depth) and the
+        # prediction is a dense depth map, evaluate the *3D* metrics by
+        # unprojecting the dense depth with the GT intrinsics and comparing the
+        # resulting point cloud to the sparse GT cloud (Chamfer / F-score
+        # completeness + per-correspondence 3D error). Independent of the
+        # sparse-depth pointwise-depth branch; gated by --skip-points-3d.
+        if has_depth and gt_sparse_depth_path and not args.skip_points_3d:
+            pred_depth_path = pred_depth_config["path"]
+            pred_depth_split = pred_depth_config.get("split")
+            print(f"\n[POINTS_3D · SPARSE] Evaluating: '{ds_name}'")
+            print(f"  GT sparse pointcloud: {gt_sparse_depth_path}")
+            print(f"  Pred dense depth:     {pred_depth_path}")
+            if pred_depth_key != "depth":
+                print(f"  Pred depth entry:     {pred_depth_key}")
+
+            points_3d_sparse_dataset = build_sparse_depth_eval_dataset(
+                gt_sparse_depth_path=gt_sparse_depth_path,
+                pred_depth_path=pred_depth_path,
+                intrinsics_path=intrinsics_path,
+                camera_extrinsics_path=camera_extrinsics_path,
+                lidar_extrinsics_path=lidar_extrinsics_path,
+                segmentation_path=segmentation_path,
+                pred_depth_metadata_scope=(
+                    pred_depth_key if pred_depth_key != "depth" else None
+                ),
+                segmentation_modality_key=segmentation_key or "segmentation",
+                gt_sparse_depth_split=gt_sparse_depth_split,
+                pred_depth_split=pred_depth_split,
+                intrinsics_split=intrinsics_split,
+                camera_extrinsics_split=camera_extrinsics_split,
+                lidar_extrinsics_split=lidar_extrinsics_split,
+                segmentation_split=segmentation_split,
+            )
+            et_eval_datasets["points_3d_sparse"] = points_3d_sparse_dataset
+
+            p3ds_meta = get_sparse_depth_metadata(points_3d_sparse_dataset)
+            print(f"  pred_radial_depth: {p3ds_meta['pred_radial_depth']}")
+            print(f"  Matched pairs: {len(points_3d_sparse_dataset)}")
+
+            points_3d_sparse_results = evaluate_points_3d_sparse_samples(
+                dataset=points_3d_sparse_dataset,
+                pred_is_radial=p3ds_meta["pred_radial_depth"],
+                gt_name=gt.get("name", "GT"),
+                pred_name=ds_name,
+                num_workers=args.num_workers,
+                verbose=args.verbose,
+                sanity_checker=sanity_checker,
+                sky_mask_enabled=args.mask_sky,
+                alignment_mode=args.depth_alignment,
+                input_space_hint=_prediction_depth_space_hint(pred_depth_key),
+            )
+
+            if sanity_checker is not None:
+                sanity_checker.print_pair_report(ds_name, modality="points_3d")
+
+            p3s_space_info = points_3d_sparse_results.get("space_info", {})
+            p3s_dataset_info = points_3d_sparse_results.get("dataset_info", {})
+            p3s_spatial = points_3d_sparse_results.get("spatial_info", {})
+
+            points_3d_sparse_ns = _EvalNamespace(
+                producer="euler-eval",
+                producer_version=_get_version(),
+                modalities=("points_3d",),
+                axes=_points_3d_eval_axes(),
+                descriptions=_POINTS_3D_EVAL_DESCRIPTIONS,
+            )
+            points_3d_sparse_save = {
+                "metricSet": _points_3d_metric_set_envelope(
+                    points_3d_sparse_ns,
+                    metadata={
+                        "input_space_detected": p3s_space_info.get(
+                            "input_space_detected", "unknown"
+                        ),
+                        "metric_space_source": p3s_space_info.get(
+                            "metric_space_source"
+                        ),
+                        "calibration_mode": p3s_space_info.get(
+                            "calibration_mode", "unknown"
+                        ),
+                        "calibration_applied": p3s_space_info.get(
+                            "calibration_applied", False
+                        ),
+                        "emitted_spaces": p3s_space_info.get("emitted_spaces", []),
+                        "canonical_space": p3s_space_info.get(
+                            "canonical_space", "native"
+                        ),
+                        "gt_representation": "point_cloud",
+                        "fov_domain": p3s_dataset_info.get("fov_domain"),
+                        "threshold_deg": p3s_dataset_info.get("threshold_deg"),
+                    },
+                ),
+                "dataset_info": p3s_dataset_info,
+                "meta": _clean_metric_tree({
+                    "version": _get_version(),
+                    "modality": "points_3d",
+                    "device": args.device,
+                    "gt": {
+                        "path": gt_sparse_depth_path,
+                        "split": gt_sparse_depth_split,
+                        "representation": "point_cloud",
+                    },
+                    "pred": {
+                        "path": pred_depth_path,
+                        "split": pred_depth_split,
+                        "entry": pred_depth_key,
+                        "dimensions": p3s_spatial.get("pred_dimensions"),
+                    },
+                    "calibration": {
+                        "intrinsics_path": intrinsics_path,
+                        "intrinsics_split": intrinsics_split,
+                        "camera_extrinsics_path": camera_extrinsics_path,
+                        "camera_extrinsics_split": camera_extrinsics_split,
+                        "lidar_extrinsics_path": lidar_extrinsics_path,
+                        "lidar_extrinsics_split": lidar_extrinsics_split,
+                    },
+                    "spatial_alignment": {
+                        "method": p3s_spatial.get("method", "pointcloud_projection"),
+                        "evaluated_dimensions": p3s_spatial.get(
+                            "evaluated_dimensions"
+                        ),
+                    },
+                    "modality_params": p3ds_meta,
+                    "eval_params": {
+                        "sky_masking": args.mask_sky,
+                        "depth_alignment_mode": args.depth_alignment,
+                        "num_workers": args.num_workers,
+                    },
+                }),
+                "points3d": {"eval": {}},
+            }
+            for space_name, result_key in (
+                ("native", "points_3d_native"),
+                ("metric", "points_3d_metric"),
+            ):
+                branch = points_3d_sparse_results.get(result_key)
+                if branch is not None:
+                    points_3d_sparse_save["points3d"]["eval"][space_name] = (
+                        _clean_metric_tree(branch)
+                    )
+            p3s_pfm = points_3d_sparse_results.get("per_file_metrics", {})
+            if p3s_pfm:
+                canonical_space = p3s_space_info.get("canonical_space", "native")
+                points_3d_sparse_save["per_file_metrics"] = _clean_per_file_metrics(
+                    _wrap_pfm_metrics(
+                        p3s_pfm,
+                        lambda m: _wrap_depth_space_pfm_metrics(
+                            m,
+                            metric_root="points3d",
+                            canonical_key="points_3d",
+                            canonical_space=canonical_space,
+                        ),
+                    ),
+                    label="points_3d sparse per_file_metrics",
+                )
+            all_results.setdefault("per_file_metrics", {}).update(p3s_pfm)
+
+            print_results(
+                {k: v for k, v in points_3d_sparse_results.items()
+                 if k not in ("per_file_metrics", "spatial_info")},
+                f"POINTS_3D · SPARSE: {ds_name}",
+            )
+
         # Save per-modality results to respective dataset paths
         if depth_save:
             depth_out = save_results(
@@ -2134,6 +2316,19 @@ def main():
                 points_3d_save, dataset_config, modality="points_3d"
             )
             print(f"\n  Points-3D results saved to: {points_3d_out}")
+        if points_3d_sparse_save:
+            # Distinct file so it never clobbers the sparse-depth eval.json that
+            # shares the same dense-depth prediction path / output_file.
+            points_3d_sparse_out = save_results(
+                points_3d_sparse_save,
+                dataset_config,
+                modality="points_3d",
+                default_basename="points3d_eval.json",
+                output_file_suffix="_points3d",
+            )
+            print(
+                f"\n  Points-3D (sparse GT) results saved to: {points_3d_sparse_out}"
+            )
 
         # Log to euler_train
         if et_run is not None and et_eval_datasets:

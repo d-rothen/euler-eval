@@ -7,7 +7,7 @@ A comprehensive evaluation toolkit for comparing predicted depth maps, RGB image
 - **Depth metrics**: PSNR, SSIM, LPIPS, FID, KID, AbsRel, RMSE, Scale-Invariant Log Error, Normal Consistency, Depth Edge F1
 - **RGB metrics**: PSNR, SSIM, LPIPS, FID, SCE (Structural Chromatic Error), Edge F1, Tail Errors (p95/p99), High-Frequency Energy Ratio, Depth-Binned Photometric Error
 - **Rays metrics**: ρ_A (AUC of angular accuracy curve), Angular Error statistics and threshold percentages
-- **Points-3D metrics**: for models that predict a per-pixel 3D point map *and their own camera*: Euclidean 3D error (EPE/RMSE/3D δ-accuracy), radial-vs-lateral error decomposition (depth vs camera-model attribution) with ρ_A, true-3D surface normals, 3D edge F1, and correspondence-free Chamfer / F-score. Native + similarity-gauge-aligned (Umeyama) metric spaces.
+- **Points-3D metrics**: for models that predict a per-pixel 3D point map *and their own camera*: Euclidean 3D error (EPE/RMSE/3D δ-accuracy), radial-vs-lateral error decomposition (depth vs camera-model attribution) with ρ_A, true-3D surface normals, 3D edge F1, and correspondence-free Chamfer / F-score. Native + similarity-gauge-aligned (Umeyama) metric spaces. Also evaluates a **dense depth prediction against sparse pointcloud GT** (`gt.sparse_depth`): the depth is unprojected with the GT intrinsics and scored in 3D via directed Chamfer completeness / recall plus per-correspondence 3D error.
 - **Benchmark binning**: Optional depth-range benchmark that subdivides metrics into square-root-scaled near/mid/far bins
 - **Sanity checking**: Automatic validation of metric results against configurable thresholds, with detailed warning reports
 - **Sky masking**: Optional exclusion of sky regions from metrics using GT segmentation
@@ -136,7 +136,14 @@ depth-eval config.json --rgb-fid-backend clean-fid
 depth-eval config.json --benchmark-depth-range 0.01 80.0
 
 # Evaluate dense depth predictions against sparse pointcloud GT
+# (emits pointwise sparse-depth metrics AND 3D points_3d metrics)
 depth-eval example_sparse_depth_config.json --skip-rgb --skip-rays
+
+# Sparse pointcloud GT, but only the 3D (points_3d) metrics
+depth-eval example_sparse_depth_config.json --skip-depth --skip-rgb --skip-rays
+
+# Sparse pointcloud GT, but only the pointwise depth metrics
+depth-eval example_sparse_depth_config.json --skip-points-3d --skip-rgb --skip-rays
 
 # Skip rays evaluation
 depth-eval config.json --skip-rays
@@ -213,6 +220,8 @@ Defines GT modalities, prediction datasets to evaluate, and optional euler_train
 Each modality entry can optionally include a `split` field to select a specific split from the dataset (e.g. `{ "path": "/data/gt/depth", "split": "test" }`). euler-loading inline selectors are also accepted in `path`, such as `/data/muses.zip:test` or `/data/muses.zip:test#scope=rgb`.
 
 For sparse pointcloud depth evaluation, use `gt.sparse_depth` instead of `gt.depth`. The prediction uses a dense depth-like map under `datasets[].depth`, `datasets[].relative_depth`, or `datasets[].affine_depth`. The evaluator projects the sparse GT point cloud into the prediction image plane using `gt.intrinsics` and `gt.camera_extrinsics`, then computes pointwise depth metrics only at projected valid pixels. For MUSES through `euler_loading.loaders.muses`, `gt.camera_extrinsics` normally resolves to the direct `lidar2rgb` transform and no extra lidar pose is needed. If a dataset exposes separate lidar and camera poses in a shared frame instead, provide optional `gt.lidar_extrinsics`; the evaluator composes `inv(camera_pose) @ lidar_pose` before projection.
+
+The **same sparse-depth config** additionally produces **3D (`points_3d`) metrics** unless `--skip-points-3d` is set. The dense depth prediction is unprojected with `gt.intrinsics` into a per-pixel 3D point map and scored against the sparse GT cloud in metric 3D space (Chamfer completeness / recall, plus per-correspondence 3D error and radial/lateral decomposition — see [Sparse Points-3D Metrics](#sparse-points-3d-metrics)). These are written to a separate `points3d_eval.json` (or `<output_file>_points3d.json`) so they never clobber the sparse-depth `eval.json`. The 3D `native`/`metric` gauge is the depth affine scale-and-shift selected by `--depth-alignment`.
 
 Sparse depth does not require segmentation GT. `gt.segmentation` and
 `gt.semantic_segmentation` are optional aliases for the same sky-mask source.
@@ -385,6 +394,30 @@ The angular `error_decomposition` ray metrics and `rho_a` are computed on the
 **native** point-map directions (the camera-faithful frame); the radial/lateral and
 Euclidean metrics are reported per space.
 
+### Sparse Points-3D Metrics
+
+When the ground truth is a sparse pointcloud (`gt.sparse_depth`) and the
+prediction is a dense depth map, the evaluator additionally scores the
+prediction as a 3D point map (unless `--skip-points-3d` is set). The dense depth
+is unprojected with `gt.intrinsics`; the sparse GT cloud is projected into that
+camera frame, giving both the visible GT cloud and per-pixel correspondences.
+Results serialize under `points3d.eval.{native,metric}` in a separate output
+file. The `native`/`metric` gauge is the depth affine scale-and-shift chosen by
+`--depth-alignment`.
+
+Only the categories that stay meaningful with a sparse GT are emitted —
+dense-neighbourhood `geometric` metrics (normals, edge F1) are skipped, and the
+`cloud_distance` block reports only the **directed `gt→pred`** side (a correct
+dense prediction has many legitimate points far from any sparse GT return, so
+`accuracy`/`precision` would be misleading and are omitted):
+
+| Metric | Key (per space) | Description |
+|---|---|---|
+| Cloud completeness | `cloud_distance.chamfer.completeness`, `.median` | Mean / median distance from each GT return to its nearest predicted point (metres, lower is better) |
+| Cloud recall | `cloud_distance.fscore.tau_<τ>.recall` | Fraction of GT returns within τ m of a predicted point, `τ ∈ {0.05, 0.1, 0.25, 0.5}` (higher is better) |
+| 3D point error | `point_error.{image_mean,image_median,pixel_pool}.*` | 3D EPE `mae3d`/`rmse3d`, percentiles, relative error, and δ-accuracy at the projected correspondences |
+| Error decomposition | `error_decomposition.{radial_*,lateral_*,lateral_fraction,angular_error.*,rho_a.*}` | Radial (≈ depth) vs lateral (≈ camera-model) split at correspondences, with ray angular error and ρ_A |
+
 ## Output
 
 Results are saved as JSON per modality per prediction dataset (one file for depth or sparse depth, one for RGB, one for rays). Default path: `eval.json` inside each modality's dataset path, unless overridden by `output_file` in the config.
@@ -454,6 +487,8 @@ For depth outputs:
 For sparse depth outputs, the internal Python result dict still uses `sparse_depth_native`, `sparse_depth_metric`, and `sparse_depth`, but serialized `eval.json` metric paths are rooted at `sparsedepth.eval` to satisfy external namespace validation. Only `standard` and `depth_metrics` categories are present.
 
 For points_3d outputs, the internal Python result dict uses `points_3d_native`, `points_3d_metric`, and `points_3d` (canonical alias), but serialized `eval.json` metric paths are rooted at `points3d.eval` (no underscore) to satisfy the namespace first-segment rule, mirroring `sparsedepth`. The `metric` space is emitted only when a gauge alignment is applied; otherwise only `native` is present and aliased.
+
+When the points_3d metrics come from a sparse pointcloud GT (`gt.sparse_depth` + a dense depth prediction), they use the same `points3d.eval` namespace but are written to a distinct file — `points3d_eval.json` beside the prediction, or `<output_file>_points3d.json` when `output_file` is set — so they do not overwrite the sparse-depth `eval.json`. Only the `point_error`, `error_decomposition`, and (directed) `cloud_distance` categories are present; the `metric` space is emitted only when `--depth-alignment` calibrates the prediction.
 
 Previous single-depth structure (kept under `depth`) is:
 

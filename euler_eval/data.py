@@ -385,6 +385,102 @@ def project_point_cloud_to_depth_map(
     }
 
 
+def project_point_cloud_to_point_map(
+    point_cloud: np.ndarray,
+    intrinsics_K: np.ndarray,
+    camera_extrinsics: np.ndarray,
+    image_shape: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray, dict[str, int]]:
+    """Project a sparse point cloud into the camera frame as a ``(H, W, 3)`` map.
+
+    This is the 3D companion of :func:`project_point_cloud_to_depth_map`: instead
+    of storing radial depth at each hit pixel it stores the full camera-frame
+    ``(X, Y, Z)`` coordinate, so downstream code can compute 3D point metrics
+    (Chamfer / F-score, per-pixel 3D error) against a ``points_3d`` prediction.
+    When several points land on the same pixel the nearest one by camera ``z``
+    is kept, matching the depth-map projector.
+
+    Args:
+        point_cloud: ``(N, C)`` array whose first three columns are source-frame
+            ``x, y, z`` coordinates in metres.
+        intrinsics_K: Camera intrinsics matrix.
+        camera_extrinsics: Source-to-camera transform (e.g. MUSES ``lidar2rgb``).
+        image_shape: Target dense prediction shape as ``(height, width)``.
+
+    Returns:
+        ``(point_map, valid_mask, metadata)``. ``point_map`` is a
+        ``(H, W, 3)`` float32 array holding the camera-frame point at each hit
+        pixel (``0`` elsewhere); ``valid_mask`` marks the hit pixels.  The
+        ``metadata`` keys mirror :func:`project_point_cloud_to_depth_map`.
+    """
+    height, width = image_shape
+    point_map = np.zeros((height, width, 3), dtype=np.float32)
+    valid_mask = np.zeros((height, width), dtype=bool)
+
+    empty_meta = {
+        "input_points": int(point_cloud.shape[0]),
+        "finite_points": 0,
+        "in_front_points": 0,
+        "in_image_points": 0,
+        "projected_pixels": 0,
+    }
+
+    xyz = np.asarray(point_cloud[:, :3], dtype=np.float32)
+    finite_xyz = np.isfinite(xyz).all(axis=1)
+    if not finite_xyz.any():
+        return point_map, valid_mask, empty_meta
+
+    xyz = xyz[finite_xyz]
+    ones = np.ones((xyz.shape[0], 1), dtype=np.float32)
+    points_h = np.concatenate([xyz, ones], axis=1)
+    camera_points = (camera_extrinsics @ points_h.T).T[:, :3]
+
+    finite_camera = np.isfinite(camera_points).all(axis=1)
+    in_front = finite_camera & (camera_points[:, 2] > 1e-8)
+    empty_meta["finite_points"] = int(finite_xyz.sum())
+    if not in_front.any():
+        return point_map, valid_mask, empty_meta
+
+    camera_points = camera_points[in_front]
+    z = camera_points[:, 2]
+    x = camera_points[:, 0]
+    y = camera_points[:, 1]
+
+    u = intrinsics_K[0, 0] * (x / z) + intrinsics_K[0, 2]
+    v = intrinsics_K[1, 1] * (y / z) + intrinsics_K[1, 2]
+    u_px = np.rint(u).astype(np.int64)
+    v_px = np.rint(v).astype(np.int64)
+    in_image = (u_px >= 0) & (u_px < width) & (v_px >= 0) & (v_px < height)
+    empty_meta["in_front_points"] = int(in_front.sum())
+    if not in_image.any():
+        return point_map, valid_mask, empty_meta
+
+    camera_points = camera_points[in_image]
+    z = z[in_image]
+    u_px = u_px[in_image]
+    v_px = v_px[in_image]
+    flat = v_px * width + u_px
+
+    # Keep the nearest point (smallest camera z) per pixel, matching the
+    # depth-map projector's occlusion handling.
+    order = np.lexsort((z, flat))
+    sorted_flat = flat[order]
+    keep = np.concatenate([[True], sorted_flat[1:] != sorted_flat[:-1]])
+    chosen = order[keep]
+    chosen_flat = flat[chosen]
+
+    point_map.reshape(-1, 3)[chosen_flat] = camera_points[chosen].astype(np.float32)
+    valid_mask.reshape(-1)[chosen_flat] = True
+
+    return point_map, valid_mask, {
+        "input_points": int(point_cloud.shape[0]),
+        "finite_points": int(finite_xyz.sum()),
+        "in_front_points": int(in_front.sum()),
+        "in_image_points": int(in_image.sum()),
+        "projected_pixels": int(chosen_flat.size),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Dimension alignment
 # ---------------------------------------------------------------------------
