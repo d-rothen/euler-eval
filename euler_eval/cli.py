@@ -18,6 +18,7 @@ from .config_paths import normalize_modality_path
 from .data import (
     build_depth_eval_dataset,
     build_points_3d_eval_dataset,
+    build_points_3d_sparse_eval_dataset,
     build_rays_eval_dataset,
     build_rgb_eval_dataset,
     build_sparse_depth_eval_dataset,
@@ -2122,7 +2123,13 @@ def main():
                 f"POINTS_3D: {ds_name}",
             )
 
-        elif has_points_3d and not args.skip_points_3d:
+        elif (
+            has_points_3d
+            and not args.skip_points_3d
+            and not gt_sparse_depth_path
+        ):
+            # (When gt.sparse_depth is present the sparse points_3d branch below
+            # evaluates the predicted point map against the LiDAR cloud instead.)
             print(
                 f"\n[POINTS_3D] Skipping '{ds_name}': no usable GT. Provide "
                 "gt.points_3d, or gt.depth with gt.intrinsics/gt.calibration to "
@@ -2130,56 +2137,91 @@ def main():
             )
 
         # -- Points-3D against sparse pointcloud GT --
-        # When the GT is a sparse LiDAR cloud (gt.sparse_depth) and the
-        # prediction is a dense depth map, evaluate the *3D* metrics by
-        # unprojecting the dense depth with the GT intrinsics and comparing the
-        # resulting point cloud to the sparse GT cloud (Chamfer / F-score
-        # completeness + per-correspondence 3D error). Independent of the
-        # sparse-depth pointwise-depth branch; gated by --skip-points-3d.
-        if has_depth and gt_sparse_depth_path and not args.skip_points_3d:
-            pred_depth_path = pred_depth_config["path"]
-            pred_depth_split = pred_depth_config.get("split")
+        # When the GT is a sparse LiDAR cloud (gt.sparse_depth), evaluate the
+        # *3D* metrics (Chamfer/F-score completeness + per-correspondence 3D
+        # error) against the sparse GT cloud. Two prediction sources are
+        # supported, with the native point map preferred when both are present:
+        #   - a predicted points_3d map, scored directly (3D similarity gauge);
+        #   - a dense depth map, unprojected with the GT intrinsics (affine
+        #     gauge). Independent of the sparse-depth pointwise branch; gated by
+        #     --skip-points-3d.
+        if (
+            gt_sparse_depth_path
+            and (has_points_3d or has_depth)
+            and not args.skip_points_3d
+        ):
+            p3s_pred_is_depth = not has_points_3d
             print(f"\n[POINTS_3D · SPARSE] Evaluating: '{ds_name}'")
             print(f"  GT sparse pointcloud: {gt_sparse_depth_path}")
-            print(f"  Pred dense depth:     {pred_depth_path}")
-            if pred_depth_key != "depth":
-                print(f"  Pred depth entry:     {pred_depth_key}")
-
-            points_3d_sparse_dataset = build_sparse_depth_eval_dataset(
-                gt_sparse_depth_path=gt_sparse_depth_path,
-                pred_depth_path=pred_depth_path,
-                intrinsics_path=intrinsics_path,
-                camera_extrinsics_path=camera_extrinsics_path,
-                lidar_extrinsics_path=lidar_extrinsics_path,
-                segmentation_path=segmentation_path,
-                pred_depth_metadata_scope=(
-                    pred_depth_key if pred_depth_key != "depth" else None
-                ),
-                segmentation_modality_key=segmentation_key or "segmentation",
-                gt_sparse_depth_split=gt_sparse_depth_split,
-                pred_depth_split=pred_depth_split,
-                intrinsics_split=intrinsics_split,
-                camera_extrinsics_split=camera_extrinsics_split,
-                lidar_extrinsics_split=lidar_extrinsics_split,
-                segmentation_split=segmentation_split,
-            )
+            if p3s_pred_is_depth:
+                p3s_pred_path = pred_depth_config["path"]
+                p3s_pred_split = pred_depth_config.get("split")
+                p3s_pred_entry = pred_depth_key
+                print(f"  Pred dense depth:     {p3s_pred_path}")
+                if pred_depth_key != "depth":
+                    print(f"  Pred depth entry:     {pred_depth_key}")
+                points_3d_sparse_dataset = build_sparse_depth_eval_dataset(
+                    gt_sparse_depth_path=gt_sparse_depth_path,
+                    pred_depth_path=p3s_pred_path,
+                    intrinsics_path=intrinsics_path,
+                    camera_extrinsics_path=camera_extrinsics_path,
+                    lidar_extrinsics_path=lidar_extrinsics_path,
+                    segmentation_path=segmentation_path,
+                    pred_depth_metadata_scope=(
+                        pred_depth_key if pred_depth_key != "depth" else None
+                    ),
+                    segmentation_modality_key=segmentation_key or "segmentation",
+                    gt_sparse_depth_split=gt_sparse_depth_split,
+                    pred_depth_split=p3s_pred_split,
+                    intrinsics_split=intrinsics_split,
+                    camera_extrinsics_split=camera_extrinsics_split,
+                    lidar_extrinsics_split=lidar_extrinsics_split,
+                    segmentation_split=segmentation_split,
+                )
+                p3ds_meta = get_sparse_depth_metadata(points_3d_sparse_dataset)
+                p3s_pred_is_radial = p3ds_meta["pred_radial_depth"]
+                p3s_alignment_mode = args.depth_alignment
+                p3s_input_hint = _prediction_depth_space_hint(pred_depth_key)
+                print(f"  pred_radial_depth: {p3s_pred_is_radial}")
+            else:
+                p3s_pred_path = dataset_config["points_3d"]["path"]
+                p3s_pred_split = dataset_config["points_3d"].get("split")
+                p3s_pred_entry = "points_3d"
+                print(f"  Pred point map:       {p3s_pred_path}")
+                points_3d_sparse_dataset = build_points_3d_sparse_eval_dataset(
+                    gt_sparse_depth_path=gt_sparse_depth_path,
+                    pred_points_3d_path=p3s_pred_path,
+                    intrinsics_path=intrinsics_path,
+                    camera_extrinsics_path=camera_extrinsics_path,
+                    lidar_extrinsics_path=lidar_extrinsics_path,
+                    segmentation_path=segmentation_path,
+                    segmentation_modality_key=segmentation_key or "segmentation",
+                    gt_sparse_depth_split=gt_sparse_depth_split,
+                    pred_points_3d_split=p3s_pred_split,
+                    intrinsics_split=intrinsics_split,
+                    camera_extrinsics_split=camera_extrinsics_split,
+                    lidar_extrinsics_split=lidar_extrinsics_split,
+                    segmentation_split=segmentation_split,
+                )
+                p3ds_meta = get_points_3d_metadata(points_3d_sparse_dataset)
+                p3s_pred_is_radial = True
+                p3s_alignment_mode = args.points_3d_alignment
+                p3s_input_hint = None
             et_eval_datasets["points_3d_sparse"] = points_3d_sparse_dataset
-
-            p3ds_meta = get_sparse_depth_metadata(points_3d_sparse_dataset)
-            print(f"  pred_radial_depth: {p3ds_meta['pred_radial_depth']}")
             print(f"  Matched pairs: {len(points_3d_sparse_dataset)}")
 
             points_3d_sparse_results = evaluate_points_3d_sparse_samples(
                 dataset=points_3d_sparse_dataset,
-                pred_is_radial=p3ds_meta["pred_radial_depth"],
+                pred_is_radial=p3s_pred_is_radial,
                 gt_name=gt.get("name", "GT"),
                 pred_name=ds_name,
                 num_workers=args.num_workers,
                 verbose=args.verbose,
                 sanity_checker=sanity_checker,
                 sky_mask_enabled=args.mask_sky,
-                alignment_mode=args.depth_alignment,
-                input_space_hint=_prediction_depth_space_hint(pred_depth_key),
+                alignment_mode=p3s_alignment_mode,
+                input_space_hint=p3s_input_hint,
+                pred_is_depth=p3s_pred_is_depth,
             )
 
             if sanity_checker is not None:
@@ -2232,9 +2274,10 @@ def main():
                         "representation": "point_cloud",
                     },
                     "pred": {
-                        "path": pred_depth_path,
-                        "split": pred_depth_split,
-                        "entry": pred_depth_key,
+                        "path": p3s_pred_path,
+                        "split": p3s_pred_split,
+                        "entry": p3s_pred_entry,
+                        "representation": "depth" if p3s_pred_is_depth else "points_3d",
                         "dimensions": p3s_spatial.get("pred_dimensions"),
                     },
                     "calibration": {
@@ -2254,7 +2297,7 @@ def main():
                     "modality_params": p3ds_meta,
                     "eval_params": {
                         "sky_masking": args.mask_sky,
-                        "depth_alignment_mode": args.depth_alignment,
+                        "alignment_mode": p3s_alignment_mode,
                         "num_workers": args.num_workers,
                     },
                 }),

@@ -527,21 +527,29 @@ depth dataset metadata.
 
 ### Sparse pointcloud GT (`gt.sparse_depth`)
 
-When the ground truth is a sparse LiDAR cloud and the prediction is a dense depth
-map, the same `points3d.eval` metric set is produced by unprojecting the dense
-depth with the GT intrinsics into a point map and comparing it to the sparse GT
-cloud (implemented in `evaluate_points_3d_sparse_samples`). The differences from
-the dense-GT path above:
+When the ground truth is a sparse LiDAR cloud, the same `points3d.eval` metric
+set is produced by projecting the sparse GT into the prediction plane and
+comparing it to the predicted point map (implemented in
+`evaluate_points_3d_sparse_samples`). The predicted point map is obtained from
+one of two prediction sources:
+
+- a **predicted `points_3d` map** (`datasets[].points_3d`), scored *directly* —
+  the "predict-your-own-camera" case, so the gauge is the 3D **similarity**
+  (Umeyama) resolved by `--points-3d-alignment` over the correspondences, exactly
+  as in the dense-GT path;
+- a **dense depth map** (`datasets[].depth`), **unprojected** with the GT
+  intrinsics into a point map — because it then already shares the GT frame, the
+  gauge is the depth affine scale-and-shift selected by `--depth-alignment`
+  (`metric` unprojects the affine-aligned depth).
+
+When an entry provides both, the predicted point map is preferred. The
+differences from the dense-GT path above:
 
 - **GT is a cloud, not a dense map.** The sparse GT is transformed into the
   prediction's camera frame with `gt.camera_extrinsics` (composing
   `gt.lidar_extrinsics` when supplied) and projected into the image plane. The
   nearest return per pixel gives the *visible* GT cloud and per-pixel
   correspondences.
-- **Gauge is depth affine, not similarity.** Because the prediction is a depth
-  map (unprojected with the *GT* intrinsics, so it already shares the GT frame),
-  the `native`/`metric` split is the depth scale-and-shift selected by
-  `--depth-alignment` — `metric` unprojects the affine-aligned depth.
 - **`cloud_distance` is directed.** Only the `gt→pred` side is reported —
   `chamfer.completeness` (mean) and `chamfer.median` of each GT return's nearest
   predicted point, and `fscore.tau_<τ>.recall` (fraction of GT returns covered

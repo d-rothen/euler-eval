@@ -12,13 +12,14 @@ model**. It is written against the current code in `euler_eval/evaluate.py`,
 > spaces, **three GT sources** — the explicit `gt.points_3d ↔
 > datasets[].points_3d` path, on-the-fly GT synthesis from `gt.depth` +
 > intrinsics (`gt.intrinsics`/`gt.calibration`), **and the sparse-LiDAR
-> `gt.sparse_depth` path** (§4-D): a dense depth prediction is unprojected with
-> the GT intrinsics and scored in 3D against the sparse cloud via directed
+> `gt.sparse_depth` path** (§4-D): the prediction — either a predicted
+> `points_3d` map (scored directly, similarity gauge) or a dense depth map
+> (unprojected with the GT intrinsics, depth-affine gauge; the point map wins
+> when both are given) — is scored in 3D against the sparse cloud via directed
 > (completeness/recall) `cloud_distance` plus per-correspondence `point_error` /
-> `error_decomposition` (`evaluate_points_3d_sparse_samples`, depth-affine
-> `native`/`metric` gauge) — full CLI + output (`points3d.eval`) + sanity + docs
-> + tests are implemented (`tests/test_points_3d.py`,
-> `tests/test_points_3d_sparse.py`). **Deferred follow-ups:** category E
+> `error_decomposition` (`evaluate_points_3d_sparse_samples`) — full CLI + output
+> (`points3d.eval`) + sanity + docs + tests are implemented
+> (`tests/test_points_3d.py`, `tests/test_points_3d_sparse.py`). **Deferred follow-ups:** category E
 > (`camera_model` recovered-intrinsics fidelity) and benchmark depth-range bins
 > for points_3d — noted inline below.
 
@@ -270,12 +271,14 @@ Design notes (the parts that make Chamfer behave):
   **completeness / recall** (is every LiDAR return covered?) and **omits** the
   misleading `accuracy` / `precision` / `f1` side, because a correct *dense*
   prediction has many legitimate points far from any *sparse* GT point. The
-  dense depth prediction is unprojected with the GT intrinsics into a point map;
-  the sparse GT cloud is projected into that camera frame, yielding the visible
-  GT cloud (for completeness) and per-pixel correspondences (for `point_error` /
-  `error_decomposition`). The `native`/`metric` gauge is the depth affine
-  scale-and-shift (`--depth-alignment`), since the prediction is a depth map.
-  Dense-neighbourhood `geometric` metrics (normals, edge F1) are omitted.
+  sparse GT cloud is projected into the prediction's camera frame, yielding the
+  visible GT cloud (for completeness) and per-pixel correspondences (for
+  `point_error` / `error_decomposition`). The prediction is either a predicted
+  `points_3d` map — scored directly, with the 3D **similarity** gauge
+  (`--points-3d-alignment`), as for dense GT — or a dense depth map unprojected
+  with the GT intrinsics, with the depth **affine** gauge (`--depth-alignment`);
+  the point map is preferred when both are provided. Dense-neighbourhood
+  `geometric` metrics (normals, edge F1) are omitted.
 
 ### E. `camera_model` — recovered-camera fidelity — **P2 (optional)**
 

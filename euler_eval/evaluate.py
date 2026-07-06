@@ -3580,7 +3580,7 @@ def evaluate_points_3d_samples(
 
 def evaluate_points_3d_sparse_samples(
     dataset: MultiModalDataset,
-    pred_is_radial: bool,
+    pred_is_radial: bool = True,
     fov_domain: Optional[str] = None,
     gt_name: str = "GT",
     pred_name: str = "Pred",
@@ -3591,16 +3591,27 @@ def evaluate_points_3d_sparse_samples(
     alignment_mode: str = "auto_affine",
     input_space_hint: Optional[str] = None,
     max_cloud_points: int = POINTS3D_DEFAULT_MAX_POINTS,
+    pred_is_depth: bool = True,
 ) -> dict:
-    """Evaluate a dense depth prediction as ``points_3d`` against sparse GT.
+    """Evaluate a depth **or** ``points_3d`` prediction against sparse GT.
 
-    This is the sparse-LiDAR counterpart of :func:`evaluate_points_3d_samples`
+    The sparse-LiDAR counterpart of :func:`evaluate_points_3d_samples`
     (see ``points_3d_metrics_proposal.md`` §4-D).  The ground truth is a sparse
-    point cloud (``gt.sparse_depth``); the prediction is a dense (planar or
-    radial) depth map that is **unprojected with the GT intrinsics** into a
-    per-pixel 3D point map.  The GT cloud is transformed into the same camera
-    frame and projected into the prediction plane, giving both a visible GT
-    point cloud and per-pixel correspondences at the hit pixels.
+    point cloud (``gt.sparse_depth``), transformed into the camera frame and
+    projected into the prediction plane to yield both a visible GT point cloud
+    and per-pixel correspondences.  The prediction is one of:
+
+      - **dense depth** (``pred_is_depth=True``, the default): unprojected with
+        the GT intrinsics into a point map.  The ``native``/``metric`` gauge is
+        the depth affine scale-and-shift selected by ``alignment_mode``
+        (``none``/``auto_affine``/``affine``); ``metric`` unprojects the
+        calibrated depth.
+      - **native ``points_3d`` map** (``pred_is_depth=False``): the predicted
+        ``(H, W, 3)`` points are scored *directly* — no unprojection.  Because
+        such "predict-your-own-camera" points live in the model's own frame, the
+        gauge is the 3D similarity resolved by ``alignment_mode``
+        (``none``/``scale``/``similarity``/``auto``) over the correspondences,
+        mirroring the dense :func:`evaluate_points_3d_samples` path.
 
     Emitted metric categories (all under the ``points3d`` namespace, in
     ``native``/``metric`` gauge spaces with a canonical alias):
@@ -3620,18 +3631,22 @@ def evaluate_points_3d_sparse_samples(
     exactly as the sparse-depth pipeline omits SSIM/normals/edge F1.
 
     Args:
-        dataset: MultiModalDataset with a sparse ``gt`` point cloud, a dense
-            ``pred`` depth map, and hierarchical ``intrinsics`` /
+        dataset: MultiModalDataset with a sparse ``gt`` point cloud, a ``pred``
+            dense depth map (``pred_is_depth=True``) or ``(H, W, 3)`` point map
+            (``pred_is_depth=False``), and hierarchical ``intrinsics`` /
             ``camera_extrinsics`` (optionally ``lidar_extrinsics`` /
-            ``segmentation``) — i.e. the same shape as
-            :func:`evaluate_sparse_depth_samples`.
-        pred_is_radial: Whether the prediction stores radial (Euclidean) depth.
-        alignment_mode: Depth calibration mode ``none``/``auto_affine``/
-            ``affine``.  When calibration runs, the affine-aligned depth is
-            unprojected to form the ``metric`` space.
-        input_space_hint: Optional declared prediction space (``relative`` /
-            ``affine``) that forces calibration under ``auto_affine``.
+            ``segmentation``).
+        pred_is_radial: Whether a *depth* prediction stores radial (Euclidean)
+            depth.  Ignored when ``pred_is_depth`` is False.
+        alignment_mode: Depth calibration mode (``none``/``auto_affine``/
+            ``affine``) when ``pred_is_depth``; otherwise the points gauge mode
+            (``none``/``scale``/``similarity``/``auto``).
+        input_space_hint: Declared prediction space that forces calibration:
+            ``relative``/``affine`` for depth, ``relative``/``metric`` for
+            points.
         max_cloud_points: Per-cloud subsample cap for the cloud-distance query.
+        pred_is_depth: Whether the prediction is a dense depth map (unprojected)
+            or a native ``points_3d`` map (scored directly).
 
     Returns:
         Dict shaped like :func:`evaluate_points_3d_samples`:
@@ -3639,17 +3654,21 @@ def evaluate_points_3d_sparse_samples(
         ``per_file_metrics``, ``dataset_info``, ``space_info`` and
         ``spatial_info``.
     """
-    valid_alignment_modes = {"none", "auto_affine", "affine"}
+    if pred_is_depth:
+        valid_alignment_modes = {"none", "auto_affine", "affine"}
+        valid_input_space_hints = {None, "relative", "affine"}
+    else:
+        valid_alignment_modes = {"none", "scale", "similarity", "auto"}
+        valid_input_space_hints = {None, "relative", "metric"}
     if alignment_mode not in valid_alignment_modes:
         raise ValueError(
             f"Invalid alignment_mode '{alignment_mode}'. "
             f"Expected one of {sorted(valid_alignment_modes)}."
         )
-    valid_input_space_hints = {None, "relative", "affine"}
     if input_space_hint not in valid_input_space_hints:
         raise ValueError(
             f"Invalid input_space_hint '{input_space_hint}'. "
-            "Expected None, 'relative', or 'affine'."
+            f"Expected one of {sorted(str(v) for v in valid_input_space_hints)}."
         )
 
     num_samples = len(dataset)
@@ -3719,17 +3738,15 @@ def evaluate_points_3d_sparse_samples(
         return summary
 
     def _compute_space_metrics(
-        store, pred_map, space_depth, gt_point_map, gt_valid, gt_cloud, sky_valid
+        store, pred_map, pred_ok, gt_point_map, gt_valid, gt_cloud
     ):
         """Compute + accumulate one gauge space's metrics for a sample.
 
-        Validity is resolved *per space* from that space's depth so a negative
-        affine shift (which can drive aligned depth non-positive) never leaks a
-        zeroed unprojected point into the correspondences or the cloud.
+        ``pred_ok`` is the per-pixel validity of *this* gauge space's prediction
+        (already intersected with the sky mask), resolved by the caller so a
+        negative affine shift or a zeroed point never leaks into the
+        correspondences or the cloud.
         """
-        pred_ok = np.isfinite(space_depth) & (space_depth > 0)
-        if sky_valid is not None:
-            pred_ok = pred_ok & sky_valid
         corr_valid = gt_valid & pred_ok
 
         fval: dict = {}
@@ -3781,15 +3798,40 @@ def evaluate_points_3d_sparse_samples(
     total_evaluated_points = 0
     projection_extrinsics_source: Optional[str] = None
 
-    if alignment_mode == "none":
-        print("Sparse points_3d alignment mode: none")
+    # For a native points_3d prediction the 3D similarity gauge is resolved up
+    # front (like the dense points_3d path); for a depth prediction the affine
+    # gauge is decided per the runtime normalized-range detection below.
+    resolved_points_mode: Optional[str] = None
+    if not pred_is_depth:
+        if alignment_mode == "auto":
+            resolved_points_mode = (
+                "similarity" if input_space_hint == "relative" else "none"
+            )
+        else:
+            resolved_points_mode = alignment_mode
+        if resolved_points_mode in {"scale", "similarity"}:
+            alignment_applied = True
+        input_space_detected = input_space_hint or (
+            "relative" if alignment_applied else "metric"
+        )
+
+    pred_kind = "depth" if pred_is_depth else "points_3d"
+    if not pred_is_depth:
+        note = f" -> {resolved_points_mode}" if alignment_mode == "auto" else ""
+        print(f"Sparse points_3d ({pred_kind} pred) alignment mode: "
+              f"{alignment_mode}{note}")
+    elif alignment_mode == "none":
+        print(f"Sparse points_3d ({pred_kind} pred) alignment mode: none")
     elif alignment_mode == "auto_affine":
         print(
-            "Sparse points_3d alignment mode: auto_affine "
+            f"Sparse points_3d ({pred_kind} pred) alignment mode: auto_affine "
             "(normalized-depth detection)"
         )
     else:
-        print("Sparse points_3d alignment mode: affine (always apply scale-and-shift)")
+        print(
+            f"Sparse points_3d ({pred_kind} pred) alignment mode: affine "
+            "(always apply scale-and-shift)"
+        )
 
     with tempfile.TemporaryDirectory(prefix="euler_eval_points_3d_sparse_") as td_str:
         temp_dir = Path(td_str)
@@ -3805,7 +3847,12 @@ def evaluate_points_3d_sparse_samples(
                 hierarchy, entry_id = _extract_hierarchy(sample)
 
                 point_cloud = to_numpy_point_cloud(sample["gt"])
-                depth_pred = to_numpy_depth(sample["pred"])
+                if pred_is_depth:
+                    depth_pred = to_numpy_depth(sample["pred"])
+                    pred_shape = depth_pred.shape[:2]
+                else:
+                    pts_pred = to_numpy_points_3d(sample["pred"])
+                    pred_shape = pts_pred.shape[:2]
                 intrinsics_K = _get_intrinsics_K(sample)
                 camera_extrinsics, extrinsics_source = (
                     _get_pointcloud_to_camera_extrinsics(sample)
@@ -3826,21 +3873,27 @@ def evaluate_points_3d_sparse_samples(
                     projection_extrinsics_source = extrinsics_source
 
                 if i == 0:
-                    pred_native_dims = depth_pred.shape[:2]
-                    finite_pred = depth_pred[np.isfinite(depth_pred)]
-                    if input_space_hint in {"relative", "affine"} and finite_pred.size:
-                        normalized_predictions = True
-                        input_space_detected = input_space_hint
-                    elif (
-                        finite_pred.size
-                        and finite_pred.max() <= 1.0 + 1e-3
-                        and finite_pred.min() >= -1.0 - 1e-3
-                    ):
-                        normalized_predictions = True
-                        input_space_detected = "normalized"
-                    elif finite_pred.size:
-                        input_space_detected = "metric"
-                    print(f"  Detected native depth space: {input_space_detected}")
+                    pred_native_dims = pred_shape
+                    if pred_is_depth:
+                        finite_pred = depth_pred[np.isfinite(depth_pred)]
+                        if (
+                            input_space_hint in {"relative", "affine"}
+                            and finite_pred.size
+                        ):
+                            normalized_predictions = True
+                            input_space_detected = input_space_hint
+                        elif (
+                            finite_pred.size
+                            and finite_pred.max() <= 1.0 + 1e-3
+                            and finite_pred.min() >= -1.0 - 1e-3
+                        ):
+                            normalized_predictions = True
+                            input_space_detected = "normalized"
+                        elif finite_pred.size:
+                            input_space_detected = "metric"
+                        print(f"  Detected native depth space: {input_space_detected}")
+                    else:
+                        print(f"  Points_3d input space: {input_space_detected}")
 
                 # Project the sparse GT cloud into the prediction camera frame.
                 gt_point_map, sparse_mask, projection_meta = (
@@ -3848,80 +3901,27 @@ def evaluate_points_3d_sparse_samples(
                         point_cloud,
                         intrinsics_K,
                         camera_extrinsics,
-                        depth_pred.shape[:2],
+                        pred_shape,
                     )
                 )
                 total_input_points += projection_meta["input_points"]
                 total_projected_pixels += projection_meta["projected_pixels"]
 
                 if resolved_domain is None and i == 0:
-                    h, w = depth_pred.shape[:2]
-                    resolved_domain = classify_fov_domain(intrinsics_K, h, w)
+                    resolved_domain = classify_fov_domain(
+                        intrinsics_K, pred_shape[0], pred_shape[1]
+                    )
                     threshold_deg = get_threshold_for_domain(resolved_domain)
                     print(f"  FoV domain auto-detected: {resolved_domain}")
 
                 sky_valid = None
                 if sky_mask_enabled:
                     sky_valid = _get_sky_mask(sample)
-                    if (
-                        sky_valid is not None
-                        and sky_valid.shape[:2] != depth_pred.shape[:2]
-                    ):
-                        sky_valid = align_to_prediction(sky_valid, depth_pred)
+                    if sky_valid is not None and sky_valid.shape[:2] != pred_shape:
+                        ref = depth_pred if pred_is_depth else pts_pred
+                        sky_valid = align_to_prediction(sky_valid, ref)
 
-                # Raw prediction depth in radial metres, then affine-aligned.
-                depth_pred_raw = process_depth(
-                    depth_pred, 1.0, pred_is_radial, intrinsics_K
-                )
                 gt_radial = np.linalg.norm(gt_point_map, axis=-1)
-                if alignment_mode == "none":
-                    depth_pred_aligned = depth_pred_raw
-                else:
-                    do_alignment = alignment_mode == "affine" or normalized_predictions
-                    if do_alignment:
-                        fit_source = (
-                            depth_pred if normalized_predictions else depth_pred_raw
-                        )
-                        fit_mask = (
-                            sparse_mask
-                            & (gt_radial > 0)
-                            & np.isfinite(gt_radial)
-                            & np.isfinite(fit_source)
-                        )
-                        if sky_valid is not None:
-                            fit_mask &= sky_valid
-                        depth_pred_aligned, s_fit, t_fit = compute_scale_and_shift(
-                            fit_source,
-                            gt_radial,
-                            fit_mask,
-                            max_gt_percentile=(
-                                SKY_MASK_ALIGNMENT_MAX_GT_PERCENTILE
-                                if sky_mask_enabled
-                                else None
-                            ),
-                        )
-                        alignment_applied = True
-                        if verbose and not logged_stats:
-                            print(f"  Fitted scale={s_fit:.4f}, shift={t_fit:.4f}")
-                    else:
-                        depth_pred_aligned = depth_pred_raw
-
-                if verbose and not logged_stats:
-                    _log_sample_stats(gt_radial, depth_pred_raw, "SPARSE POINTS_3D")
-                    logged_stats = True
-
-                # Unproject both depth branches into camera-frame point maps.
-                pred_map_native = unproject_depth_to_points(
-                    depth_pred_raw, intrinsics_K, depth_is_radial=True
-                )
-                aligned_is_raw = depth_pred_aligned is depth_pred_raw
-                pred_map_metric = (
-                    pred_map_native
-                    if aligned_is_raw
-                    else unproject_depth_to_points(
-                        depth_pred_aligned, intrinsics_K, depth_is_radial=True
-                    )
-                )
 
                 # Visible GT returns (projection ∩ sky): defines the GT cloud
                 # for cloud-distance completeness, independent of the gauge.
@@ -3934,10 +3934,116 @@ def evaluate_points_3d_sparse_samples(
                     gt_valid = gt_valid & sky_valid
                 gt_cloud = gt_point_map[gt_valid]
 
+                # Build the native + metric predicted point maps and their
+                # per-space validity masks, per prediction kind.
+                if pred_is_depth:
+                    depth_pred_raw = process_depth(
+                        depth_pred, 1.0, pred_is_radial, intrinsics_K
+                    )
+                    if alignment_mode == "none":
+                        depth_pred_aligned = depth_pred_raw
+                    else:
+                        do_alignment = (
+                            alignment_mode == "affine" or normalized_predictions
+                        )
+                        if do_alignment:
+                            fit_source = (
+                                depth_pred
+                                if normalized_predictions
+                                else depth_pred_raw
+                            )
+                            fit_mask = (
+                                sparse_mask
+                                & (gt_radial > 0)
+                                & np.isfinite(gt_radial)
+                                & np.isfinite(fit_source)
+                            )
+                            if sky_valid is not None:
+                                fit_mask &= sky_valid
+                            depth_pred_aligned, s_fit, t_fit = compute_scale_and_shift(
+                                fit_source,
+                                gt_radial,
+                                fit_mask,
+                                max_gt_percentile=(
+                                    SKY_MASK_ALIGNMENT_MAX_GT_PERCENTILE
+                                    if sky_mask_enabled
+                                    else None
+                                ),
+                            )
+                            alignment_applied = True
+                            if verbose and not logged_stats:
+                                print(f"  Fitted scale={s_fit:.4f}, shift={t_fit:.4f}")
+                        else:
+                            depth_pred_aligned = depth_pred_raw
+
+                    if verbose and not logged_stats:
+                        _log_sample_stats(gt_radial, depth_pred_raw, "SPARSE POINTS_3D")
+                        logged_stats = True
+
+                    pred_map_native = unproject_depth_to_points(
+                        depth_pred_raw, intrinsics_K, depth_is_radial=True
+                    )
+                    aligned_is_raw = depth_pred_aligned is depth_pred_raw
+                    pred_map_metric = (
+                        pred_map_native
+                        if aligned_is_raw
+                        else unproject_depth_to_points(
+                            depth_pred_aligned, intrinsics_K, depth_is_radial=True
+                        )
+                    )
+                    pred_ok_native = np.isfinite(depth_pred_raw) & (depth_pred_raw > 0)
+                    pred_ok_metric = (
+                        pred_ok_native
+                        if aligned_is_raw
+                        else np.isfinite(depth_pred_aligned)
+                        & (depth_pred_aligned > 0)
+                    )
+                    sample_aligned = not aligned_is_raw
+                else:
+                    pred_map_native = pts_pred
+                    pred_ok_native = (
+                        np.isfinite(pts_pred).all(axis=-1)
+                        & (np.linalg.norm(pts_pred, axis=-1) > 0)
+                    )
+                    sample_aligned = resolved_points_mode in {"scale", "similarity"}
+                    if sample_aligned:
+                        fit_mask = gt_valid & pred_ok_native
+                        gv_fit = gt_point_map[fit_mask]
+                        pv_fit = pts_pred[fit_mask]
+                        if gv_fit.shape[0] < 3:
+                            scale, rot, trans = (
+                                1.0,
+                                np.eye(3, dtype=np.float32),
+                                np.zeros(3, dtype=np.float32),
+                            )
+                        elif resolved_points_mode == "scale":
+                            scale = fit_scale_transform(pv_fit, gv_fit)
+                            rot = np.eye(3, dtype=np.float32)
+                            trans = np.zeros(3, dtype=np.float32)
+                        else:
+                            scale, rot, trans = fit_similarity_transform(
+                                pv_fit, gv_fit, with_scale=True
+                            )
+                        pred_map_metric = apply_point_transform(
+                            pts_pred, scale, rot, trans
+                        )
+                        pred_ok_metric = (
+                            np.isfinite(pred_map_metric).all(axis=-1)
+                            & (np.linalg.norm(pred_map_metric, axis=-1) > 0)
+                        )
+                        if verbose and not logged_stats:
+                            print(f"  Fitted gauge scale={float(scale):.4f}")
+                            logged_stats = True
+                    else:
+                        pred_map_metric = pred_map_native
+                        pred_ok_metric = pred_ok_native
+
+                if sky_valid is not None:
+                    pred_ok_native = pred_ok_native & sky_valid
+                    pred_ok_metric = pred_ok_metric & sky_valid
+
                 # Native correspondence mask drives the shared angular metrics.
-                native_corr = (
-                    gt_valid & (depth_pred_raw > 0) & np.isfinite(depth_pred_raw)
-                )
+                native_corr = gt_valid & pred_ok_native
                 total_evaluated_points += int(native_corr.sum())
 
                 # Angular ray error on native directions (camera-faithful).
@@ -3966,27 +4072,24 @@ def evaluate_points_3d_sparse_samples(
                 )
                 rho_a_values.append(rho_a_img)
 
-                sample_aligned = not aligned_is_raw
                 file_space_values: dict = {}
                 native_fval, _ = _compute_space_metrics(
                     stores["native"],
                     pred_map_native,
-                    depth_pred_raw,
+                    pred_ok_native,
                     gt_point_map,
                     gt_valid,
                     gt_cloud,
-                    sky_valid,
                 )
                 file_space_values["native"] = native_fval
                 if sample_aligned:
                     metric_fval, _ = _compute_space_metrics(
                         stores["metric"],
                         pred_map_metric,
-                        depth_pred_aligned,
+                        pred_ok_metric,
                         gt_point_map,
                         gt_valid,
                         gt_cloud,
-                        sky_valid,
                     )
                     file_space_values["metric"] = metric_fval
 
@@ -4069,6 +4172,7 @@ def evaluate_points_3d_sparse_samples(
                     "gt_name": gt_name,
                     "pred_name": pred_name,
                     "gt_representation": "point_cloud",
+                    "pred_representation": "depth" if pred_is_depth else "points_3d",
                     "fov_domain": resolved_domain,
                     "threshold_deg": threshold_deg,
                     "input_points": total_input_points,
@@ -4079,7 +4183,11 @@ def evaluate_points_3d_sparse_samples(
                 "space_info": {
                     "input_space_detected": input_space_detected,
                     "metric_space_source": (
-                        "scale_shift" if alignment_applied else None
+                        None
+                        if not alignment_applied
+                        else "scale_shift"
+                        if pred_is_depth
+                        else resolved_points_mode
                     ),
                     "calibration_mode": alignment_mode,
                     "calibration_applied": alignment_applied,

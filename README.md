@@ -145,6 +145,10 @@ depth-eval example_sparse_depth_config.json --skip-depth --skip-rgb --skip-rays
 # Sparse pointcloud GT, but only the pointwise depth metrics
 depth-eval example_sparse_depth_config.json --skip-points-3d --skip-rgb --skip-rays
 
+# Evaluate a predicted points_3d map directly against sparse pointcloud GT
+# (config uses datasets[].points_3d; align relative point maps with a similarity gauge)
+depth-eval config.json --skip-depth --skip-rgb --skip-rays --points-3d-alignment similarity
+
 # Skip rays evaluation
 depth-eval config.json --skip-rays
 
@@ -221,7 +225,12 @@ Each modality entry can optionally include a `split` field to select a specific 
 
 For sparse pointcloud depth evaluation, use `gt.sparse_depth` instead of `gt.depth`. The prediction uses a dense depth-like map under `datasets[].depth`, `datasets[].relative_depth`, or `datasets[].affine_depth`. The evaluator projects the sparse GT point cloud into the prediction image plane using `gt.intrinsics` and `gt.camera_extrinsics`, then computes pointwise depth metrics only at projected valid pixels. For MUSES through `euler_loading.loaders.muses`, `gt.camera_extrinsics` normally resolves to the direct `lidar2rgb` transform and no extra lidar pose is needed. If a dataset exposes separate lidar and camera poses in a shared frame instead, provide optional `gt.lidar_extrinsics`; the evaluator composes `inv(camera_pose) @ lidar_pose` before projection.
 
-The **same sparse-depth config** additionally produces **3D (`points_3d`) metrics** unless `--skip-points-3d` is set. The dense depth prediction is unprojected with `gt.intrinsics` into a per-pixel 3D point map and scored against the sparse GT cloud in metric 3D space (Chamfer completeness / recall, plus per-correspondence 3D error and radial/lateral decomposition — see [Sparse Points-3D Metrics](#sparse-points-3d-metrics)). These are written to a separate `points3d_eval.json` (or `<output_file>_points3d.json`) so they never clobber the sparse-depth `eval.json`. The 3D `native`/`metric` gauge is the depth affine scale-and-shift selected by `--depth-alignment`.
+When the GT is a sparse pointcloud, the evaluator also produces **3D (`points_3d`) metrics** unless `--skip-points-3d` is set (see [Sparse Points-3D Metrics](#sparse-points-3d-metrics)). The prediction scored in 3D can be either:
+
+- a **predicted point map** (`datasets[].points_3d`, an `(H,W,3)` map) — evaluated *directly* against the sparse GT cloud, with the 3D **similarity** gauge selected by `--points-3d-alignment`; or
+- a **dense depth map** (`datasets[].depth`/`relative_depth`/`affine_depth`) — unprojected with `gt.intrinsics` into a point map, with the depth **affine** gauge selected by `--depth-alignment`.
+
+If a dataset entry provides both, the predicted `points_3d` map is preferred (the depth is still scored by the pointwise sparse-depth metrics). Either way the sparse GT cloud is projected into the prediction plane, and the 3D results are written to a separate `points3d_eval.json` (or `<output_file>_points3d.json`) so they never clobber the sparse-depth `eval.json`.
 
 Sparse depth does not require segmentation GT. `gt.segmentation` and
 `gt.semantic_segmentation` are optional aliases for the same sky-mask source.
@@ -396,14 +405,15 @@ Euclidean metrics are reported per space.
 
 ### Sparse Points-3D Metrics
 
-When the ground truth is a sparse pointcloud (`gt.sparse_depth`) and the
-prediction is a dense depth map, the evaluator additionally scores the
-prediction as a 3D point map (unless `--skip-points-3d` is set). The dense depth
-is unprojected with `gt.intrinsics`; the sparse GT cloud is projected into that
-camera frame, giving both the visible GT cloud and per-pixel correspondences.
+When the ground truth is a sparse pointcloud (`gt.sparse_depth`), the evaluator
+additionally scores the prediction as a 3D point map (unless `--skip-points-3d`
+is set). The sparse GT cloud is projected into the prediction plane, giving both
+the visible GT cloud and per-pixel correspondences. The predicted point map is
+either taken **directly** from `datasets[].points_3d` (gauge = 3D similarity via
+`--points-3d-alignment`) or **unprojected** from a dense `datasets[].depth`
+prediction with `gt.intrinsics` (gauge = depth affine via `--depth-alignment`).
 Results serialize under `points3d.eval.{native,metric}` in a separate output
-file. The `native`/`metric` gauge is the depth affine scale-and-shift chosen by
-`--depth-alignment`.
+file.
 
 Only the categories that stay meaningful with a sparse GT are emitted —
 dense-neighbourhood `geometric` metrics (normals, edge F1) are skipped, and the
@@ -488,7 +498,7 @@ For sparse depth outputs, the internal Python result dict still uses `sparse_dep
 
 For points_3d outputs, the internal Python result dict uses `points_3d_native`, `points_3d_metric`, and `points_3d` (canonical alias), but serialized `eval.json` metric paths are rooted at `points3d.eval` (no underscore) to satisfy the namespace first-segment rule, mirroring `sparsedepth`. The `metric` space is emitted only when a gauge alignment is applied; otherwise only `native` is present and aliased.
 
-When the points_3d metrics come from a sparse pointcloud GT (`gt.sparse_depth` + a dense depth prediction), they use the same `points3d.eval` namespace but are written to a distinct file — `points3d_eval.json` beside the prediction, or `<output_file>_points3d.json` when `output_file` is set — so they do not overwrite the sparse-depth `eval.json`. Only the `point_error`, `error_decomposition`, and (directed) `cloud_distance` categories are present; the `metric` space is emitted only when `--depth-alignment` calibrates the prediction.
+When the points_3d metrics come from a sparse pointcloud GT (`gt.sparse_depth` + a predicted `points_3d` map or a dense depth prediction), they use the same `points3d.eval` namespace but are written to a distinct file — `points3d_eval.json` beside the prediction, or `<output_file>_points3d.json` when `output_file` is set — so they do not overwrite the sparse-depth `eval.json`. Only the `point_error`, `error_decomposition`, and (directed) `cloud_distance` categories are present; the `metric` space is emitted only when the gauge (`--points-3d-alignment` for a point-map prediction, `--depth-alignment` for a depth prediction) calibrates the prediction.
 
 Previous single-depth structure (kept under `depth`) is:
 

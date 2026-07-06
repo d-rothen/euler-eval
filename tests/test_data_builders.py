@@ -123,6 +123,43 @@ def test_sparse_depth_builder_adds_optional_lidar_extrinsics(monkeypatch):
     )
 
 
+def test_points_3d_sparse_builder_sets_pointmap_and_projection_scopes(monkeypatch):
+    _install_captured_dataset(monkeypatch)
+
+    dataset = data.build_points_3d_sparse_eval_dataset(
+        gt_sparse_depth_path="/datasets/shared",
+        pred_points_3d_path="/predictions/shared",
+        intrinsics_path="/datasets/shared",
+        camera_extrinsics_path="/datasets/shared",
+        lidar_extrinsics_path="/datasets/shared",
+        gt_sparse_depth_split="test",
+        pred_points_3d_split="val",
+        lidar_extrinsics_split="pose",
+    )
+
+    # GT stays a sparse pointcloud; the prediction is loaded as a point map.
+    _assert_modality(dataset.modalities["gt"], key="sparse_depth", split="test")
+    _assert_modality(
+        dataset.modalities["pred"],
+        key="points_3d",
+        split="val",
+        used_as="output",
+    )
+    _assert_modality(
+        dataset.hierarchical_modalities["intrinsics"], key="intrinsics"
+    )
+    _assert_modality(
+        dataset.hierarchical_modalities["camera_extrinsics"],
+        key="camera_extrinsics",
+    )
+    _assert_modality(
+        dataset.hierarchical_modalities["lidar_extrinsics"],
+        key="camera_extrinsics",
+        split="pose",
+        scope="lidar_extrinsics",
+    )
+
+
 def test_sparse_depth_builder_can_load_relative_depth_prediction_scope(monkeypatch):
     _install_captured_dataset(monkeypatch)
 

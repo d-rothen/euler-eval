@@ -11,11 +11,17 @@ import numpy as np
 import pytest
 
 from euler_eval.data import (
+    apply_point_transform,
     project_point_cloud_to_point_map,
     unproject_depth_to_points,
 )
 from euler_eval.evaluate import evaluate_points_3d_sparse_samples
 from euler_eval.metrics import compute_sparse_cloud_distance_metrics
+
+
+def _rot_z(theta):
+    c, s = np.cos(theta), np.sin(theta)
+    return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -336,6 +342,100 @@ class TestEvaluate:
         with pytest.raises(ValueError):
             evaluate_points_3d_sparse_samples(
                 _NoExtrinsics(), pred_is_radial=False, num_workers=0
+            )
+
+
+# ---------------------------------------------------------------------------
+# Native points_3d prediction vs sparse GT (scored directly, no unprojection)
+# ---------------------------------------------------------------------------
+
+
+class TestEvaluateNativePoints:
+    def _pointmap_dataset(self, pred_points, seed=0):
+        depth = _dense_depth(seed=seed)
+        K = _make_intrinsics(400.0, 400.0, depth.shape[1] / 2.0, depth.shape[0] / 2.0)
+        gt_dense = unproject_depth_to_points(depth, K, depth_is_radial=False)
+        cloud = _sparse_cloud_from_depth(depth, K, seed=seed + 1)
+        return _SparsePointDataset(cloud, pred_points, K), gt_dense, K
+
+    def test_perfect_metric_pointmap_native_only(self):
+        depth = _dense_depth()
+        K = _make_intrinsics(400.0, 400.0, 30.0, 20.0)
+        gt_dense = unproject_depth_to_points(depth, K, depth_is_radial=False)
+        cloud = _sparse_cloud_from_depth(depth, K)
+        ds = _SparsePointDataset(cloud, gt_dense.copy(), K)
+        res = evaluate_points_3d_sparse_samples(
+            ds, num_workers=0, alignment_mode="none", pred_is_depth=False
+        )
+        assert res["points_3d_metric"] is None
+        assert res["space_info"]["emitted_spaces"] == ["native"]
+        assert res["dataset_info"]["pred_representation"] == "points_3d"
+        p = res["points_3d"]
+        assert p["point_error"]["image_mean"]["mae3d"] < 1e-4
+        assert p["cloud_distance"]["chamfer"]["completeness"] < 1e-4
+        assert p["cloud_distance"]["fscore"]["tau_0_1"]["recall"] == 1.0
+
+    def test_similarity_recovers_relative_pointmap(self):
+        ds, gt_dense, K = self._pointmap_dataset(None)
+        pred = apply_point_transform(
+            gt_dense, 0.5, _rot_z(0.25), np.array([1.0, 2.0, -0.5], np.float32)
+        )
+        ds = _SparsePointDataset(
+            _sparse_cloud_from_depth(_dense_depth(), K), pred, K
+        )
+        res = evaluate_points_3d_sparse_samples(
+            ds, num_workers=0, alignment_mode="similarity", pred_is_depth=False
+        )
+        assert res["space_info"]["emitted_spaces"] == ["native", "metric"]
+        assert res["space_info"]["metric_space_source"] == "similarity"
+        native_mae = res["points_3d_native"]["point_error"]["image_mean"]["mae3d"]
+        metric_mae = res["points_3d_metric"]["point_error"]["image_mean"]["mae3d"]
+        assert metric_mae < 1e-3
+        assert native_mae > metric_mae
+
+    def test_scale_recovers_scaled_pointmap(self):
+        depth = _dense_depth()
+        K = _make_intrinsics(400.0, 400.0, 30.0, 20.0)
+        gt_dense = unproject_depth_to_points(depth, K, depth_is_radial=False)
+        cloud = _sparse_cloud_from_depth(depth, K)
+        ds = _SparsePointDataset(cloud, gt_dense * 4.0, K)
+        res = evaluate_points_3d_sparse_samples(
+            ds, num_workers=0, alignment_mode="scale", pred_is_depth=False
+        )
+        assert res["points_3d_metric"]["point_error"]["image_mean"]["mae3d"] < 1e-3
+
+    def test_auto_with_relative_hint_aligns(self):
+        depth = _dense_depth()
+        K = _make_intrinsics(400.0, 400.0, 30.0, 20.0)
+        gt_dense = unproject_depth_to_points(depth, K, depth_is_radial=False)
+        pred = apply_point_transform(gt_dense, 0.5, _rot_z(0.1), np.zeros(3, np.float32))
+        ds = _SparsePointDataset(_sparse_cloud_from_depth(depth, K), pred, K)
+        res = evaluate_points_3d_sparse_samples(
+            ds, num_workers=0, alignment_mode="auto",
+            input_space_hint="relative", pred_is_depth=False,
+        )
+        assert res["space_info"]["calibration_applied"] is True
+        assert res["space_info"]["metric_space_source"] == "similarity"
+
+    def test_auto_metric_default_no_align(self):
+        depth = _dense_depth()
+        K = _make_intrinsics(400.0, 400.0, 30.0, 20.0)
+        gt_dense = unproject_depth_to_points(depth, K, depth_is_radial=False)
+        ds = _SparsePointDataset(_sparse_cloud_from_depth(depth, K), gt_dense.copy(), K)
+        res = evaluate_points_3d_sparse_samples(
+            ds, num_workers=0, alignment_mode="auto", pred_is_depth=False
+        )
+        assert res["space_info"]["calibration_applied"] is False
+        assert res["points_3d_metric"] is None
+
+    def test_depth_alignment_mode_rejected_for_pointmap(self):
+        depth = _dense_depth()
+        K = _make_intrinsics(400.0, 400.0, 30.0, 20.0)
+        gt_dense = unproject_depth_to_points(depth, K, depth_is_radial=False)
+        ds = _SparsePointDataset(_sparse_cloud_from_depth(depth, K), gt_dense, K)
+        with pytest.raises(ValueError):
+            evaluate_points_3d_sparse_samples(
+                ds, num_workers=0, alignment_mode="auto_affine", pred_is_depth=False
             )
 
 

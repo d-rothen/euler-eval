@@ -829,6 +829,42 @@ def build_sparse_depth_eval_dataset(
         ),
     }
 
+    hierarchical = _sparse_projection_hierarchical(
+        intrinsics_path=intrinsics_path,
+        camera_extrinsics_path=camera_extrinsics_path,
+        lidar_extrinsics_path=lidar_extrinsics_path,
+        segmentation_path=segmentation_path,
+        intrinsics_split=intrinsics_split,
+        camera_extrinsics_split=camera_extrinsics_split,
+        lidar_extrinsics_split=lidar_extrinsics_split,
+        segmentation_split=segmentation_split,
+        segmentation_modality_key=segmentation_modality_key,
+    )
+
+    return MultiModalDataset(
+        modalities=modalities,
+        hierarchical_modalities=hierarchical,
+    )
+
+
+def _sparse_projection_hierarchical(
+    intrinsics_path: str,
+    camera_extrinsics_path: str,
+    lidar_extrinsics_path: Optional[str] = None,
+    segmentation_path: Optional[str] = None,
+    intrinsics_split: Optional[str] = None,
+    camera_extrinsics_split: Optional[str] = None,
+    lidar_extrinsics_split: Optional[str] = None,
+    segmentation_split: Optional[str] = None,
+    segmentation_modality_key: str = "segmentation",
+) -> dict:
+    """Build the hierarchical calibration modalities shared by sparse-GT evals.
+
+    Both the sparse-depth and sparse ``points_3d`` datasets project a LiDAR
+    cloud into the prediction plane, so they need identical ``intrinsics`` /
+    ``camera_extrinsics`` (optionally ``lidar_extrinsics`` / ``segmentation``)
+    hierarchical modalities.
+    """
     hierarchical = {
         "intrinsics": _modality(
             path=intrinsics_path,
@@ -866,7 +902,57 @@ def build_sparse_depth_eval_dataset(
             loader=sky_fn,
             split=segmentation_split,
         )
+    return hierarchical
 
+
+def build_points_3d_sparse_eval_dataset(
+    gt_sparse_depth_path: str,
+    pred_points_3d_path: str,
+    intrinsics_path: str,
+    camera_extrinsics_path: str,
+    lidar_extrinsics_path: Optional[str] = None,
+    segmentation_path: Optional[str] = None,
+    gt_sparse_depth_split: Optional[str] = None,
+    pred_points_3d_split: Optional[str] = None,
+    intrinsics_split: Optional[str] = None,
+    camera_extrinsics_split: Optional[str] = None,
+    lidar_extrinsics_split: Optional[str] = None,
+    segmentation_split: Optional[str] = None,
+    segmentation_modality_key: str = "segmentation",
+) -> MultiModalDataset:
+    """Build a MultiModalDataset for points_3d-vs-sparse-pointcloud evaluation.
+
+    Like :func:`build_sparse_depth_eval_dataset`, but the prediction under
+    ``"pred"`` is a per-pixel ``(H, W, 3)`` point map (``points_3d``) that is
+    scored *directly* against the sparse GT cloud (no depth unprojection). The
+    sparse GT and hierarchical ``intrinsics`` / ``camera_extrinsics`` (plus
+    optional ``lidar_extrinsics`` / ``segmentation``) are configured exactly as
+    for the sparse-depth path.
+    """
+    modalities = {
+        "gt": _modality(
+            path=gt_sparse_depth_path,
+            modality_key="sparse_depth",
+            split=gt_sparse_depth_split,
+        ),
+        "pred": _modality(
+            path=pred_points_3d_path,
+            modality_key="points_3d",
+            used_as="output",
+            split=pred_points_3d_split,
+        ),
+    }
+    hierarchical = _sparse_projection_hierarchical(
+        intrinsics_path=intrinsics_path,
+        camera_extrinsics_path=camera_extrinsics_path,
+        lidar_extrinsics_path=lidar_extrinsics_path,
+        segmentation_path=segmentation_path,
+        intrinsics_split=intrinsics_split,
+        camera_extrinsics_split=camera_extrinsics_split,
+        lidar_extrinsics_split=lidar_extrinsics_split,
+        segmentation_split=segmentation_split,
+        segmentation_modality_key=segmentation_modality_key,
+    )
     return MultiModalDataset(
         modalities=modalities,
         hierarchical_modalities=hierarchical,
