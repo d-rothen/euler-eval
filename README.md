@@ -183,6 +183,77 @@ The interval bounds are `near=[MIN, near_max)`, `mid=[near_max, mid_max)`, and
 | `mid` | `[9.290856529, 35.954189863)` |
 | `far` | `[35.954189863, 80.0]` |
 
+## Programmatic use (in-training validation)
+
+Besides the file-based CLI, `euler_eval.validation` exposes the same depth
+metric semantics for **in-memory predictions** — e.g. scoring a training
+run's validation pass against dense *or sparse* GT without writing
+predictions to disk:
+
+```python
+from euler_eval import (
+    DepthValidationAggregator,
+    build_validation_gt_dataset,
+    evaluate_dense_depth_sample,
+    evaluate_sparse_depth_sample,
+    get_sample_intrinsics,
+    get_sample_pointcloud_to_camera_extrinsics,
+    summarize_reduced_state,
+)
+
+# GT-only dataset from euler-loading compatible paths (.ds_crawler indices,
+# inline :split#scope= selectors supported).
+dataset = build_validation_gt_dataset(
+    sparse_depth_path="/data/muses.zip:val#scope=lidar",
+    rgb_path="/data/muses.zip:val#scope=rgb",
+    intrinsics_path="/data/muses.zip:val#scope=intrinsics",
+    camera_extrinsics_path="/data/muses.zip:val#scope=extrinsics",
+)
+
+aggregator = DepthValidationAggregator()
+for i in range(len(dataset)):
+    sample = dataset[i]
+    depth_pred = my_model(sample["rgb"])          # (H, W) metres, planar z
+    K = get_sample_intrinsics(sample)
+    lidar2cam, _ = get_sample_pointcloud_to_camera_extrinsics(sample)
+    aggregator.update(
+        evaluate_sparse_depth_sample(
+            depth_pred,
+            sample["sparse_depth"],               # (N, C>=3) lidar points
+            K,
+            lidar2cam,
+            alignment="none",                     # "affine" for relative depth
+        )
+    )
+
+summary = aggregator.summary()
+print(summary["standard"]["image_mean"]["absrel"])
+```
+
+Key pieces:
+
+- `evaluate_dense_depth_sample(pred, gt, valid_mask=None, alignment=...,
+  min_depth=..., max_depth=...)` — one dense prediction vs a dense GT map.
+  GT at another resolution is aligned to the prediction plane; returns the
+  standard metric set (`absrel`, `sqrel`, `mae`, `rmse`, `rmse_log`, `log10`,
+  `silog`, `delta1-3`) plus pooled pixel statistics, or `None` when too few
+  valid pixels remain.
+- `evaluate_sparse_depth_sample(pred, point_cloud, intrinsics,
+  camera_extrinsics, lidar_extrinsics=None, pred_is_radial=False, ...)` —
+  projects the sparse GT cloud into the prediction plane (radial depth,
+  nearest-z occlusion handling), converts a planar prediction to radial with
+  the same intrinsics, and scores only the projected pixels — matching the
+  CLI's `gt.sparse_depth` pipeline. Pass the intrinsics of the *actual
+  prediction plane* (i.e. adjusted for any crop/resize of the model input).
+- `alignment="none"` scores metric predictions as-is; `"affine"` fits
+  least-squares scale+shift first (relative/affine depth models).
+- `DepthValidationAggregator` accumulates per-sample results into the CLI's
+  `image_mean` / `image_median` / `pixel_pool` reducers. For multi-process
+  validation, sum `aggregator.reduced_state()` vectors across ranks (fixed
+  key order via `DepthValidationAggregator.state_keys()`) and rebuild
+  mean-based summaries with `summarize_reduced_state(...)`.
+- Inputs accept torch tensors or numpy arrays; all math runs on CPU numpy.
+
 ## Configuration
 
 ### `config.json`

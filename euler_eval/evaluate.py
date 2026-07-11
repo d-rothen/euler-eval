@@ -5,7 +5,6 @@ Runs all metrics over depth and RGB datasets loaded via euler_loading.
 
 import copy
 import tempfile
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Iterator, Optional, Tuple
 
@@ -15,11 +14,16 @@ from PIL import Image
 from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
+from .calibration import (
+    get_first_hierarchical_value as _get_first_hierarchical_value,
+    get_sample_intrinsics as _get_intrinsics_K,
+    get_sample_pointcloud_to_camera_extrinsics as _get_pointcloud_to_camera_extrinsics,
+    iter_hierarchical_values as _iter_hierarchical_values,
+)
 from .data import (
     align_to_prediction,
     apply_point_transform,
     classify_spatial_alignment,
-    compose_sensor_to_camera_extrinsics,
     compute_scale_and_shift,
     decompose_point_errors,
     fit_scale_transform,
@@ -29,8 +33,6 @@ from .data import (
     project_point_cloud_to_point_map,
     to_numpy_depth,
     to_numpy_directions,
-    to_numpy_extrinsics,
-    to_numpy_intrinsics,
     to_numpy_mask,
     to_numpy_point_cloud,
     to_numpy_points_3d,
@@ -505,223 +507,8 @@ def _get_sky_mask(sample: dict) -> Optional[np.ndarray]:
     return ~sky  # invert: True = non-sky = valid
 
 
-def _get_first_hierarchical_value(sample: dict, key: str):
-    data = sample.get(key)
-    if data is None:
-        return None
-    if isinstance(data, dict):
-        if not data:
-            return None
-        return next(iter(data.values()))
-    return data
-
-
-def _iter_hierarchical_values(sample: dict, key: str) -> list:
-    data = sample.get(key)
-    if data is None:
-        return []
-    if isinstance(data, dict):
-        return [data, *data.values()]
-    return [data]
-
-
-def _get_intrinsics_K(sample: dict) -> Optional[np.ndarray]:
-    """Extract (3,3) intrinsics matrix from sample calibration data."""
-    K_data = _get_first_hierarchical_value(sample, "intrinsics")
-    if K_data is None:
-        K_data = _get_first_hierarchical_value(sample, "calibration")
-    if K_data is None:
-        return None
-    return to_numpy_intrinsics(K_data)
-
-
-_DIRECT_SOURCE_TO_CAMERA_KEYS = (
-    "lidar2rgb",
-    "lidar2camera",
-    "lidar2cam",
-    "lidar_to_rgb",
-    "lidar_to_camera",
-    "lidar_to_cam",
-    "source2rgb",
-    "source2camera",
-    "source_to_rgb",
-    "source_to_camera",
-    "sensor2rgb",
-    "sensor2camera",
-    "sensor_to_rgb",
-    "sensor_to_camera",
-)
-_SOURCE_SENSOR_POSE_KEYS = (
-    "lidar",
-    "lidar_pose",
-    "lidar_extrinsics",
-    "source",
-    "source_sensor",
-    "source_extrinsics",
-    "sensor",
-    "sensor_extrinsics",
-    "lidar2gnss",
-    "lidar2ego",
-    "lidar2vehicle",
-    "lidar2world",
-    "lidar_to_gnss",
-    "lidar_to_ego",
-    "lidar_to_vehicle",
-    "lidar_to_world",
-)
-_CAMERA_SENSOR_POSE_KEYS = (
-    "rgb",
-    "camera",
-    "cam",
-    "frame_camera",
-    "rgb_pose",
-    "camera_pose",
-    "camera_extrinsics",
-    "target",
-    "target_sensor",
-    "target_extrinsics",
-    "rgb2gnss",
-    "camera2gnss",
-    "cam2gnss",
-    "frame_camera2gnss",
-    "rgb2ego",
-    "camera2ego",
-    "cam2ego",
-    "frame_camera2ego",
-    "rgb2vehicle",
-    "camera2vehicle",
-    "cam2vehicle",
-    "frame_camera2vehicle",
-    "rgb2world",
-    "camera2world",
-    "cam2world",
-    "frame_camera2world",
-)
-_MATRIX_WRAPPER_KEYS = ("T", "transform", "matrix", "extrinsics", "pose")
-
-
-def _as_extrinsics_or_none(data) -> Optional[np.ndarray]:
-    try:
-        return to_numpy_extrinsics(data)
-    except (TypeError, ValueError):
-        return None
-
-
-def _extract_wrapped_extrinsics(data) -> Optional[np.ndarray]:
-    matrix = _as_extrinsics_or_none(data)
-    if matrix is not None:
-        return matrix
-
-    if not isinstance(data, Mapping):
-        return None
-
-    for key in _MATRIX_WRAPPER_KEYS:
-        if key in data:
-            matrix = _extract_wrapped_extrinsics(data[key])
-            if matrix is not None:
-                return matrix
-
-    if len(data) == 1:
-        return _extract_wrapped_extrinsics(next(iter(data.values())))
-
-    return None
-
-
-def _extract_named_extrinsics(data, names: tuple[str, ...]) -> Optional[np.ndarray]:
-    if not isinstance(data, Mapping):
-        return _extract_wrapped_extrinsics(data)
-
-    for name in names:
-        if name in data:
-            matrix = _extract_wrapped_extrinsics(data[name])
-            if matrix is not None:
-                return matrix
-
-    for key in ("extrinsics", "sensors", "calibration", "poses"):
-        if key in data and isinstance(data[key], Mapping):
-            matrix = _extract_named_extrinsics(data[key], names)
-            if matrix is not None:
-                return matrix
-
-    if len(data) == 1:
-        return _extract_named_extrinsics(next(iter(data.values())), names)
-
-    return None
-
-
-def _extract_direct_source_to_camera(data) -> Optional[np.ndarray]:
-    matrix = _as_extrinsics_or_none(data)
-    if matrix is not None:
-        return matrix
-
-    if not isinstance(data, Mapping):
-        return None
-
-    for key in _DIRECT_SOURCE_TO_CAMERA_KEYS:
-        if key in data:
-            matrix = _extract_wrapped_extrinsics(data[key])
-            if matrix is not None:
-                return matrix
-
-    for key in ("extrinsics", "calibration"):
-        if key in data and isinstance(data[key], Mapping):
-            matrix = _extract_direct_source_to_camera(data[key])
-            if matrix is not None:
-                return matrix
-
-    if len(data) == 1:
-        return _extract_direct_source_to_camera(next(iter(data.values())))
-
-    return None
-
-
-def _get_pointcloud_to_camera_extrinsics(
-    sample: dict,
-) -> tuple[Optional[np.ndarray], Optional[str]]:
-    """Extract or compose the transform used for sparse point projection.
-
-    The common MUSES path supplies a direct ``lidar2rgb`` transform via
-    ``camera_extrinsics``.  Some datasets instead expose separate lidar and
-    camera sensor poses in a shared frame; in that case we compose them to the
-    same source-to-camera transform expected by the projector.
-    """
-    lidar_pose = None
-    for value in _iter_hierarchical_values(sample, "lidar_extrinsics"):
-        lidar_pose = _extract_named_extrinsics(value, _SOURCE_SENSOR_POSE_KEYS)
-        if lidar_pose is not None:
-            break
-
-    camera_values = _iter_hierarchical_values(sample, "camera_extrinsics")
-    if not camera_values:
-        camera_values = _iter_hierarchical_values(sample, "extrinsics")
-
-    if lidar_pose is not None:
-        for value in camera_values:
-            camera_pose = _extract_named_extrinsics(value, _CAMERA_SENSOR_POSE_KEYS)
-            if camera_pose is not None:
-                return (
-                    compose_sensor_to_camera_extrinsics(lidar_pose, camera_pose),
-                    "composed_lidar_and_camera_sensor_poses",
-                )
-        return None, None
-
-    for value in camera_values:
-        direct = _extract_direct_source_to_camera(value)
-        if direct is not None:
-            return direct, "direct_source_to_camera"
-
-    for value in camera_values:
-        lidar_pose = _extract_named_extrinsics(value, _SOURCE_SENSOR_POSE_KEYS)
-        camera_pose = _extract_named_extrinsics(value, _CAMERA_SENSOR_POSE_KEYS)
-        if lidar_pose is not None and camera_pose is not None:
-            return (
-                compose_sensor_to_camera_extrinsics(lidar_pose, camera_pose),
-                "composed_lidar_and_camera_sensor_poses",
-            )
-
-    return None, None
-
-
+# Calibration extraction lives in euler_eval.calibration (imported above with
+# private aliases to keep the long-standing evaluate.py import surface stable).
 def _get_camera_extrinsics(sample: dict) -> Optional[np.ndarray]:
     """Backward-compatible wrapper for direct sparse projection callers."""
     transform, _ = _get_pointcloud_to_camera_extrinsics(sample)
