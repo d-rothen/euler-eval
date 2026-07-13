@@ -7,6 +7,9 @@ prediction and scores it as a 3D point map against a sparse LiDAR cloud
 (``points_3d_metrics_proposal.md`` §4-D).
 """
 
+import json
+import zipfile
+
 import numpy as np
 import pytest
 
@@ -440,39 +443,44 @@ class TestEvaluateNativePoints:
 
 
 # ---------------------------------------------------------------------------
-# Save wiring (distinct output file)
+# Save wiring
 # ---------------------------------------------------------------------------
 
 
 class TestSaveWiring:
-    def test_default_basename_and_suffix(self, tmp_path):
+    def test_points_3d_uses_eval_json_in_its_modality_path(self, tmp_path):
         from euler_eval.cli import save_results
 
         pred_dir = tmp_path / "pred"
         pred_dir.mkdir()
-        cfg = {"name": "m", "depth": {"path": str(pred_dir)}}
+        cfg = {"name": "m", "points_3d": {"path": str(pred_dir)}}
 
-        # Sparse-depth writes eval.json; sparse-points_3d writes points3d_eval.json.
-        depth_out = save_results({"a": 1}, cfg, modality="depth")
         p3d_out = save_results(
-            {"b": 2}, cfg, modality="points_3d",
-            default_basename="points3d_eval.json",
+            {"points3d": {"eval": {}}}, cfg, modality="points_3d"
         )
-        assert depth_out.name == "eval.json"
-        assert p3d_out.name == "points3d_eval.json"
-        assert depth_out != p3d_out
-        assert depth_out.exists() and p3d_out.exists()
 
-    def test_output_file_suffix(self, tmp_path):
+        assert p3d_out == pred_dir / "eval.json"
+        assert p3d_out.exists()
+        assert not (pred_dir / "points3d_eval.json").exists()
+        assert not (pred_dir / "points_3d_eval.json").exists()
+
+    def test_points_3d_writes_eval_json_into_zip(self, tmp_path):
         from euler_eval.cli import save_results
 
-        out = tmp_path / "model_a.json"
-        cfg = {"name": "m", "output_file": str(out),
-               "depth": {"path": str(tmp_path)}}
-        p3d_out = save_results({"b": 2}, cfg, modality="points_3d",
-                               output_file_suffix="_points3d")
-        assert p3d_out.name == "model_a_points3d.json"
-        assert p3d_out != out
+        archive = tmp_path / "predictions.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("points/frame_000.npy", b"points")
+
+        results = {"points3d": {"eval": {"native": {}}}}
+        cfg = {"name": "m", "points_3d": {"path": str(archive)}}
+        p3d_out = save_results(results, cfg, modality="points_3d")
+
+        assert p3d_out == archive / "eval.json"
+        with zipfile.ZipFile(archive) as zf:
+            assert "eval.json" in zf.namelist()
+            assert "points3d_eval.json" not in zf.namelist()
+            assert "points_3d_eval.json" not in zf.namelist()
+            assert json.loads(zf.read("eval.json")) == results
 
 
 # ---------------------------------------------------------------------------

@@ -16,8 +16,7 @@
             "points_3d": {
                 "path": "/path/to/model_a/points_3d",
                 "split": "test"
-            },
-            "output_file": "/path/to/output/model_a_points_3d_eval.json"
+            }
         },
         {
             "name": "model_b_relative_pointmap",
