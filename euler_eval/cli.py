@@ -978,9 +978,6 @@ def save_results(
     results: dict,
     dataset_config: dict,
     modality: str | None = None,
-    *,
-    default_basename: str = "eval.json",
-    output_file_suffix: str | None = None,
 ) -> Path:
     """Save results to output file.
 
@@ -994,14 +991,6 @@ def save_results(
         modality: When set, save to this specific modality's path
             (e.g. ``"depth"`` or ``"rgb"``).  Falls back to the first
             available modality path when *None*.
-        default_basename: File name used when no explicit ``output_file`` is
-            configured (default ``"eval.json"``).  Lets a second modality that
-            shares a prediction path (e.g. sparse ``points_3d`` alongside sparse
-            ``depth``) write to a distinct file instead of clobbering it.
-        output_file_suffix: When an explicit ``output_file`` is configured, this
-            suffix is inserted before its extension (e.g. ``"_points3d"`` turns
-            ``model_a.json`` into ``model_a_points3d.json``) so multiple
-            modalities can honour a single configured path without collision.
 
     Returns:
         Path where results were saved.
@@ -1021,7 +1010,7 @@ def save_results(
                     dataset_config[selected_modality]["path"],
                     split=dataset_config[selected_modality].get("split"),
                 )
-                / default_basename
+                / "eval.json"
             )
         else:
             # Default: save alongside first available modality path
@@ -1032,17 +1021,13 @@ def save_results(
                             dataset_config[mod]["path"],
                             split=dataset_config[mod].get("split"),
                         )
-                        / default_basename
+                        / "eval.json"
                     )
                     break
         if output_file is None:
-            output_file = Path(default_basename)
+            output_file = Path("eval.json")
     else:
         output_file = Path(output_file)
-        if output_file_suffix:
-            output_file = output_file.with_name(
-                f"{output_file.stem}{output_file_suffix}{output_file.suffix}"
-            )
 
     zip_path, internal_name = _find_zip_ancestor(output_file)
     if zip_path is not None and internal_name:
@@ -2360,14 +2345,10 @@ def main():
             )
             print(f"\n  Points-3D results saved to: {points_3d_out}")
         if points_3d_sparse_save:
-            # Distinct file so it never clobbers the sparse-depth eval.json that
-            # shares the same dense-depth prediction path / output_file.
             points_3d_sparse_out = save_results(
                 points_3d_sparse_save,
                 dataset_config,
                 modality="points_3d",
-                default_basename="points3d_eval.json",
-                output_file_suffix="_points3d",
             )
             print(
                 f"\n  Points-3D (sparse GT) results saved to: {points_3d_sparse_out}"

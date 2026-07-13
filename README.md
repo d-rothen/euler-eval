@@ -301,7 +301,7 @@ When the GT is a sparse pointcloud, the evaluator also produces **3D (`points_3d
 - a **predicted point map** (`datasets[].points_3d`, an `(H,W,3)` map) — evaluated *directly* against the sparse GT cloud, with the 3D **similarity** gauge selected by `--points-3d-alignment`; or
 - a **dense depth map** (`datasets[].depth`/`relative_depth`/`affine_depth`) — unprojected with `gt.intrinsics` into a point map, with the depth **affine** gauge selected by `--depth-alignment`.
 
-If a dataset entry provides both, the predicted `points_3d` map is preferred (the depth is still scored by the pointwise sparse-depth metrics). Either way the sparse GT cloud is projected into the prediction plane, and the 3D results are written to a separate `points3d_eval.json` (or `<output_file>_points3d.json`) so they never clobber the sparse-depth `eval.json`.
+If a dataset entry provides both, the predicted `points_3d` map is preferred (the depth is still scored by the pointwise sparse-depth metrics). Either way the sparse GT cloud is projected into the prediction plane, and the 3D results are written as `eval.json` in the selected prediction modality path (or to the configured `output_file`). Give simultaneous evaluations distinct prediction paths: one `output_file` applies to the whole dataset entry.
 
 Sparse depth does not require segmentation GT. `gt.segmentation` and
 `gt.semantic_segmentation` are optional aliases for the same sky-mask source.
@@ -569,7 +569,7 @@ For sparse depth outputs, the internal Python result dict still uses `sparse_dep
 
 For points_3d outputs, the internal Python result dict uses `points_3d_native`, `points_3d_metric`, and `points_3d` (canonical alias), but serialized `eval.json` metric paths are rooted at `points3d.eval` (no underscore) to satisfy the namespace first-segment rule, mirroring `sparsedepth`. The `metric` space is emitted only when a gauge alignment is applied; otherwise only `native` is present and aliased.
 
-When the points_3d metrics come from a sparse pointcloud GT (`gt.sparse_depth` + a predicted `points_3d` map or a dense depth prediction), they use the same `points3d.eval` namespace but are written to a distinct file — `points3d_eval.json` beside the prediction, or `<output_file>_points3d.json` when `output_file` is set — so they do not overwrite the sparse-depth `eval.json`. Only the `point_error`, `error_decomposition`, and (directed) `cloud_distance` categories are present; the `metric` space is emitted only when the gauge (`--points-3d-alignment` for a point-map prediction, `--depth-alignment` for a depth prediction) calibrates the prediction.
+When the points_3d metrics come from a sparse pointcloud GT (`gt.sparse_depth` + a predicted `points_3d` map or a dense depth prediction), they use the same `points3d.eval` namespace and are written as `eval.json` beside the selected prediction modality (or to the configured `output_file`). Only the `point_error`, `error_decomposition`, and (directed) `cloud_distance` categories are present; the `metric` space is emitted only when the gauge (`--points-3d-alignment` for a point-map prediction, `--depth-alignment` for a depth prediction) calibrates the prediction.
 
 Previous single-depth structure (kept under `depth`) is:
 
