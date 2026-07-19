@@ -455,7 +455,7 @@ a `points_3d` canonical alias, keyed as
 | Euclidean 3D agreement | `point_error.{image_mean,image_median,pixel_pool}.*` | 3D EPE `mae3d`, `rmse3d`, `median3d`/`p90`/`p95`, relative error `rel_median`/`rel_p90`, and 3D δ-accuracy `acc_<τ>` (within τ m) / `acc_rel_<τ>` |
 | Error decomposition | `error_decomposition.{radial_*,lateral_*,lateral_fraction}` + `angular_error.*` + `rho_a.*` | Splits each error vector into a **radial** (≈ depth) and **lateral** (≈ camera-model) component; `lateral_fraction ∈ [0,1]` attributes blame. Angular ray error and ρ_A (on native directions) measure the implied camera model |
 | Geometric | `geometric.normal_consistency.*`, `geometric.point_edge_f1.*` | True-3D surface normals (cross-product of point-map tangents, no focal assumption) and a 3D discontinuity F1 |
-| Cloud distance | `cloud_distance.chamfer.*`, `cloud_distance.fscore.tau_<τ>.*` | Correspondence-free Chamfer (accuracy/completeness/distance/median) and F-score (precision/recall/f1) at distance thresholds τ |
+| Cloud distance | `cloud_distance.chamfer.*`, `cloud_distance.fscore.tau_<τ>.*`, `cloud_distance.f_a` | Correspondence-free Chamfer (accuracy/completeness/distance/median), F-score (precision/recall/f1) at fixed distance thresholds τ, and F-score AUC (`f_a`) integrated up to 1/20 of the dataset's maximum GT depth |
 
 #### Points-3D gauge alignment
 

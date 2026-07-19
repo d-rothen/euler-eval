@@ -503,6 +503,13 @@ def _points_3d_descriptions() -> dict:
         "f1": MetricDescription(
             is_higher_better=True, min_value=0.0, max_value=1.0, display_name="F1"
         ),
+        "f_a": MetricDescription(
+            is_higher_better=True,
+            scale="percentage",
+            min_value=0.0,
+            max_value=100.0,
+            display_name="F-score AUC (F_A)",
+        ),
         # cloud_distance
         "chamfer.accuracy": MetricDescription(
             is_higher_better=False, unit="meters", display_name="Chamfer Accuracy"

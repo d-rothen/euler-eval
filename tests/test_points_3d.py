@@ -22,6 +22,7 @@ from euler_eval.evaluate import evaluate_points_3d_samples
 from euler_eval.metrics import (
     compute_cloud_distance_metrics,
     compute_decomposition_metrics,
+    compute_fscore_auc,
     compute_point_edge_f1,
     compute_point_error_metrics,
     compute_point_normal_angles,
@@ -245,12 +246,28 @@ class TestGeometry:
 
 
 class TestCloud:
+    def test_fscore_auc_extremes(self):
+        perfect = np.zeros(4, dtype=np.float64)
+        missed = np.full(4, 2.0, dtype=np.float64)
+        assert compute_fscore_auc(perfect, perfect, 1.0) == 100.0
+        assert compute_fscore_auc(missed, missed, 1.0) == 0.0
+
     def test_perfect_clouds(self):
         gt, _ = _gt_pointmap()
         pts = gt.reshape(-1, 3)
         m = compute_cloud_distance_metrics(pts, pts)
         assert m["chamfer"]["distance"] < 1e-6
         assert m["fscore"]["tau_0_1"]["f1"] == 1.0
+
+    def test_cloud_f_a_uses_requested_depth_range(self):
+        gt, _ = _gt_pointmap()
+        pts = gt.reshape(-1, 3)
+        m = compute_cloud_distance_metrics(
+            pts,
+            pts,
+            fscore_auc_max_threshold=0.5,
+        )
+        assert m["f_a"] == 100.0
 
     def test_shifted_cloud(self):
         gt, _ = _gt_pointmap()
@@ -288,6 +305,10 @@ class TestEvaluate:
         assert pe["acc_0_05"] == 100.0
         assert result["points_3d"]["error_decomposition"]["rho_a"]["mean"] > 0.95
         assert result["dataset_info"]["fov_domain"] == "sfov"
+        assert result["dataset_info"]["f_a_max_threshold"] == pytest.approx(
+            result["dataset_info"]["max_depth"] / 20.0
+        )
+        assert result["points_3d"]["cloud_distance"]["f_a"] == 100.0
 
     def test_similarity_recovers_relative_prediction(self):
         gt, K = _gt_pointmap()
@@ -304,6 +325,10 @@ class TestEvaluate:
         metric_mae = result["points_3d_metric"]["point_error"]["image_mean"]["mae3d"]
         assert metric_mae < 1e-3
         assert native_mae > metric_mae
+        assert "f_a" in result["points_3d_native"]["cloud_distance"]
+        assert result["points_3d_metric"]["cloud_distance"]["f_a"] == pytest.approx(
+            100.0, abs=1e-3
+        )
         assert result["points_3d"] is result["points_3d_metric"]
 
     def test_auto_with_relative_hint_aligns(self):
@@ -418,6 +443,7 @@ class TestCliNamespace:
         assert envelope["axes"]["space"]["position"] == 0
         assert envelope["axes"]["reduction"]["position"] == 2
         assert "mae3d" in envelope["metricDescriptions"]
+        assert "f_a" in envelope["metricDescriptions"]
 
     def test_real_metric_tree_paths_conform(self):
         """Flattened paths of an actual eval result live under points3d.eval."""

@@ -2854,6 +2854,40 @@ def evaluate_rays_samples(
 # ---------------------------------------------------------------------------
 
 
+def _points_3d_max_gt_depth(
+    dataset: MultiModalDataset,
+    *,
+    gt_is_depth: bool,
+    gt_depth_is_radial: bool,
+) -> float:
+    """Scan the GT once for the dataset maximum radial 3D depth."""
+    max_depth = 0.0
+    for index in range(len(dataset)):
+        sample = dataset[index]
+        if gt_is_depth:
+            intrinsics = _get_intrinsics_K(sample)
+            if intrinsics is None:
+                _, entry_id = _extract_hierarchy(sample)
+                raise ValueError(
+                    f"Sample {entry_id!r}: points_3d GT synthesis from depth "
+                    "requires intrinsics (gt.intrinsics or gt.calibration)."
+                )
+            gt_points = unproject_depth_to_points(
+                to_numpy_depth(sample["gt"]),
+                intrinsics,
+                depth_is_radial=gt_depth_is_radial,
+            )
+        else:
+            gt_points = to_numpy_points_3d(sample["gt"])
+        finite = np.isfinite(gt_points).all(axis=-1)
+        if np.any(finite):
+            depths = np.linalg.norm(gt_points[finite], axis=-1)
+            positive = depths[depths > 0]
+            if positive.size:
+                max_depth = max(max_depth, float(np.max(positive)))
+    return max_depth
+
+
 def evaluate_points_3d_samples(
     dataset: MultiModalDataset,
     fov_domain: Optional[str] = None,
@@ -2921,6 +2955,14 @@ def evaluate_points_3d_samples(
     num_samples = len(dataset)
     if num_samples == 0:
         raise ValueError("Dataset has no matched samples")
+
+    print("Scanning points_3d GT depth range for F_A...")
+    dataset_max_depth = _points_3d_max_gt_depth(
+        dataset,
+        gt_is_depth=gt_is_depth,
+        gt_depth_is_radial=gt_depth_is_radial,
+    )
+    f_a_max_threshold = dataset_max_depth / 20.0
 
     # Resolve the gauge alignment to apply.
     if alignment_mode == "auto":
@@ -3224,7 +3266,10 @@ def evaluate_points_3d_samples(
                         st["edge_images"].append(ef)
 
                         cd = compute_cloud_distance_metrics(
-                            pv_sp, gv, max_points=max_cloud_points
+                            pv_sp,
+                            gv,
+                            max_points=max_cloud_points,
+                            fscore_auc_max_threshold=f_a_max_threshold,
                         )
                         if cd:
                             st["cloud_images"].append(cd)
@@ -3325,6 +3370,8 @@ def evaluate_points_3d_samples(
                     "threshold_deg": threshold_deg,
                     "evaluated_points": total_evaluated_points,
                     "gt_synthesized_from_depth": gt_is_depth,
+                    "max_depth": dataset_max_depth,
+                    "f_a_max_threshold": f_a_max_threshold,
                 },
                 "space_info": {
                     "input_space_detected": input_space_detected,

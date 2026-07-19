@@ -36,11 +36,66 @@ def _subsample(points: np.ndarray, max_points: int) -> np.ndarray:
     return points[idx]
 
 
+def compute_fscore_auc(
+    dist_pred_to_gt: np.ndarray,
+    dist_gt_to_pred: np.ndarray,
+    max_threshold: float,
+) -> Optional[float]:
+    """Return the normalized area under the point-cloud F1 curve.
+
+    ``F_A`` integrates the symmetric nearest-neighbour F1 score over all
+    distance tolerances from zero through ``max_threshold``.  The empirical
+    precision and recall curves are step functions, so this implementation
+    integrates their harmonic mean exactly rather than choosing a sampling
+    resolution.  The result is reported as a percentage in ``[0, 100]``.
+    """
+    pred_dist = np.asarray(dist_pred_to_gt, dtype=np.float64).reshape(-1)
+    gt_dist = np.asarray(dist_gt_to_pred, dtype=np.float64).reshape(-1)
+    if (
+        pred_dist.size == 0
+        or gt_dist.size == 0
+        or not np.isfinite(max_threshold)
+        or max_threshold <= 0
+    ):
+        return None
+
+    pred_dist = np.sort(pred_dist[np.isfinite(pred_dist)])
+    gt_dist = np.sort(gt_dist[np.isfinite(gt_dist)])
+    if pred_dist.size == 0 or gt_dist.size == 0:
+        return None
+
+    events = np.unique(
+        np.concatenate(
+            [
+                np.array([0.0, max_threshold], dtype=np.float64),
+                pred_dist[(pred_dist >= 0.0) & (pred_dist < max_threshold)],
+                gt_dist[(gt_dist >= 0.0) & (gt_dist < max_threshold)],
+            ]
+        )
+    )
+    left = events[:-1]
+    widths = np.diff(events)
+    # Immediately to the right of an event, all distances equal to that event
+    # satisfy the paper's threshold test. Point values at the discontinuities
+    # have zero measure and therefore do not affect the integral.
+    precision = np.searchsorted(pred_dist, left, side="right") / pred_dist.size
+    recall = np.searchsorted(gt_dist, left, side="right") / gt_dist.size
+    denominator = precision + recall
+    f1 = np.divide(
+        2.0 * precision * recall,
+        denominator,
+        out=np.zeros_like(denominator),
+        where=denominator > 0,
+    )
+    return float(np.sum(f1 * widths) / max_threshold * 100.0)
+
+
 def compute_cloud_distance_metrics(
     pred_points: np.ndarray,
     gt_points: np.ndarray,
     max_points: int = DEFAULT_MAX_POINTS,
     thresholds: tuple = FSCORE_THRESHOLDS,
+    fscore_auc_max_threshold: Optional[float] = None,
 ) -> Optional[dict]:
     """Chamfer distance and F-score between two 3D point sets.
 
@@ -49,6 +104,8 @@ def compute_cloud_distance_metrics(
         gt_points: ``(M, 3)`` ground-truth points.
         max_points: Per-cloud subsample cap (``None`` to disable).
         thresholds: F-score distance thresholds in metres.
+        fscore_auc_max_threshold: When provided, also compute ``f_a``, the
+            normalized F1 AUC through this distance threshold, as a percentage.
 
     Returns:
         Dict with a ``chamfer`` block (``accuracy``, ``completeness``,
@@ -98,7 +155,16 @@ def compute_cloud_distance_metrics(
             "f1": f1,
         }
 
-    return {"chamfer": chamfer, "fscore": fscore}
+    result = {"chamfer": chamfer, "fscore": fscore}
+    if fscore_auc_max_threshold is not None:
+        f_a = compute_fscore_auc(
+            dist_pred_to_gt,
+            dist_gt_to_pred,
+            fscore_auc_max_threshold,
+        )
+        if f_a is not None:
+            result["f_a"] = f_a
+    return result
 
 
 def compute_sparse_cloud_distance_metrics(

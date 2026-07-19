@@ -522,6 +522,9 @@ depth dataset metadata.
 - `fscore.tau_<τ>`: precision/recall/F1 of points within `τ` metres of the other
   cloud, for `τ ∈ {0.05, 0.1, 0.25, 0.5}`. F-score is the bounded, outlier-robust
   headline; raw Chamfer is the diagnostic.
+- `f_a`: normalized area under the F1-versus-distance-threshold curve from zero
+  to 1/20 of the dataset's maximum valid GT radial depth, reported as a
+  percentage. This is the `F_A` convention used by monocular 3D papers.
 - Clouds are deterministically subsampled (default cap 50k points/cloud) to bound
   the KD-tree cost.
 

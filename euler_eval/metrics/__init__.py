@@ -105,6 +105,7 @@ from .points3d_geometry import (
 )
 from .points3d_cloud import (
     compute_cloud_distance_metrics,
+    compute_fscore_auc,
     compute_sparse_cloud_distance_metrics,
     FSCORE_THRESHOLDS as POINTS3D_FSCORE_THRESHOLDS,
     DEFAULT_MAX_POINTS as POINTS3D_DEFAULT_MAX_POINTS,
@@ -197,6 +198,7 @@ __all__ = [
     "compute_point_normal_angles",
     "compute_point_edge_f1",
     "compute_cloud_distance_metrics",
+    "compute_fscore_auc",
     "compute_sparse_cloud_distance_metrics",
     "POINTS3D_FSCORE_THRESHOLDS",
     "POINTS3D_DEFAULT_MAX_POINTS",
