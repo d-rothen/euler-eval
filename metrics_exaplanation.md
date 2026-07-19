@@ -524,7 +524,9 @@ depth dataset metadata.
   headline; raw Chamfer is the diagnostic.
 - `f_a`: normalized area under the F1-versus-distance-threshold curve from zero
   to 1/20 of the dataset's maximum valid GT radial depth, reported as a
-  percentage. This is the `F_A` convention used by monocular 3D papers.
+  percentage. This is the `F_A` convention used by monocular 3D papers. On the
+  sparse-pointcloud-GT path this is the only symmetric cloud metric; the fixed
+  threshold diagnostics remain recall-only.
 - Clouds are deterministically subsampled (default cap 50k points/cloud) to bound
   the KD-tree cost.
 
