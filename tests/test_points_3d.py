@@ -485,6 +485,15 @@ class TestSanity:
         assert "camera_dominated_error" in types
         assert "rho_a_too_low" in types
 
+    def test_report_handles_metric_warning_without_counted_input(self, capsys):
+        sc = self._checker()
+        sc.validate_points_3d_metrics(lateral_fraction=0.95, file_id="f0")
+
+        sc.print_report()
+
+        output = capsys.readouterr().out
+        assert "Occurrences: 1/0 (0.0%)" in output
+
     def test_full_report_includes_points_3d(self):
         sc = self._checker()
         assert "points_3d" in sc.get_full_report()

@@ -20,6 +20,7 @@ from euler_eval.data import (
 )
 from euler_eval.evaluate import evaluate_points_3d_sparse_samples
 from euler_eval.metrics import compute_sparse_cloud_distance_metrics
+from euler_eval.sanity_checker import SanityChecker
 
 
 def _rot_z(theta):
@@ -89,6 +90,21 @@ def _perfect_dataset(seed=0, **kwargs):
     K = _make_intrinsics(400.0, 400.0, depth.shape[1] / 2.0, depth.shape[0] / 2.0)
     cloud = _sparse_cloud_from_depth(depth, K, seed=seed + 1)
     return _SparsePointDataset(cloud, depth, K, **kwargs), depth, K, cloud
+
+
+def test_sparse_evaluation_counts_sanity_check_samples():
+    dataset, _, _, _ = _perfect_dataset()
+    sanity_checker = SanityChecker()
+
+    evaluate_points_3d_sparse_samples(
+        dataset,
+        pred_is_radial=False,
+        num_workers=0,
+        sanity_checker=sanity_checker,
+        alignment_mode="none",
+    )
+
+    assert sanity_checker.get_points_3d_report()["total_samples"] == 1
 
 
 # ---------------------------------------------------------------------------

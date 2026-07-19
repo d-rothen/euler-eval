@@ -3829,6 +3829,15 @@ def evaluate_points_3d_sparse_samples(
                     pred_ok_native = pred_ok_native & sky_valid
                     pred_ok_metric = pred_ok_metric & sky_valid
 
+                if sanity_checker is not None:
+                    # Keep the sanity-check sample accounting consistent with
+                    # the dense points_3d evaluator.  Metric validation below
+                    # may add warnings, but sample counting belongs to input
+                    # validation so each evaluated pair is counted once.
+                    sanity_checker.validate_points_3d_input(
+                        pred_map_native, gt_point_map, entry_id
+                    )
+
                 # Native correspondence mask drives the shared angular metrics.
                 native_corr = gt_valid & pred_ok_native
                 total_evaluated_points += int(native_corr.sum())

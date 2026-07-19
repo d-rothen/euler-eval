@@ -1119,7 +1119,10 @@ class SanityChecker:
             print("-" * 70)
 
             for key, info in depth_report["warnings_by_type"].items():
-                ratio = info["count"] / depth_report["total_samples"]
+                ratio = (
+                    info["count"] / depth_report["total_samples"]
+                    if depth_report["total_samples"] > 0 else 0
+                )
                 print(f"\n  {info['metric']} - {info['type']}:")
                 print(f"    Occurrences: {info['count']}/{depth_report['total_samples']} ({ratio*100:.1f}%)")
                 print(f"    {info['message']}")
@@ -1134,7 +1137,10 @@ class SanityChecker:
             print("-" * 70)
 
             for key, info in rgb_report["warnings_by_type"].items():
-                ratio = info["count"] / rgb_report["total_samples"]
+                ratio = (
+                    info["count"] / rgb_report["total_samples"]
+                    if rgb_report["total_samples"] > 0 else 0
+                )
                 print(f"\n  {info['metric']} - {info['type']}:")
                 print(f"    Occurrences: {info['count']}/{rgb_report['total_samples']} ({ratio*100:.1f}%)")
                 print(f"    {info['message']}")
@@ -1149,7 +1155,10 @@ class SanityChecker:
             print("-" * 70)
 
             for key, info in rays_report["warnings_by_type"].items():
-                ratio = info["count"] / rays_report["total_samples"]
+                ratio = (
+                    info["count"] / rays_report["total_samples"]
+                    if rays_report["total_samples"] > 0 else 0
+                )
                 print(f"\n  {info['metric']} - {info['type']}:")
                 print(f"    Occurrences: {info['count']}/{rays_report['total_samples']} ({ratio*100:.1f}%)")
                 print(f"    {info['message']}")
@@ -1164,7 +1173,10 @@ class SanityChecker:
             print("-" * 70)
 
             for key, info in points_3d_report["warnings_by_type"].items():
-                ratio = info["count"] / points_3d_report["total_samples"]
+                ratio = (
+                    info["count"] / points_3d_report["total_samples"]
+                    if points_3d_report["total_samples"] > 0 else 0
+                )
                 print(f"\n  {info['metric']} - {info['type']}:")
                 print(f"    Occurrences: {info['count']}/{points_3d_report['total_samples']} ({ratio*100:.1f}%)")
                 print(f"    {info['message']}")
