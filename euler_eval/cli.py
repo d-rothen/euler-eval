@@ -8,6 +8,7 @@ import argparse
 import importlib.metadata
 import json
 import math
+import platform
 import sys
 import zipfile
 from pathlib import Path
@@ -559,6 +560,24 @@ def _get_version() -> str:
         return importlib.metadata.version("euler-eval")
     except importlib.metadata.PackageNotFoundError:
         return "0.0.0"
+
+
+def _package_metadata() -> dict:
+    """Return stable package/runtime metadata for evaluation provenance."""
+    return {
+        "name": "euler-eval",
+        "version": _get_version(),
+        "python_version": platform.python_version(),
+        "torch_version": str(torch.__version__),
+        "cuda_version": torch.version.cuda,
+    }
+
+
+def _log_package_metadata() -> dict:
+    """Emit and return the package metadata recorded at workflow startup."""
+    metadata = _package_metadata()
+    print(f"Evaluation package: {json.dumps(metadata, sort_keys=True)}")
+    return metadata
 
 
 def _sparse_depth_metric_set_envelope(
@@ -1180,6 +1199,9 @@ def main():
 
     args = parser.parse_args()
 
+    # Emit producer provenance before configuration loading or evaluation work.
+    package_metadata = _log_package_metadata()
+
     # Load and validate config
     try:
         config = load_config(args.config)
@@ -1290,7 +1312,12 @@ def main():
 
         # Register evaluation as running before work begins
         if et_run is not None:
-            et_run.add_evaluation(ds_name, name=ds_name, status="running")
+            et_run.add_evaluation(
+                ds_name,
+                name=ds_name,
+                status="running",
+                metadata={"package": package_metadata},
+            )
 
         # -- Depth evaluation --
         depth_dataset = None
@@ -2369,6 +2396,7 @@ def main():
                 # name=ds_name,
                 # status="completed",
                 metadata={
+                    "package": package_metadata,
                     "results": {
                         k: v for k, v in all_results.items() if k != "per_file_metrics"
                     }

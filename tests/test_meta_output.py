@@ -1,5 +1,6 @@
 """Tests for the structured meta block in eval.json output."""
 
+import json
 import re
 
 from euler_eval.cli import (
@@ -7,6 +8,8 @@ from euler_eval.cli import (
     _clean_per_file_metrics,
     _depth_eval_axes,
     _DEPTH_EVAL_DESCRIPTIONS,
+    _log_package_metadata,
+    _package_metadata,
     _sparse_depth_eval_axes,
     _SPARSE_DEPTH_EVAL_DESCRIPTIONS,
     _SPARSE_DEPTH_METRIC_NAMESPACE,
@@ -24,6 +27,23 @@ _DEPTH_EVAL_AXES = _depth_eval_axes()
 _SPARSE_DEPTH_EVAL_AXES = _sparse_depth_eval_axes()
 _RGB_EVAL_AXES = _rgb_eval_axes()
 _METRIC_NAMESPACE_RE = re.compile(r"^[a-z0-9]+(?:\.[a-z0-9_]+)+$")
+
+
+class TestPackageMetadataLogging:
+    def test_package_metadata_contains_runtime_provenance(self):
+        metadata = _package_metadata()
+        assert metadata["name"] == "euler-eval"
+        assert metadata["version"]
+        assert metadata["python_version"]
+        assert metadata["torch_version"]
+        assert "cuda_version" in metadata
+
+    def test_package_metadata_log_is_structured(self, capsys):
+        metadata = _log_package_metadata()
+        output = capsys.readouterr().out.strip()
+        prefix = "Evaluation package: "
+        assert output.startswith(prefix)
+        assert json.loads(output[len(prefix):]) == metadata
 
 
 def _flatten_numeric_metrics(obj, prefix=""):
