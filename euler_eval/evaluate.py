@@ -3452,9 +3452,11 @@ def evaluate_points_3d_sparse_samples(
 
       - ``cloud_distance`` — the **primary** geometry metric here.  Because the
         GT is sparse and the prediction dense, only the correspondence-free
-        ``gt→pred`` direction is meaningful, so this reports **completeness**
-        (mean/median nearest-predicted distance per GT return) and **recall**
-        at each threshold (see :func:`compute_sparse_cloud_distance_metrics`).
+        ``gt→pred`` direction is used for the fixed-threshold diagnostics, so
+        these report **completeness** (mean/median nearest-predicted distance
+        per GT return) and **recall**.  ``f_a`` additionally performs the
+        symmetric comparison required for F-score AUC (see
+        :func:`compute_sparse_cloud_distance_metrics`).
       - ``point_error`` — Euclidean 3D agreement (EPE/RMSE/percentiles/δ-acc)
         computed at the projected sparse correspondences.
       - ``error_decomposition`` — radial (≈depth) vs lateral (≈camera-model)
@@ -3508,6 +3510,39 @@ def evaluate_points_3d_sparse_samples(
     num_samples = len(dataset)
     if num_samples == 0:
         raise ValueError("Dataset has no matched samples")
+
+    print("Scanning sparse points_3d GT depth range for F_A...")
+    dataset_max_depth = 0.0
+    for sample_index in range(num_samples):
+        range_sample = dataset[sample_index]
+        range_cloud = to_numpy_point_cloud(range_sample["gt"])
+        if pred_is_depth:
+            range_shape = to_numpy_depth(range_sample["pred"]).shape[:2]
+        else:
+            range_shape = to_numpy_points_3d(range_sample["pred"]).shape[:2]
+        range_intrinsics = _get_intrinsics_K(range_sample)
+        range_extrinsics, _ = _get_pointcloud_to_camera_extrinsics(range_sample)
+        if range_intrinsics is None or range_extrinsics is None:
+            # The main evaluation loop emits the detailed sample-specific
+            # configuration error; do not duplicate it in this range scan.
+            continue
+        range_map, range_mask, _ = project_point_cloud_to_point_map(
+            range_cloud,
+            range_intrinsics,
+            range_extrinsics,
+            range_shape,
+        )
+        if np.any(range_mask):
+            range_depths = np.linalg.norm(range_map[range_mask], axis=-1)
+            finite_depths = range_depths[
+                np.isfinite(range_depths) & (range_depths > 0)
+            ]
+            if finite_depths.size:
+                dataset_max_depth = max(
+                    dataset_max_depth,
+                    float(np.max(finite_depths)),
+                )
+    f_a_max_threshold = dataset_max_depth / 20.0
 
     resolved_domain: Optional[str] = fov_domain
     threshold_deg: Optional[float] = (
@@ -3604,7 +3639,10 @@ def evaluate_points_3d_sparse_samples(
                 store["dec_images"].append(dec)
                 fval["error_decomposition"] = dict(dec)
         cd = compute_sparse_cloud_distance_metrics(
-            pred_map[pred_ok], gt_cloud, max_points=max_cloud_points
+            pred_map[pred_ok],
+            gt_cloud,
+            max_points=max_cloud_points,
+            fscore_auc_max_threshold=f_a_max_threshold,
         )
         if cd:
             store["cloud_images"].append(cd)
@@ -4022,6 +4060,8 @@ def evaluate_points_3d_sparse_samples(
                     "projected_pixels": total_projected_pixels,
                     "evaluated_points": total_evaluated_points,
                     "gt_synthesized_from_depth": False,
+                    "max_depth": dataset_max_depth,
+                    "f_a_max_threshold": f_a_max_threshold,
                 },
                 "space_info": {
                     "input_space_detected": input_space_detected,

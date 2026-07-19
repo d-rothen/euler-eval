@@ -132,6 +132,18 @@ class TestSparseCloud:
         for tau_block in m["fscore"].values():
             assert set(tau_block) == {"recall"}
 
+    def test_f_a_is_available_without_publishing_symmetric_diagnostics(self):
+        points = np.random.RandomState(2).randn(100, 3).astype(np.float32)
+        m = compute_sparse_cloud_distance_metrics(
+            points,
+            points,
+            fscore_auc_max_threshold=1.0,
+        )
+        assert m["f_a"] == 100.0
+        assert set(m["chamfer"]) == {"completeness", "median"}
+        for tau_block in m["fscore"].values():
+            assert set(tau_block) == {"recall"}
+
     def test_offset_cloud_increases_completeness(self):
         depth = _dense_depth()
         K = _make_intrinsics(400.0, 400.0, 30.0, 20.0)
@@ -223,6 +235,10 @@ class TestEvaluate:
         assert p["point_error"]["image_mean"]["mae3d"] < 1e-4
         assert p["cloud_distance"]["chamfer"]["completeness"] < 1e-4
         assert p["cloud_distance"]["fscore"]["tau_0_1"]["recall"] == 1.0
+        assert "f_a" in p["cloud_distance"]
+        assert res["dataset_info"]["f_a_max_threshold"] == pytest.approx(
+            res["dataset_info"]["max_depth"] / 20.0
+        )
         assert p["error_decomposition"]["rho_a"]["mean"] > 0.9
         # No dense-neighbourhood geometric metrics on sparse GT.
         assert "geometric" not in p
@@ -393,6 +409,7 @@ class TestEvaluateNativePoints:
         assert p["point_error"]["image_mean"]["mae3d"] < 1e-4
         assert p["cloud_distance"]["chamfer"]["completeness"] < 1e-4
         assert p["cloud_distance"]["fscore"]["tau_0_1"]["recall"] == 1.0
+        assert 0.0 <= p["cloud_distance"]["f_a"] <= 100.0
 
     def test_similarity_recovers_relative_pointmap(self):
         ds, gt_dense, K = self._pointmap_dataset(None)

@@ -172,6 +172,7 @@ def compute_sparse_cloud_distance_metrics(
     gt_points: np.ndarray,
     max_points: int = DEFAULT_MAX_POINTS,
     thresholds: tuple = FSCORE_THRESHOLDS,
+    fscore_auc_max_threshold: Optional[float] = None,
 ) -> Optional[dict]:
     """Directed (GT→pred) cloud agreement for a sparse GT point set.
 
@@ -196,6 +197,9 @@ def compute_sparse_cloud_distance_metrics(
         gt_points: ``(M, 3)`` ground-truth (sparse) points.
         max_points: Per-cloud subsample cap (``None`` to disable).
         thresholds: Recall distance thresholds in metres.
+        fscore_auc_max_threshold: When provided, compute symmetric ``f_a`` as
+            the normalized F1 AUC through this distance threshold.  The fixed
+            threshold metrics remain directed because the GT is sparse.
 
     Returns:
         Dict with a ``chamfer`` block (``completeness``, ``median``) and an
@@ -226,4 +230,18 @@ def compute_sparse_cloud_distance_metrics(
         recall = float(np.mean(dist_gt_to_pred < tau))
         fscore[threshold_key(tau)] = {"recall": recall}
 
-    return {"chamfer": chamfer, "fscore": fscore}
+    result = {"chamfer": chamfer, "fscore": fscore}
+    if fscore_auc_max_threshold is not None:
+        # F_A is defined from symmetric F1, so it additionally needs the
+        # prediction-to-GT distances even though the sparse diagnostic leaves
+        # above intentionally remain completeness/recall-only.
+        tree_gt = cKDTree(gt)
+        dist_pred_to_gt, _ = tree_gt.query(pred, k=1)
+        f_a = compute_fscore_auc(
+            dist_pred_to_gt,
+            dist_gt_to_pred,
+            fscore_auc_max_threshold,
+        )
+        if f_a is not None:
+            result["f_a"] = f_a
+    return result
