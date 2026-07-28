@@ -19,7 +19,10 @@ the same metric semantics for that use case:
 
 All ``evaluate_*_sample`` inputs accept torch tensors or numpy arrays; every
 computation runs on CPU numpy.  Predictions and GT are expected in metres
-unless an affine ``alignment`` is requested.
+unless an affine ``alignment`` is requested.  Passing
+``benchmark_depth_range=(min_metres, max_metres)`` adds the CLI-compatible
+square-root-spaced ``all`` / ``near`` / ``mid`` / ``far`` results without
+changing the regular metrics.
 """
 
 from __future__ import annotations
@@ -56,8 +59,11 @@ from .metrics.depth_standard import (
     init_standard_depth_store,
     summarize_standard_depth_store,
 )
+from .metrics.utils import get_benchmark_depth_bins
 
 __all__ = [
+    "BENCHMARK_DEPTH_BIN_NAMES",
+    "DepthBenchmarkEvaluation",
     "DepthSampleEvaluation",
     "DepthValidationAggregator",
     "VALIDATION_ALIGNMENT_MODES",
@@ -70,6 +76,7 @@ __all__ = [
 ]
 
 VALIDATION_ALIGNMENT_MODES = ("none", "affine")
+BENCHMARK_DEPTH_BIN_NAMES = ("all", "near", "mid", "far")
 
 _PROJECTION_STAT_KEYS = (
     "input_points",
@@ -95,6 +102,19 @@ _POOL_STAT_KEYS = (
 
 
 @dataclass(frozen=True)
+class DepthBenchmarkEvaluation:
+    """Additive depth metrics for one configured benchmark range.
+
+    ``bins`` contains ``all`` plus square-root-scaled ``near`` / ``mid`` /
+    ``far`` evaluations.  A bin is ``None`` when no otherwise-valid pixels
+    fall inside it.
+    """
+
+    boundaries: dict[str, list[float]]
+    bins: dict[str, Optional["DepthSampleEvaluation"]]
+
+
+@dataclass(frozen=True)
 class DepthSampleEvaluation:
     """Result of scoring one prediction/GT pair.
 
@@ -108,6 +128,9 @@ class DepthSampleEvaluation:
         projection: Sparse projection statistics
             (:func:`~euler_eval.data.project_point_cloud_to_depth_map`
             metadata); ``None`` for dense evaluations.
+        benchmark: Optional additive ``all`` / ``near`` / ``mid`` / ``far``
+            metrics for the requested benchmark depth range.  Regular
+            ``metrics`` remain unchanged.
     """
 
     metrics: dict[str, float]
@@ -116,6 +139,7 @@ class DepthSampleEvaluation:
     scale: Optional[float] = None
     shift: Optional[float] = None
     projection: Optional[dict[str, int]] = None
+    benchmark: Optional[DepthBenchmarkEvaluation] = None
 
 
 def _validate_alignment(alignment: str) -> str:
@@ -153,6 +177,29 @@ def _apply_depth_bounds(
     return valid
 
 
+def _validate_benchmark_depth_range(
+    benchmark_depth_range: Optional[tuple[float, float]],
+) -> Optional[tuple[float, float]]:
+    if benchmark_depth_range is None:
+        return None
+    try:
+        range_min, range_max = benchmark_depth_range
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "benchmark_depth_range must contain exactly two numeric bounds"
+        ) from exc
+    range_min = float(range_min)
+    range_max = float(range_max)
+    if not np.isfinite(range_min) or not np.isfinite(range_max):
+        raise ValueError(
+            "benchmark_depth_range bounds must be finite, got "
+            f"[{range_min}, {range_max}]"
+        )
+    # Reuse the canonical CLI helper for validation as well as bin semantics.
+    get_benchmark_depth_bins(np.empty((0,), dtype=np.float32), range_min, range_max)
+    return range_min, range_max
+
+
 def _finalize_pair(
     depth_pred: np.ndarray,
     depth_gt: np.ndarray,
@@ -161,6 +208,7 @@ def _finalize_pair(
     alignment: str,
     min_valid_pixels: int,
     projection: Optional[dict[str, int]] = None,
+    benchmark_depth_range: Optional[tuple[float, float]] = None,
 ) -> Optional[DepthSampleEvaluation]:
     """Optionally align, re-mask, and score one prepared pred/GT pair."""
     scale: Optional[float] = None
@@ -179,6 +227,34 @@ def _finalize_pair(
     if int(valid.sum()) < max(int(min_valid_pixels), 1):
         return None
 
+    benchmark: Optional[DepthBenchmarkEvaluation] = None
+    if benchmark_depth_range is not None:
+        benchmark_bins = get_benchmark_depth_bins(
+            depth_gt,
+            benchmark_depth_range[0],
+            benchmark_depth_range[1],
+        )
+        bin_evaluations: dict[str, Optional[DepthSampleEvaluation]] = {}
+        for bin_name in BENCHMARK_DEPTH_BIN_NAMES:
+            bin_valid = valid & benchmark_bins[bin_name]
+            if not bin_valid.any():
+                bin_evaluations[bin_name] = None
+                continue
+            bin_metrics, bin_pool_stats = compute_standard_depth_metrics(
+                depth_pred, depth_gt, valid_mask=bin_valid
+            )
+            bin_evaluations[bin_name] = DepthSampleEvaluation(
+                metrics=bin_metrics,
+                pool_stats=bin_pool_stats,
+                valid_pixels=int(bin_valid.sum()),
+                scale=scale,
+                shift=shift,
+            )
+        benchmark = DepthBenchmarkEvaluation(
+            boundaries=benchmark_bins["boundaries"],
+            bins=bin_evaluations,
+        )
+
     metrics, pool_stats = compute_standard_depth_metrics(
         depth_pred, depth_gt, valid_mask=valid
     )
@@ -189,6 +265,7 @@ def _finalize_pair(
         scale=scale,
         shift=shift,
         projection=projection,
+        benchmark=benchmark,
     )
 
 
@@ -200,6 +277,7 @@ def evaluate_dense_depth_sample(
     alignment: str = "none",
     min_depth: Optional[float] = None,
     max_depth: Optional[float] = None,
+    benchmark_depth_range: Optional[tuple[float, float]] = None,
     min_valid_pixels: int = 10,
 ) -> Optional[DepthSampleEvaluation]:
     """Score one dense depth prediction against a dense GT depth map.
@@ -216,6 +294,10 @@ def evaluate_dense_depth_sample(
             scale+shift on the valid pixels first.
         min_depth: Optional lower GT validity bound in metres.
         max_depth: Optional upper GT validity bound in metres.
+        benchmark_depth_range: Optional ``(min, max)`` range in metres.  When
+            set, the result additionally contains metrics for all pixels in
+            the range and square-root-scaled near/mid/far bins.  The regular
+            metrics are unchanged.
         min_valid_pixels: Minimum surviving pixels; fewer returns ``None``.
 
     Returns:
@@ -223,6 +305,7 @@ def evaluate_dense_depth_sample(
         pixels remain.
     """
     alignment = _validate_alignment(alignment)
+    benchmark_depth_range = _validate_benchmark_depth_range(benchmark_depth_range)
     pred = to_numpy_depth(depth_pred)
     gt = to_numpy_depth(depth_gt)
     if gt.shape != pred.shape:
@@ -250,6 +333,7 @@ def evaluate_dense_depth_sample(
         valid,
         alignment=alignment,
         min_valid_pixels=min_valid_pixels,
+        benchmark_depth_range=benchmark_depth_range,
     )
 
 
@@ -265,6 +349,7 @@ def evaluate_sparse_depth_sample(
     alignment: str = "none",
     min_depth: Optional[float] = None,
     max_depth: Optional[float] = None,
+    benchmark_depth_range: Optional[tuple[float, float]] = None,
     min_valid_pixels: int = 10,
 ) -> Optional[DepthSampleEvaluation]:
     """Score one dense depth prediction against a sparse pointcloud GT.
@@ -298,6 +383,10 @@ def evaluate_sparse_depth_sample(
             normalized-prediction path).
         min_depth: Optional lower bound on projected GT depth in metres.
         max_depth: Optional upper bound on projected GT depth in metres.
+        benchmark_depth_range: Optional ``(min, max)`` range in metres.  When
+            set, the result additionally contains metrics for all projected
+            pixels in the range and square-root-scaled near/mid/far bins.
+            The regular metrics are unchanged.
         min_valid_pixels: Minimum surviving projected pixels; fewer returns
             ``None``.
 
@@ -306,6 +395,7 @@ def evaluate_sparse_depth_sample(
         ``None`` when too few projected pixels remain.
     """
     alignment = _validate_alignment(alignment)
+    benchmark_depth_range = _validate_benchmark_depth_range(benchmark_depth_range)
     pred_raw = to_numpy_depth(depth_pred)
     points = to_numpy_point_cloud(point_cloud)
     K = to_numpy_intrinsics(intrinsics)
@@ -349,6 +439,7 @@ def evaluate_sparse_depth_sample(
         alignment=alignment,
         min_valid_pixels=min_valid_pixels,
         projection=projection_meta,
+        benchmark_depth_range=benchmark_depth_range,
     )
 
 

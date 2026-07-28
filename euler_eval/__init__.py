@@ -18,6 +18,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 _VALIDATION_EXPORTS = (
+    "BENCHMARK_DEPTH_BIN_NAMES",
+    "DepthBenchmarkEvaluation",
     "DepthSampleEvaluation",
     "DepthValidationAggregator",
     "VALIDATION_ALIGNMENT_MODES",
@@ -39,7 +41,9 @@ if TYPE_CHECKING:  # pragma: no cover - static import surface for type checkers
         get_sample_pointcloud_to_camera_extrinsics,
     )
     from .validation import (  # noqa: F401
+        BENCHMARK_DEPTH_BIN_NAMES,
         VALIDATION_ALIGNMENT_MODES,
+        DepthBenchmarkEvaluation,
         DepthSampleEvaluation,
         DepthValidationAggregator,
         build_validation_gt_dataset,

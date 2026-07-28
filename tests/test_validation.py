@@ -10,6 +10,7 @@ from euler_eval.metrics.depth_standard import (
     compute_standard_depth_metrics,
 )
 from euler_eval.validation import (
+    BENCHMARK_DEPTH_BIN_NAMES,
     DepthValidationAggregator,
     build_validation_gt_dataset,
     evaluate_dense_depth_sample,
@@ -79,6 +80,48 @@ class TestEvaluateDenseDepthSample:
             gt.copy(), gt, min_depth=5.0, max_depth=20.0
         )
         assert bounded.valid_pixels == int(((gt >= 5.0) & (gt <= 20.0)).sum())
+
+    def test_benchmark_depth_range_is_additive_and_binned(self):
+        gt = _grid_depth(near=0.1, far=30.0)
+        pred = gt.copy()
+        pred[gt > 10.0] *= 2.0
+
+        result = evaluate_dense_depth_sample(
+            pred,
+            gt,
+            benchmark_depth_range=(0.0, 10.0),
+        )
+
+        assert result.metrics["absrel"] > 0.0
+        assert result.valid_pixels == gt.size
+        assert result.benchmark is not None
+        assert result.benchmark.boundaries["range"] == [0.0, 10.0]
+        benchmark_all = result.benchmark.bins["all"]
+        assert benchmark_all is not None
+        assert benchmark_all.metrics["absrel"] == pytest.approx(0.0, abs=1e-7)
+        assert benchmark_all.valid_pixels == int(((gt > 0) & (gt <= 10.0)).sum())
+        assert (
+            sum(
+                result.benchmark.bins[name].valid_pixels
+                for name in ("near", "mid", "far")
+                if result.benchmark.bins[name] is not None
+            )
+            == benchmark_all.valid_pixels
+        )
+        assert set(result.benchmark.bins) == set(BENCHMARK_DEPTH_BIN_NAMES)
+
+    @pytest.mark.parametrize(
+        "depth_range",
+        [(-1.0, 80.0), (80.0, 80.0), (80.0, 1.0), (0.0, float("inf"))],
+    )
+    def test_invalid_benchmark_depth_range(self, depth_range):
+        gt = _grid_depth()
+        with pytest.raises(ValueError, match="benchmark_depth_range|range_"):
+            evaluate_dense_depth_sample(
+                gt,
+                gt,
+                benchmark_depth_range=depth_range,
+            )
 
     def test_gt_resolution_mismatch_is_aligned(self):
         pytest.importorskip("cv2")  # align_to_prediction resize fallback
@@ -235,6 +278,25 @@ class TestEvaluateSparseDepthSample:
         assert result.valid_pixels == int(
             ((radial >= 10.0) & (radial <= 30.0)).sum()
         )
+
+    def test_sparse_benchmark_depth_range_uses_projected_gt(self):
+        points, K, pred, (uu, vv, z) = _synthetic_cloud_and_pred()
+        pred[vv[z > 20.0], uu[z > 20.0]] *= 2.0
+
+        result = evaluate_sparse_depth_sample(
+            pred,
+            points,
+            K,
+            np.eye(4),
+            benchmark_depth_range=(0.0, 15.0),
+        )
+
+        assert result.metrics["absrel"] > 0.0
+        assert result.benchmark is not None
+        benchmark_all = result.benchmark.bins["all"]
+        radial = np.linalg.norm(points, axis=1)
+        assert benchmark_all.valid_pixels == int((radial <= 15.0).sum())
+        assert benchmark_all.metrics["absrel"] == pytest.approx(0.0, abs=1e-5)
 
     def test_extra_valid_mask(self):
         points, K, pred, (uu, vv, z) = _synthetic_cloud_and_pred()

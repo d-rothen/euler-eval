@@ -216,15 +216,15 @@ for i in range(len(dataset)):
     depth_pred = my_model(sample["rgb"])          # (H, W) metres, planar z
     K = get_sample_intrinsics(sample)
     lidar2cam, _ = get_sample_pointcloud_to_camera_extrinsics(sample)
-    aggregator.update(
-        evaluate_sparse_depth_sample(
-            depth_pred,
-            sample["sparse_depth"],               # (N, C>=3) lidar points
-            K,
-            lidar2cam,
-            alignment="none",                     # "affine" for relative depth
-        )
+    result = evaluate_sparse_depth_sample(
+        depth_pred,
+        sample["sparse_depth"],               # (N, C>=3) lidar points
+        K,
+        lidar2cam,
+        alignment="none",                     # "affine" for relative depth
+        benchmark_depth_range=(0.0, 80.0),    # optional, additive
     )
+    aggregator.update(result)
 
 summary = aggregator.summary()
 print(summary["standard"]["image_mean"]["absrel"])
@@ -233,7 +233,8 @@ print(summary["standard"]["image_mean"]["absrel"])
 Key pieces:
 
 - `evaluate_dense_depth_sample(pred, gt, valid_mask=None, alignment=...,
-  min_depth=..., max_depth=...)` — one dense prediction vs a dense GT map.
+  min_depth=..., max_depth=..., benchmark_depth_range=...)` — one dense
+  prediction vs a dense GT map.
   GT at another resolution is aligned to the prediction plane; returns the
   standard metric set (`absrel`, `sqrel`, `mae`, `rmse`, `rmse_log`, `log10`,
   `silog`, `delta1-3`) plus pooled pixel statistics, or `None` when too few
@@ -247,11 +248,18 @@ Key pieces:
   prediction plane* (i.e. adjusted for any crop/resize of the model input).
 - `alignment="none"` scores metric predictions as-is; `"affine"` fits
   least-squares scale+shift first (relative/affine depth models).
+- `benchmark_depth_range=(MIN, MAX)` adds `result.benchmark` without changing
+  the regular result. Its `bins` mapping contains `all`, `near`, `mid`, and
+  `far` `DepthSampleEvaluation` values using the CLI's square-root-spaced
+  boundaries; empty bins are `None`.
 - `DepthValidationAggregator` accumulates per-sample results into the CLI's
   `image_mean` / `image_median` / `pixel_pool` reducers. For multi-process
   validation, sum `aggregator.reduced_state()` vectors across ranks (fixed
   key order via `DepthValidationAggregator.state_keys()`) and rebuild
   mean-based summaries with `summarize_reduced_state(...)`.
+  Benchmark bins are additive per-sample results; dataset-level consumers can
+  maintain one additional aggregator per bin and update each with
+  `result.benchmark.bins[bin_name]`.
 - Inputs accept torch tensors or numpy arrays; all math runs on CPU numpy.
 
 ## Configuration
