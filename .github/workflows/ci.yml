@@ -32,16 +32,51 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
 
-      # Install the CPU-only torch build first; the default index would pull
-      # the multi-gigabyte CUDA wheels, which CI has no use for.
+      # A venv, not `uv pip install --system`: the interpreter uv manages is
+      # marked externally managed and refuses to be installed into.
+      - name: Create the test environment
+        run: uv venv --python ${{ matrix.python-version }}
+
+      # CPU-only torch, installed first so it is the build that satisfies the
+      # package's torch requirement. The default index would pull the
+      # multi-gigabyte CUDA wheels, which CI has no use for.
       - name: Install CPU-only PyTorch
-        run: uv pip install --system torch torchvision --index-url https://download.pytorch.org/whl/cpu
+        run: uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install package
-        run: uv pip install --system -e ".[dev]"
+        run: uv pip install -e ".[dev]"
 
       - name: Run tests
-        run: pytest -q
+        run: uv run --no-sync pytest -q
+
+  published-dependencies:
+    name: Published dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Create the test environment
+        run: uv venv --python 3.12
+
+      - name: Install CPU-only PyTorch
+        run: uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+      # The `test` job resolves the companion packages from [tool.uv.sources],
+      # i.e. their main branches. This one ignores those sources so the
+      # dependency floors in pyproject.toml are checked against what
+      # `pip install euler-eval` actually resolves.
+      - name: Install package from published dependencies
+        run: uv pip install --no-sources -e ".[dev]"
+
+      - name: Run tests
+        run: uv run --no-sync pytest -q
 
   lint:
     name: Lint
