@@ -1,7 +1,8 @@
 """Scale-Invariant Logarithmic Error (SILog) metric for depth maps."""
 
-import numpy as np
 from typing import Optional
+
+import numpy as np
 
 
 def compute_scale_invariant_log_error(
@@ -39,8 +40,6 @@ def compute_scale_invariant_log_error(
 
     # Log difference
     log_diff = np.log(pred_valid) - np.log(gt_valid)
-
-    n = len(log_diff)
 
     # SILog formula
     silog = np.sqrt(

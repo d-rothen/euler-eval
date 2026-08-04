@@ -4,21 +4,21 @@ import json
 import re
 
 from euler_eval.cli import (
-    _clean_metric_tree,
-    _clean_per_file_metrics,
-    _depth_eval_axes,
     _DEPTH_EVAL_DESCRIPTIONS,
-    _log_package_metadata,
-    _package_metadata,
-    _sparse_depth_eval_axes,
+    _RAYS_EVAL_AXES,
+    _RAYS_EVAL_DESCRIPTIONS,
+    _RGB_EVAL_DESCRIPTIONS,
     _SPARSE_DEPTH_EVAL_DESCRIPTIONS,
     _SPARSE_DEPTH_METRIC_NAMESPACE,
     _SPARSE_DEPTH_METRIC_ROOT,
-    _sparse_depth_metric_set_envelope,
+    _clean_metric_tree,
+    _clean_per_file_metrics,
+    _depth_eval_axes,
+    _log_package_metadata,
+    _package_metadata,
     _rgb_eval_axes,
-    _RGB_EVAL_DESCRIPTIONS,
-    _RAYS_EVAL_AXES,
-    _RAYS_EVAL_DESCRIPTIONS,
+    _sparse_depth_eval_axes,
+    _sparse_depth_metric_set_envelope,
     _wrap_depth_space_pfm_metrics,
 )
 
@@ -394,7 +394,7 @@ class TestMetricDescriptions:
 
     def test_metricset_envelope_via_namespace(self):
         """MetricNamespace.metric_set_envelope() produces correct structure."""
-        from euler_eval.cli import _EvalNamespace, _get_version
+        from euler_eval.cli import _EvalNamespace
 
         ns = _EvalNamespace(
             producer="euler-eval",

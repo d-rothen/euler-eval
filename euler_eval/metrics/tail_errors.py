@@ -1,7 +1,8 @@
 """Tail error metrics (p95/p99) for capturing rare ugly regions in RGB images."""
 
-import numpy as np
 from typing import Optional
+
+import numpy as np
 
 
 def compute_tail_errors(

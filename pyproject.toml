@@ -5,23 +5,36 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "euler-eval"
 version = "2.24.0"
-description = "Depth map evaluation toolkit with comprehensive metrics"
+description = "Evaluation toolkit for depth, RGB, ray and 3D point-map predictions"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {text = "MIT"}
 authors = [
-    {name = "Depth Eval Contributors"}
+    {name = "Daniel Rothenpieler", email = "rothenpielerdaniel@gmail.com"}
 ]
-keywords = ["depth", "evaluation", "metrics", "computer-vision", "3d"]
+keywords = [
+    "depth",
+    "depth-estimation",
+    "evaluation",
+    "metrics",
+    "benchmark",
+    "computer-vision",
+    "point-cloud",
+    "lidar",
+    "3d",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Image Processing",
 ]
 dependencies = [
@@ -34,14 +47,20 @@ dependencies = [
     "lpips>=0.1.4",
     "torchmetrics>=1.0",
     "tqdm>=4.62.0",
-    "euler-loading",
-    "ds-crawler",
-    "euler-metric-naming",
+    "euler-loading>=2.15",
+    "ds-crawler>=2.10",
+    "euler-metric-naming>=0.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/d-rothen/euler-eval"
+Repository = "https://github.com/d-rothen/euler-eval"
+Issues = "https://github.com/d-rothen/euler-eval/issues"
+Documentation = "https://github.com/d-rothen/euler-eval/tree/main/docs"
 
 [project.optional-dependencies]
 logging = [
-    "euler-train",
+    "euler-train>=2.11",
 ]
 fid = [
     "clean-fid>=0.1.35",
@@ -50,7 +69,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov>=3.0.0",
     "black>=22.0.0",
-    "ruff>=0.0.260",
+    "ruff>=0.2",  # [tool.ruff.lint] configuration requires 0.2+
 ]
 
 [project.scripts]
@@ -76,5 +95,22 @@ target-version = ["py39"]
 
 [tool.ruff]
 line-length = 88
+
+[tool.ruff.lint]
 select = ["E", "F", "I", "N", "W"]
-ignore = ["E501"]
+ignore = [
+    "E501",
+    # Camera matrices, rotations and translations keep their conventional
+    # mathematical names (K, R, T, P) rather than snake_case, and
+    # `torch.nn.functional as F` is universal.
+    "N803",
+    "N806",
+    "N812",
+]
+
+[tool.ruff.lint.isort]
+# Keep aliased imports from one module in a single statement.
+combine-as-imports = true
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["N802"]  # test names mirror the symbols they exercise (sample_K)

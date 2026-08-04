@@ -118,9 +118,11 @@ class GPUImageMetricsBatcher:
                 # ``compute_*`` implementations. Importing here avoids a
                 # circular dep and ensures tests that monkeypatch the
                 # compute functions continue to work.
-                from . import psnr as _psnr_mod
-                from . import rgb_psnr_ssim as _rgb_mod
-                from . import ssim as _ssim_mod
+                from . import (
+                    psnr as _psnr_mod,
+                    rgb_psnr_ssim as _rgb_mod,
+                    ssim as _ssim_mod,
+                )
 
                 for _, pred, gt, cb, dr in items:
                     if self.modality == "rgb":

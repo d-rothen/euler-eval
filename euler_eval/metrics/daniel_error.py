@@ -4,8 +4,9 @@ SCE compares chromaticity (relative RGB proportions) and weights the
 chromaticity error by structural gradient magnitude.
 """
 
-import numpy as np
 from typing import Union
+
+import numpy as np
 from scipy import ndimage
 
 

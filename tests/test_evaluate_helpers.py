@@ -1,11 +1,9 @@
 """Tests for evaluate.py helper functions: sky mask, intrinsics, hierarchy."""
 
 import numpy as np
-import pytest
 import torch
 
 from euler_eval.evaluate import _extract_hierarchy, _get_intrinsics_K, _get_sky_mask
-
 
 # ---------------------------------------------------------------------------
 # _get_sky_mask

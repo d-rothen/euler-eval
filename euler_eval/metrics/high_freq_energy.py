@@ -4,8 +4,8 @@ Measures the ratio of energy above a frequency cutoff vs total energy.
 This metric helps detect over-smoothing or loss of fine details.
 """
 
+
 import numpy as np
-from typing import Optional
 
 
 def compute_high_freq_energy_ratio(

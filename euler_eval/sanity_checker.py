@@ -6,10 +6,11 @@ and validates it after all metrics are computed to avoid GPU performance impact.
 """
 
 import json
-import numpy as np
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass, field
+
+import numpy as np
 
 
 @dataclass
@@ -459,7 +460,6 @@ class SanityChecker:
 
         if total_pixels > 0:
             gt_ratio = gt_edge_count / total_pixels
-            pred_ratio = pred_edge_count / total_pixels
 
             if gt_ratio < warn_below:
                 self.depth_results.add_warning(MetricWarning(

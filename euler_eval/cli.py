@@ -4,6 +4,8 @@
 Parses config.json and runs evaluation using euler_loading datasets.
 """
 
+from __future__ import annotations
+
 import argparse
 import importlib.metadata
 import json

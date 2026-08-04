@@ -7,8 +7,6 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-import torch
-
 
 MOCK_FILES = Path(__file__).parent / "mock_files"
 

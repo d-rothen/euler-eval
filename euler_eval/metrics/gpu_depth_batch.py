@@ -35,7 +35,6 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-
 _SSIM_WINDOW = 11
 _SSIM_SIGMA = _SSIM_WINDOW / 6.0
 _SSIM_K1 = 0.01

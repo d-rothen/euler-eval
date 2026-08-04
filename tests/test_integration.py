@@ -10,23 +10,19 @@ from typing import Optional
 
 import numpy as np
 import pytest
-from PIL import Image
-
 from ds_crawler import build_dataset_head
 from ds_crawler.artifacts import save_output_artifacts
 from euler_loading import Modality, MultiModalDataset
+from PIL import Image
 
 from euler_eval.data import (
     get_depth_metadata,
     get_rgb_metadata,
     process_depth,
     to_numpy_depth,
-    to_numpy_intrinsics,
-    to_numpy_mask,
     to_numpy_rgb,
 )
 from euler_eval.evaluate import _extract_hierarchy, _get_intrinsics_K, _get_sky_mask
-
 
 # ---------------------------------------------------------------------------
 # Constants for the stub data

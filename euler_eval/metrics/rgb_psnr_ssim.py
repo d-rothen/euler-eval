@@ -1,7 +1,8 @@
 """PSNR and SSIM metrics for RGB images."""
 
+from typing import Union
+
 import numpy as np
-from typing import Optional, Union
 from scipy import ndimage
 
 

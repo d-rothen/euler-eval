@@ -12,9 +12,9 @@ This avoids parametric evaluations (e.g. focal length or FoV) that lack
 generality across diverse camera models.
 """
 
-import numpy as np
 from typing import Optional, Union
 
+import numpy as np
 
 # FoV domain → angular threshold mapping
 FOV_THRESHOLDS = {

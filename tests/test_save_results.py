@@ -2,12 +2,9 @@
 
 import json
 import zipfile
-
-import pytest
-
-from euler_eval.cli import _find_zip_ancestor, _save_json_to_zip, save_results
 from pathlib import Path
 
+from euler_eval.cli import _find_zip_ancestor, _save_json_to_zip, save_results
 
 # ---------------------------------------------------------------------------
 # _find_zip_ancestor

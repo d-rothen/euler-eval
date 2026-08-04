@@ -1,7 +1,6 @@
 """Tests for euler_eval/data.py -- conversions, metadata resolution, process_depth."""
 
 import numpy as np
-import pytest
 import torch
 
 from euler_eval.data import (
@@ -13,7 +12,6 @@ from euler_eval.data import (
     to_numpy_mask,
     to_numpy_rgb,
 )
-
 
 # ---------------------------------------------------------------------------
 # to_numpy_depth

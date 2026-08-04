@@ -3,17 +3,15 @@
 import numpy as np
 import pytest
 
+from euler_eval.data import to_numpy_directions
 from euler_eval.metrics.rho_a import (
+    aggregate_angular_errors,
+    aggregate_rho_a,
     classify_fov_domain,
     compute_angular_errors,
     compute_rho_a,
-    aggregate_rho_a,
-    aggregate_angular_errors,
     get_threshold_for_domain,
-    FOV_THRESHOLDS,
 )
-from euler_eval.data import to_numpy_directions
-
 
 # ---------------------------------------------------------------------------
 # Helper factories

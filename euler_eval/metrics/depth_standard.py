@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import numpy as np
 from typing import Optional
 
+import numpy as np
 
 STANDARD_DEPTH_METRIC_KEYS = (
     "absrel",

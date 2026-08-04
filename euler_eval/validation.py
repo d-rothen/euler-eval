@@ -31,7 +31,6 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 import numpy as np
-
 from euler_loading import MultiModalDataset
 
 from .calibration import (

@@ -1,7 +1,8 @@
 """Root Mean Square Error (RMSE) metric for depth maps."""
 
-import numpy as np
 from typing import Optional
+
+import numpy as np
 
 
 def compute_rmse(

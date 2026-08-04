@@ -2,6 +2,7 @@
 
 import json
 import zipfile
+
 import pytest
 
 from euler_eval.cli import (
@@ -10,7 +11,6 @@ from euler_eval.cli import (
     validate_dataset_entry,
     validate_gt_config,
 )
-
 
 # ---------------------------------------------------------------------------
 # validate_gt_config

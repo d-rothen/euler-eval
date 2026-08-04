@@ -1,7 +1,8 @@
 """Edge F1 metric for RGB images."""
 
-import numpy as np
 from typing import Tuple
+
+import numpy as np
 from scipy import ndimage
 from scipy.ndimage import binary_dilation
 

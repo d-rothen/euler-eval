@@ -1,7 +1,8 @@
 """Structural Similarity Index (SSIM) metric for depth maps."""
 
-import numpy as np
 from typing import Optional, Union
+
+import numpy as np
 from scipy import ndimage
 
 

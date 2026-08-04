@@ -1,10 +1,12 @@
 """Fréchet Inception Distance (FID) and Kernel Inception Distance (KID) metrics."""
 
+from __future__ import annotations
+
 import os
 import platform
-from pathlib import Path
 import shutil
 import tempfile
+from pathlib import Path
 from typing import Callable, Optional, Sequence, Union
 
 import numpy as np
@@ -16,7 +18,6 @@ from scipy import linalg
 from torch.utils.data import DataLoader, Dataset
 from torchvision.models import Inception_V3_Weights, inception_v3
 from tqdm import tqdm
-
 
 ArraySource = Union[np.ndarray, str, Path]
 
@@ -146,8 +147,7 @@ def compute_clean_fid(
     own quantization and resizing pipeline.
     """
     try:
-        from cleanfid import fid as clean_fid
-        from cleanfid import downloads_helper as clean_downloads
+        from cleanfid import downloads_helper as clean_downloads, fid as clean_fid
     except ImportError as exc:
         raise ImportError(
             "clean-fid backend requested, but the 'clean-fid' package is not "

@@ -1,7 +1,8 @@
 """Depth-binned photometric error metrics for RGB images."""
 
+
 import numpy as np
-from typing import Optional
+
 from .utils import get_depth_bins
 
 

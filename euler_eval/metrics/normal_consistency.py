@@ -3,8 +3,9 @@
 Computes surface normals from depth maps and measures their consistency.
 """
 
-import numpy as np
 from typing import Optional, Union
+
+import numpy as np
 from scipy import ndimage
 
 
@@ -15,13 +16,14 @@ def depth_to_normals(
 ) -> np.ndarray:
     """Compute surface normals from a depth map.
 
-    Uses finite differences to estimate the surface gradient,
-    then computes the normal as the cross product of tangent vectors.
+    Estimates the depth gradient with Sobel filters and takes the normal as
+    ``n = (-dz/dx, -dz/dy, 1)``, normalized.  Normals are therefore derived in
+    image space; ``focal_length`` is accepted for interface compatibility but
+    does not influence the result.
 
     Args:
         depth: Depth map in meters (H, W).
-        focal_length: Focal length for proper 3D reconstruction.
-                      If not known, use 1.0 for relative normals.
+        focal_length: Unused; kept for interface compatibility.
         valid_mask: Optional mask of valid pixels.
 
     Returns:
@@ -32,18 +34,9 @@ def depth_to_normals(
     if valid_mask is None:
         valid_mask = (depth > 0) & np.isfinite(depth)
 
-    # Create pixel coordinates
-    u, v = np.meshgrid(np.arange(width), np.arange(height))
-
-    # Convert to 3D points (assuming principal point at center)
-    cx, cy = width / 2, height / 2
-    x = (u - cx) * depth / focal_length
-    y = (v - cy) * depth / focal_length
-    z = depth
-
     # Compute gradients using Sobel filters for better noise handling
-    dz_dx = ndimage.sobel(z, axis=1, mode="constant") / 8.0
-    dz_dy = ndimage.sobel(z, axis=0, mode="constant") / 8.0
+    dz_dx = ndimage.sobel(depth, axis=1, mode="constant") / 8.0
+    dz_dy = ndimage.sobel(depth, axis=0, mode="constant") / 8.0
 
     # For proper normals, we need gradients in 3D space
     # Using the depth gradient approach: n = (-dz/dx, -dz/dy, 1) normalized

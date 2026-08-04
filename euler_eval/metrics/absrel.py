@@ -1,7 +1,8 @@
 """Absolute Relative Error (AbsRel) metric for depth maps."""
 
-import numpy as np
 from typing import Optional, Union
+
+import numpy as np
 
 
 def compute_absrel(

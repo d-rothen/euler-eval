@@ -9,7 +9,6 @@ import builtins
 import sys
 from unittest.mock import MagicMock
 
-
 # ---------------------------------------------------------------------------
 # Stub missing optional packages before any euler_eval imports
 # ---------------------------------------------------------------------------

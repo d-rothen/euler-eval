@@ -1,7 +1,8 @@
 """Depth Edge F1 metric for evaluating depth discontinuity preservation."""
 
-import numpy as np
 from typing import Optional, Tuple
+
+import numpy as np
 from scipy import ndimage
 from scipy.ndimage import binary_dilation
 

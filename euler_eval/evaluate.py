@@ -49,16 +49,18 @@ from .metrics import (
     GPUImageMetricsBatcher,
     LPIPSMetric,
     RGBLPIPSMetric,
-    aggregate_absrel,
+    # Depth aggregators re-exported for callers (and tests) that substitute
+    # them on this module; the orchestrator itself aggregates inline.
+    aggregate_absrel,  # noqa: F401
     aggregate_angular_errors,
     aggregate_depth_binned_errors,
     aggregate_edge_f1,
     aggregate_high_freq_metrics,
-    aggregate_normal_consistency,
+    aggregate_normal_consistency,  # noqa: F401
     aggregate_rgb_edge_f1,
     aggregate_rho_a,
-    aggregate_rmse,
-    aggregate_silog,
+    aggregate_rmse,  # noqa: F401
+    aggregate_silog,  # noqa: F401
     append_standard_depth_metrics,
     classify_fov_domain,
     compute_absrel,
