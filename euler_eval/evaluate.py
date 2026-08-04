@@ -20,6 +20,7 @@ from .calibration import (
     get_sample_pointcloud_to_camera_extrinsics as _get_pointcloud_to_camera_extrinsics,
 )
 from .data import (
+    align_intrinsics_to_prediction,
     align_to_prediction,
     apply_point_transform,
     classify_spatial_alignment,
@@ -49,18 +50,12 @@ from .metrics import (
     GPUImageMetricsBatcher,
     LPIPSMetric,
     RGBLPIPSMetric,
-    # Depth aggregators re-exported for callers (and tests) that substitute
-    # them on this module; the orchestrator itself aggregates inline.
-    aggregate_absrel,  # noqa: F401
     aggregate_angular_errors,
     aggregate_depth_binned_errors,
     aggregate_edge_f1,
     aggregate_high_freq_metrics,
-    aggregate_normal_consistency,  # noqa: F401
     aggregate_rgb_edge_f1,
     aggregate_rho_a,
-    aggregate_rmse,  # noqa: F401
-    aggregate_silog,  # noqa: F401
     append_standard_depth_metrics,
     classify_fov_domain,
     compute_absrel,
@@ -662,6 +657,9 @@ def evaluate_depth_samples(
         depth_pred: np.ndarray,
         valid_mask: Optional[np.ndarray],
         defer_to_batcher: bool = False,
+        *,
+        intrinsics: Optional[np.ndarray] = None,
+        depth_is_radial: bool = False,
     ) -> dict:
         standard_metrics, standard_pool_stats = compute_standard_depth_metrics(
             depth_pred, depth_gt, valid_mask=valid_mask
@@ -697,7 +695,12 @@ def evaluate_depth_samples(
                 depth_pred, depth_gt, valid_mask=valid_mask
             )
         normal_angles, normal_meta = compute_normal_angles(
-            depth_pred, depth_gt, valid_mask=valid_mask, return_metadata=True
+            depth_pred,
+            depth_gt,
+            valid_mask,
+            intrinsics=intrinsics,
+            is_radial=depth_is_radial,
+            return_metadata=True,
         )
         edge_f1 = compute_depth_edge_f1(depth_pred, depth_gt, valid_mask=valid_mask)
 
@@ -1027,6 +1030,7 @@ def evaluate_depth_samples(
                         *gt_native_dims, *pred_native_dims
                     )
 
+                gt_shape_before_alignment = depth_gt.shape[:2]
                 if depth_gt.shape[:2] != depth_pred.shape[:2]:
                     if not logged_alignment:
                         print(
@@ -1037,6 +1041,21 @@ def evaluate_depth_samples(
                     depth_gt = align_to_prediction(depth_gt, depth_pred)
 
                 intrinsics_K = _get_intrinsics_K(sample)
+                # Intrinsics describe the GT image; the metrics run on the
+                # prediction plane, so carry any GT resize over to them.
+                evaluated_K = (
+                    align_intrinsics_to_prediction(
+                        intrinsics_K,
+                        gt_shape_before_alignment,
+                        depth_pred.shape[:2],
+                    )
+                    if intrinsics_K is not None
+                    else None
+                )
+                # process_depth() converts planar depth to radial whenever
+                # intrinsics are available, so both maps are radial from here
+                # on unless the dataset had neither.
+                depth_is_radial = bool(is_radial or intrinsics_K is not None)
 
                 sky_valid = None
                 if sky_mask_enabled:
@@ -1125,6 +1144,8 @@ def evaluate_depth_samples(
                     depth_pred_raw,
                     raw_valid_mask,
                     defer_to_batcher=defer_depth,
+                    intrinsics=evaluated_K,
+                    depth_is_radial=depth_is_radial,
                 )
                 _append_metrics(stores["raw"], raw_metrics, raw_pred_path)
 
@@ -1140,6 +1161,8 @@ def evaluate_depth_samples(
                         depth_pred_aligned,
                         aligned_valid_mask,
                         defer_to_batcher=defer_depth,
+                        intrinsics=evaluated_K,
+                        depth_is_radial=depth_is_radial,
                     )
                     aligned_pred_path = _write_npy_array(
                         str(aligned_pred_dir), i, depth_pred_aligned
@@ -1305,7 +1328,11 @@ def evaluate_depth_samples(
                                 depth_pred_raw, depth_gt, valid_mask=native_bin_mask
                             )
                             bm_normals = compute_normal_angles(
-                                depth_pred_raw, depth_gt, valid_mask=native_bin_mask
+                                depth_pred_raw,
+                                depth_gt,
+                                native_bin_mask,
+                                intrinsics=evaluated_K,
+                                is_radial=depth_is_radial,
                             )
 
                             bm_store["absrel_store"].append(bm_absrel)
@@ -1366,7 +1393,9 @@ def evaluate_depth_samples(
                                 bm_normals = compute_normal_angles(
                                     depth_pred_aligned,
                                     depth_gt,
-                                    valid_mask=metric_bin_mask,
+                                    metric_bin_mask,
+                                    intrinsics=evaluated_K,
+                                    is_radial=depth_is_radial,
                                 )
 
                                 bm_store["absrel_store"].append(bm_absrel)

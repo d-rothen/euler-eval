@@ -67,7 +67,7 @@ required.
 | `gt.rays.path` | no\* | GT ray direction map dataset |
 | `gt.points_3d.path` | no\* | GT per-pixel 3D point map `(H,W,3)` in camera-frame metres |
 | `gt.segmentation.path` | no | GT segmentation (needed for `--mask-sky`) |
-| `gt.calibration.path` | no | Calibration data (camera intrinsics) |
+| `gt.calibration.path` | no | Calibration data (camera intrinsics); enables true camera-frame [surface normals](metrics.md#surface-normals-and-calibration) |
 | `gt.intrinsics.path` | with `gt.sparse_depth` | Camera intrinsics for pointcloud projection |
 | `gt.camera_extrinsics.path` | with `gt.sparse_depth` | Source-to-camera extrinsics (e.g. MUSES `lidar2rgb`) |
 | `gt.lidar_extrinsics.path` | no | Optional lidar pose in a shared frame; composed with `gt.camera_extrinsics` |

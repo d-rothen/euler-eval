@@ -104,7 +104,7 @@ def _patch_depth_metrics(monkeypatch):
         vals = _silog_per_pixel(pred, gt, valid_mask=valid_mask)
         return float(np.mean(vals)) if vals.size else float("nan")
 
-    def _normal_angles(pred, gt, valid_mask=None, return_metadata=False):
+    def _normal_angles(pred, gt, valid_mask=None, *, return_metadata=False, **kwargs):
         vals = np.abs(pred - gt).reshape(-1).astype(np.float32)
         if valid_mask is not None:
             vals = np.abs(pred - gt)[valid_mask].reshape(-1).astype(np.float32)
@@ -126,33 +126,6 @@ def _patch_depth_metrics(monkeypatch):
             "total_pixels": int(pred.size),
         }
 
-    def _agg(values):
-        flat = _flatten(values)
-        if flat.size == 0:
-            return {"median": None, "p90": None}
-        return {
-            "median": float(np.median(flat)),
-            "p90": float(np.percentile(flat, 90)),
-        }
-
-    def _agg_norm(values):
-        flat = _flatten(values)
-        if flat.size == 0:
-            return {
-                "mean_angle": None,
-                "median_angle": None,
-                "percent_below_11_25": None,
-                "percent_below_22_5": None,
-                "percent_below_30": None,
-            }
-        return {
-            "mean_angle": float(np.mean(flat)),
-            "median_angle": float(np.median(flat)),
-            "percent_below_11_25": 100.0,
-            "percent_below_22_5": 100.0,
-            "percent_below_30": 100.0,
-        }
-
     def _agg_edge(values):
         return {
             "precision": float(np.mean([v["precision"] for v in values])),
@@ -168,10 +141,6 @@ def _patch_depth_metrics(monkeypatch):
     monkeypatch.setattr(eval_mod, "compute_scale_invariant_log_error", _silog_full)
     monkeypatch.setattr(eval_mod, "compute_normal_angles", _normal_angles)
     monkeypatch.setattr(eval_mod, "compute_depth_edge_f1", _edge_f1)
-    monkeypatch.setattr(eval_mod, "aggregate_absrel", _agg)
-    monkeypatch.setattr(eval_mod, "aggregate_rmse", _agg)
-    monkeypatch.setattr(eval_mod, "aggregate_silog", _agg)
-    monkeypatch.setattr(eval_mod, "aggregate_normal_consistency", _agg_norm)
     monkeypatch.setattr(eval_mod, "aggregate_edge_f1", _agg_edge)
 
 
@@ -219,6 +188,33 @@ def _make_dataset_with_segmentation():
             "segmentation": seg,
         },
     ]
+    return _DummyDepthDataset(samples)
+
+
+def _make_calibrated_dataset(gt_shape=(8, 8), pred_shape=(8, 8)):
+    """Metric depth pairs carrying calibration, optionally at differing sizes."""
+    rng = np.random.default_rng(0)
+    K = np.array(
+        [
+            [float(gt_shape[1]), 0.0, (gt_shape[1] - 1) / 2.0],
+            [0.0, float(gt_shape[1]), (gt_shape[0] - 1) / 2.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    samples = []
+    for index in range(2):
+        gt = (10.0 + rng.random(gt_shape)).astype(np.float32)
+        pred = (10.0 + rng.random(pred_shape)).astype(np.float32)
+        samples.append(
+            {
+                "id": f"0000{index + 1}",
+                "full_id": f"/Scene01/clone/0000{index + 1}",
+                "gt": gt,
+                "pred": pred,
+                "calibration": K,
+            }
+        )
     return _DummyDepthDataset(samples)
 
 
@@ -370,3 +366,72 @@ def test_depth_alignment_uses_p95_fit_when_sky_masking(monkeypatch):
 
     assert calls
     assert set(calls) == {eval_mod.SKY_MASK_ALIGNMENT_MAX_GT_PERCENTILE}
+
+
+def _capture_normal_angle_calls(monkeypatch):
+    """Record the camera arguments the evaluator passes to normal consistency."""
+    calls = []
+
+    def _spy(pred, gt, valid_mask=None, *, return_metadata=False, **kwargs):
+        calls.append(kwargs)
+        angles = np.zeros(int(np.size(pred)), dtype=np.float32)
+        meta = {"mean_angle": 0.0, "valid_pixels_after_erosion": angles.size}
+        return (angles, meta) if return_metadata else angles
+
+    monkeypatch.setattr(eval_mod, "compute_normal_angles", _spy)
+    return calls
+
+
+def test_normal_consistency_receives_sample_intrinsics(monkeypatch):
+    _patch_depth_metrics(monkeypatch)
+    calls = _capture_normal_angle_calls(monkeypatch)
+
+    eval_mod.evaluate_depth_samples(
+        dataset=_make_calibrated_dataset(),
+        is_radial=False,
+        device="cpu",
+        alignment_mode="none",
+    )
+
+    assert calls
+    for kwargs in calls:
+        assert kwargs["intrinsics"] is not None
+        assert kwargs["intrinsics"][0, 0] == 8.0
+        # process_depth() converted planar depth to radial using the same
+        # intrinsics, so the unprojection has to be told about it.
+        assert kwargs["is_radial"] is True
+
+
+def test_normal_consistency_intrinsics_follow_gt_resize(monkeypatch):
+    _patch_depth_metrics(monkeypatch)
+    calls = _capture_normal_angle_calls(monkeypatch)
+
+    eval_mod.evaluate_depth_samples(
+        dataset=_make_calibrated_dataset(gt_shape=(16, 16), pred_shape=(8, 8)),
+        is_radial=False,
+        device="cpu",
+        alignment_mode="none",
+    )
+
+    assert calls
+    for kwargs in calls:
+        # GT was halved onto the prediction plane; the camera must follow.
+        assert kwargs["intrinsics"][0, 0] == 8.0
+        assert kwargs["intrinsics"][0, 2] == 3.5
+
+
+def test_normal_consistency_without_calibration_reports_planar_depth(monkeypatch):
+    _patch_depth_metrics(monkeypatch)
+    calls = _capture_normal_angle_calls(monkeypatch)
+
+    eval_mod.evaluate_depth_samples(
+        dataset=_make_metric_dataset(),
+        is_radial=False,
+        device="cpu",
+        alignment_mode="none",
+    )
+
+    assert calls
+    for kwargs in calls:
+        assert kwargs["intrinsics"] is None
+        assert kwargs["is_radial"] is False

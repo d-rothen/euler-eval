@@ -37,6 +37,35 @@ separate `image_mean` from `image_median`.
 The `standard` block is the conventional monocular-depth metric set — the one
 most papers report — and `delta1-3` are the `δ < 1.25ⁿ` accuracy thresholds.
 
+### Surface normals and calibration
+
+Normal consistency unprojects both depth maps into 3D with the camera
+intrinsics and takes normals as the cross product of central-difference
+tangents — the same estimator the [points-3d](#points-3d) metrics use. Radial
+and planar depth are both handled exactly, and intrinsics are rescaled when GT
+is resized onto the prediction plane.
+
+Configure `gt.calibration` (or `gt.intrinsics`) to get true camera-frame
+normals. Without it a pinhole camera is assumed — principal point at the image
+centre, `fx = fy = width` (≈ 53° horizontal field of view). Both sides of the
+comparison use the same camera either way, so the metric stays well posed, but
+the absolute angles then describe an assumed geometry rather than the real one.
+Each result records which happened: the per-image metadata carries
+`intrinsics_source` (`sample` or `assumed`) alongside the intrinsics used.
+
+Because normals come from real geometry, the metric is **invariant to a global
+depth scale** — a prediction that is uniformly `1.05 ×` GT scores 0°, since
+scaling a surface does not rotate it. Scale error is already measured by
+`absrel` and `silog`; normal consistency isolates *shape*. The flip side is
+that it is genuinely sensitive to per-pixel depth noise, which tilts the local
+surface: a few percent of pixel-level jitter is enough to push mean angles past
+the 45° sanity threshold.
+
+> **Changed in 2.25.0.** Normals were previously estimated from image-space
+> depth gradients, which ignored the perspective divide — a receding ground
+> plane read as nearly fronto-parallel and the focal length was unused. Values
+> are not comparable with earlier releases.
+
 ## Sparse depth
 
 With a sparse pointcloud GT, only metrics that stay meaningful at isolated

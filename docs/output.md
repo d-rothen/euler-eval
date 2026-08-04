@@ -19,7 +19,7 @@ dataset the per-modality default locations are usually what you want.
   "metricSet": {
     "metricNamespace": "depth.eval",
     "producerKey": "euler-eval",
-    "producerVersion": "2.24.0",
+    "producerVersion": "2.25.0",
     "sourceKind": "computed",
     "metadata": {
       "input_space_detected": "metric",
@@ -33,7 +33,7 @@ dataset the per-modality default locations are usually what you want.
   },
   "dataset_info": { "num_pairs": 500, "gt_name": "GT", "pred_name": "model_a" },
   "meta": {
-    "version": "2.24.0",
+    "version": "2.25.0",
     "modality": "depth",
     "device": "cuda",
     "gt":   { "path": "/data/gt/depth",      "dimensions": { "height": 1080, "width": 1920 } },

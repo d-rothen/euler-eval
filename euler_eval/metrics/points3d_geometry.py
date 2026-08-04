@@ -1,10 +1,10 @@
 """Geometric (surface/structure) metrics for the ``points_3d`` modality.
 
-Unlike the depth ``normal_consistency`` metric — which assumes a focal length
-of ``1.0`` and estimates normals in image space — these metrics derive surface
-normals **directly from the 3D point map** via the cross product of
-central-difference tangents, so they reflect true camera-frame geometry.  A 3D
-discontinuity F1 (the point-map analog of depth edge F1) is also provided.
+Surface normals are derived **directly from the 3D point map** via the cross
+product of central-difference tangents, so they reflect true camera-frame
+geometry.  The depth ``normal_consistency`` metric shares this estimator, after
+unprojecting its depth map with the camera intrinsics.  A 3D discontinuity F1
+(the point-map analog of depth edge F1) is also provided.
 """
 
 from typing import Optional, Union
@@ -12,10 +12,14 @@ from typing import Optional, Union
 import numpy as np
 from scipy import ndimage
 
+from .utils import angles_between_unit_vectors
+
 
 def points_to_normals(
     points: np.ndarray,
     valid_mask: Optional[np.ndarray] = None,
+    *,
+    dtype: np.dtype = np.float64,
 ) -> np.ndarray:
     """Estimate per-pixel surface normals from a 3D point map.
 
@@ -25,11 +29,15 @@ def points_to_normals(
     Args:
         points: ``(H, W, 3)`` camera-frame point map in metres.
         valid_mask: Optional ``(H, W)`` bool mask; invalid pixels are zeroed.
+        dtype: Working precision. Stored point maps are scored at float64;
+            callers that derive the point map from a float32 depth map can pass
+            ``np.float32`` for half the time and memory at the same result
+            (differences appear ~6 decimal places into a value in degrees).
 
     Returns:
         ``(H, W, 3)`` unit-normal map (``0`` at invalid pixels).
     """
-    P = np.asarray(points, dtype=np.float64)
+    P = np.asarray(points, dtype=dtype)
     height, width = P.shape[:2]
 
     dpdu = np.zeros_like(P)
@@ -95,9 +103,9 @@ def compute_point_normal_angles(
             return np.array([]), metadata
         return np.array([])
 
-    dots = np.sum(normals_pred * normals_gt, axis=2)
-    dots = np.clip(dots[valid_mask], -1.0, 1.0)
-    angles = np.degrees(np.arccos(dots))
+    angles = angles_between_unit_vectors(
+        normals_pred[valid_mask], normals_gt[valid_mask]
+    )
 
     metadata["mean_angle"] = float(np.mean(angles))
     if return_metadata:

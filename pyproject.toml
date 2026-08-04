@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "euler-eval"
-version = "2.24.0"
+version = "2.25.0"
 description = "Evaluation toolkit for depth, RGB, ray and 3D point-map predictions"
 readme = "README.md"
 requires-python = ">=3.9"

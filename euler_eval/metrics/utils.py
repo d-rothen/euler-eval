@@ -3,6 +3,33 @@
 import numpy as np
 
 
+def angles_between_unit_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Angles in degrees between two arrays of unit vectors.
+
+    Uses ``2·atan2(‖a − b‖, ‖a + b‖)`` rather than ``arccos(a · b)``.  Both are
+    exact in real arithmetic, but ``arccos`` has an unbounded derivative at
+    ``±1``: for two identical float32 normals it reports ~0.02° instead of 0°,
+    which matters for a metric reported as "percent below 11.25°".  The
+    half-angle form stays well conditioned across the whole range.
+
+    Arithmetic runs at the inputs' precision (float32 at the lowest), which is
+    ample: the formula is exact for identical vectors in any float type.
+
+    Args:
+        a: ``(..., 3)`` unit vectors.
+        b: ``(..., 3)`` unit vectors, broadcastable against *a*.
+
+    Returns:
+        Array of angles in degrees with the leading shape of the inputs.
+    """
+    dtype = np.result_type(np.asarray(a).dtype, np.asarray(b).dtype, np.float32)
+    a = np.asarray(a, dtype=dtype)
+    b = np.asarray(b, dtype=dtype)
+    difference = np.linalg.norm(a - b, axis=-1)
+    total = np.linalg.norm(a + b, axis=-1)
+    return np.degrees(2.0 * np.arctan2(difference, total))
+
+
 def convert_planar_to_radial(depth_planar: np.ndarray, intrinsics: dict) -> np.ndarray:
     """Convert planar depth (Z-depth) to radial depth (Euclidean distance).
 

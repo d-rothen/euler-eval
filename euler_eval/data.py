@@ -498,6 +498,53 @@ def classify_spatial_alignment(
     return "resize"
 
 
+def align_intrinsics_to_prediction(
+    intrinsics_K: np.ndarray,
+    gt_shape: tuple[int, int],
+    pred_shape: tuple[int, int],
+) -> np.ndarray:
+    """Adjust a camera matrix for the alignment :func:`align_to_prediction` did.
+
+    Intrinsics describe the GT image they were captured with, so any resolution
+    change applied to the GT map must be applied to them too before they are
+    used to unproject the *evaluated* plane.
+
+    - ``none``: returned unchanged.
+    - ``vae_crop``: unchanged as well — a top-left crop keeps the pixel origin,
+      so the principal point does not move.
+    - ``resize``: focal lengths and principal point are scaled with OpenCV's
+      continuous-coordinate convention (``x' = (x + 0.5)·s − 0.5``), matching
+      the ``cv2.resize`` that :func:`align_to_prediction` performs.
+
+    Args:
+        intrinsics_K: ``(3, 3)`` camera matrix for the GT image.
+        gt_shape: ``(height, width)`` of the GT map before alignment.
+        pred_shape: ``(height, width)`` of the prediction, i.e. the evaluated
+            plane.
+
+    Returns:
+        ``(3, 3)`` camera matrix describing the evaluated plane.
+    """
+    K = np.asarray(intrinsics_K, dtype=np.float64).copy()
+    gt_h, gt_w = int(gt_shape[0]), int(gt_shape[1])
+    pred_h, pred_w = int(pred_shape[0]), int(pred_shape[1])
+
+    if classify_spatial_alignment(gt_h, gt_w, pred_h, pred_w) != "resize":
+        return K
+    if gt_h <= 0 or gt_w <= 0:
+        raise ValueError(f"Invalid GT shape for intrinsics rescaling: {gt_shape}")
+
+    scale_x = pred_w / gt_w
+    scale_y = pred_h / gt_h
+
+    K[0, 0] *= scale_x
+    K[0, 1] *= scale_x  # skew shares the x axis
+    K[1, 1] *= scale_y
+    K[0, 2] = (K[0, 2] + 0.5) * scale_x - 0.5
+    K[1, 2] = (K[1, 2] + 0.5) * scale_y - 0.5
+    return K
+
+
 def align_to_prediction(gt: np.ndarray, pred: np.ndarray) -> np.ndarray:
     """Align GT array dimensions to match prediction.
 

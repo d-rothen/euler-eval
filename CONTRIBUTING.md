@@ -70,8 +70,10 @@ every flag, every metric key, every config field — belongs in
 
 ## Releasing
 
-1. Bump `version` in `pyproject.toml`.
-2. Tag the commit `v<version>` and push the tag.
+1. Bump `version` in `pyproject.toml` and refresh the lock (`uv lock`).
+2. Add a [`CHANGELOG.md`](CHANGELOG.md) entry. Call out anything that moves
+   metric values explicitly — results are compared across runs and releases.
+3. Tag the commit `v<version>` and push the tag.
 
 Pushing a `v*` tag runs
 [`.github/workflows/workflow.yml`](.github/workflows/workflow.yml), which builds
