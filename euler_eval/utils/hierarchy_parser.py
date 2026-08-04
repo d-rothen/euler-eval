@@ -1,11 +1,11 @@
 """
 Hierarchy Parser Module
 
-Provides utilities for placing and retrieving values in hierarchically
-structured data with nested children dictionaries and file entries.
+Provides utilities for placing values in hierarchically structured data
+with nested children dictionaries and file entries.
 """
 
-from typing import Any, Optional
+from typing import Any
 
 
 def set_value(
@@ -52,67 +52,3 @@ def set_value(
     # No existing entry found, append new one
     current["files"].append(value)
     return target
-
-
-def retrieve_value(
-    source: dict,
-    hierarchy: list[str],
-    file_id: str
-) -> Optional[Any]:
-    """
-    Retrieve the value at a specific hierarchy path and file id.
-
-    Args:
-        source: The source object to search
-        hierarchy: List of keys forming the path
-        file_id: The id of the file entry to retrieve
-
-    Returns:
-        The file entry object if found, None otherwise
-    """
-    current = source
-
-    # Navigate the hierarchy
-    for level in hierarchy:
-        children = current.get("children", {})
-        if not isinstance(children, dict) or level not in children:
-            return None
-        current = children[level]
-        if not isinstance(current, dict):
-            return None
-
-    # Search for file with matching id
-    files = current.get("files", [])
-    for file_entry in files:
-        if isinstance(file_entry, dict) and file_entry.get("id") == file_id:
-            return file_entry
-
-    return None
-
-
-def retrieve_values(
-    source: dict,
-    hierarchy: list[str]
-) -> Optional[dict]:
-    """
-    Retrieve the mapping (node) at a specific hierarchy level.
-
-    Args:
-        source: The source object to search
-        hierarchy: List of keys forming the path
-
-    Returns:
-        The node at that hierarchy level, or None if path doesn't exist
-    """
-    current = source
-
-    # Navigate the hierarchy
-    for level in hierarchy:
-        children = current.get("children", {})
-        if not isinstance(children, dict) or level not in children:
-            return None
-        current = children[level]
-        if not isinstance(current, dict):
-            return None
-
-    return current

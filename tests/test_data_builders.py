@@ -179,7 +179,7 @@ def test_sparse_depth_builder_can_load_relative_depth_prediction_scope(monkeypat
     )
 
 
-def test_sparse_depth_builder_uses_semantic_segmentation_scope(monkeypatch):
+def test_sparse_depth_builder_uses_custom_segmentation_scope(monkeypatch):
     _install_captured_dataset(monkeypatch)
     calls = []
 
@@ -202,13 +202,13 @@ def test_sparse_depth_builder_uses_semantic_segmentation_scope(monkeypatch):
         intrinsics_path="/datasets/shared",
         camera_extrinsics_path="/datasets/shared",
         segmentation_path="/datasets/shared",
-        segmentation_modality_key="semantic_segmentation",
+        segmentation_modality_key="sky_segmentation",
     )
 
-    assert calls == [("/datasets/shared", "semantic_segmentation")]
+    assert calls == [("/datasets/shared", "sky_segmentation")]
     _assert_modality(
         dataset.hierarchical_modalities["segmentation"],
-        key="semantic_segmentation",
+        key="sky_segmentation",
         loader=sky_loader,
     )
 
@@ -266,7 +266,18 @@ def test_sky_mask_loader_resolution_uses_segmentation_scope(monkeypatch):
 
     def fake_index_dataset_from_path(path, **kwargs):
         calls.append((path, kwargs))
-        return {"euler_loading": {"loader": "vkitti2"}}
+        return {
+            "contract": {"kind": "dataset_head"},
+            "dataset": {"id": "vkitti2", "name": "VKITTI2"},
+            "modality": {"key": "segmentation", "meta": {"skyclass": [0, 0, 0]}},
+            "addons": {
+                "euler_loading": {
+                    "version": "1.0",
+                    "loader": "vkitti2",
+                    "function": "segmentation",
+                }
+            },
+        }
 
     def sky_mask(path, meta=None):
         return None
@@ -289,7 +300,18 @@ def test_sky_mask_loader_resolution_strips_inline_split(monkeypatch):
 
     def fake_index_dataset_from_path(path, **kwargs):
         calls.append((path, kwargs))
-        return {"euler_loading": {"loader": "vkitti2"}}
+        return {
+            "contract": {"kind": "dataset_head"},
+            "dataset": {"id": "vkitti2", "name": "VKITTI2"},
+            "modality": {"key": "segmentation", "meta": {"skyclass": [0, 0, 0]}},
+            "addons": {
+                "euler_loading": {
+                    "version": "1.0",
+                    "loader": "vkitti2",
+                    "function": "segmentation",
+                }
+            },
+        }
 
     def sky_mask(path, meta=None):
         return None
@@ -307,12 +329,23 @@ def test_sky_mask_loader_resolution_strips_inline_split(monkeypatch):
     ]
 
 
-def test_sky_mask_loader_resolution_accepts_semantic_segmentation_scope(monkeypatch):
+def test_sky_mask_loader_resolution_accepts_custom_scope(monkeypatch):
     calls = []
 
     def fake_index_dataset_from_path(path, **kwargs):
         calls.append((path, kwargs))
-        return {"euler_loading": {"loader": "muses"}}
+        return {
+            "contract": {"kind": "dataset_head"},
+            "dataset": {"id": "muses", "name": "MUSES"},
+            "modality": {"key": "segmentation", "meta": {"skyclass": [0, 0, 0]}},
+            "addons": {
+                "euler_loading": {
+                    "version": "1.0",
+                    "loader": "muses",
+                    "function": "segmentation",
+                }
+            },
+        }
 
     def sky_mask(path, meta=None):
         return None
@@ -327,12 +360,12 @@ def test_sky_mask_loader_resolution_accepts_semantic_segmentation_scope(monkeypa
     assert (
         data._resolve_sky_mask_loader(
             "/datasets/shared",
-            modality_key="semantic_segmentation",
+            modality_key="sky_segmentation",
         )
         is sky_mask
     )
     assert calls == [
-        ("/datasets/shared", {"metadata_scope": "semantic_segmentation"}),
+        ("/datasets/shared", {"metadata_scope": "sky_segmentation"}),
     ]
 
 

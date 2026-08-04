@@ -1,7 +1,7 @@
-"""Depth, RGB, and rays evaluation metrics package.
+"""Depth, RGB, rays, and points_3d evaluation metrics package.
 
 This package provides various metrics for comparing depth maps, RGB images,
-and spherical direction maps (camera rays):
+spherical direction maps (camera rays), and per-pixel 3D point maps:
 
 Depth metrics:
 - Image quality: PSNR, SSIM, LPIPS, FID, KID
@@ -17,6 +17,12 @@ RGB metrics:
 
 Rays metrics:
 - ρ_A: AUC of angular accuracy curve between predicted and GT ray directions
+
+Points-3D metrics:
+- Point errors with absolute/relative threshold accuracy
+- Error decomposition (along-ray vs lateral)
+- Geometric: point-normal angles, point-edge F1
+- Cloud distance and F-score AUC
 """
 
 # GPU-batched image metrics
@@ -26,18 +32,17 @@ from .gpu_depth_batch import GPUDepthMetricsBatcher
 # Depth metrics
 from .psnr import compute_psnr
 from .ssim import compute_ssim
-from .lpips_metric import compute_lpips, LPIPSMetric
-from .fid_kid import compute_fid, compute_kid, FIDKIDMetric
+from .lpips_metric import LPIPSMetric
+from .fid_kid import FIDKIDMetric
 from .fid_kid import compute_clean_fid
 from .absrel import compute_absrel, aggregate_absrel
-from .rmse import compute_rmse, compute_rmse_per_pixel, aggregate_rmse
+from .rmse import compute_rmse_per_pixel, aggregate_rmse
 from .scale_invariant_log import (
     compute_scale_invariant_log_error,
     compute_silog_per_pixel,
     aggregate_silog,
 )
 from .normal_consistency import (
-    compute_normal_consistency,
     compute_normal_angles,
     aggregate_normal_consistency,
 )
@@ -51,8 +56,8 @@ from .depth_standard import (
 )
 
 # RGB metrics
-from .rgb_psnr_ssim import compute_rgb_psnr, compute_rgb_ssim, compute_rgb_psnr_masked
-from .rgb_lpips import compute_rgb_lpips, RGBLPIPSMetric
+from .rgb_psnr_ssim import compute_rgb_psnr, compute_rgb_ssim
+from .rgb_lpips import RGBLPIPSMetric
 from .daniel_error import compute_sce
 from .depth_binned_error import (
     compute_depth_binned_mae,
@@ -65,17 +70,10 @@ from .rgb_edge_f1 import (
     detect_rgb_edges,
     aggregate_rgb_edge_f1,
 )
-from .tail_errors import (
-    compute_tail_errors,
-    compute_tail_errors_per_channel,
-    get_tail_error_pixels,
-    aggregate_tail_errors,
-)
+from .tail_errors import compute_tail_errors
 from .high_freq_energy import (
     compute_high_freq_energy_ratio,
     compute_high_freq_energy_comparison,
-    compute_high_freq_preservation,
-    compute_frequency_spectrum_similarity,
     aggregate_high_freq_metrics,
 )
 
@@ -114,12 +112,8 @@ from .points3d_cloud import (
 # Utilities
 from .utils import (
     convert_planar_to_radial,
-    normalize_depth_for_visualization,
-    get_valid_mask,
-    depth_to_3channel,
     get_depth_bins,
     get_benchmark_depth_bins,
-    format_benchmark_key,
     _BENCHMARK_BIN_NAMES,
 )
 
@@ -127,23 +121,18 @@ __all__ = [
     # Depth image quality metrics
     "compute_psnr",
     "compute_ssim",
-    "compute_lpips",
     "LPIPSMetric",
-    "compute_fid",
-    "compute_kid",
     "compute_clean_fid",
     "FIDKIDMetric",
     # Depth-specific metrics
     "compute_absrel",
     "aggregate_absrel",
-    "compute_rmse",
     "compute_rmse_per_pixel",
     "aggregate_rmse",
     "compute_scale_invariant_log_error",
     "compute_silog_per_pixel",
     "aggregate_silog",
     # Depth geometric metrics
-    "compute_normal_consistency",
     "compute_normal_angles",
     "aggregate_normal_consistency",
     "compute_depth_edge_f1",
@@ -156,8 +145,6 @@ __all__ = [
     # RGB image quality metrics
     "compute_rgb_psnr",
     "compute_rgb_ssim",
-    "compute_rgb_psnr_masked",
-    "compute_rgb_lpips",
     "RGBLPIPSMetric",
     "compute_sce",
     # RGB depth-binned metrics
@@ -171,14 +158,9 @@ __all__ = [
     "aggregate_rgb_edge_f1",
     # RGB tail errors
     "compute_tail_errors",
-    "compute_tail_errors_per_channel",
-    "get_tail_error_pixels",
-    "aggregate_tail_errors",
     # RGB high-frequency metrics
     "compute_high_freq_energy_ratio",
     "compute_high_freq_energy_comparison",
-    "compute_high_freq_preservation",
-    "compute_frequency_spectrum_similarity",
     "aggregate_high_freq_metrics",
     # Rays metrics
     "compute_angular_errors",
@@ -204,12 +186,8 @@ __all__ = [
     "POINTS3D_DEFAULT_MAX_POINTS",
     # Utilities
     "convert_planar_to_radial",
-    "normalize_depth_for_visualization",
-    "get_valid_mask",
-    "depth_to_3channel",
     "get_depth_bins",
     "get_benchmark_depth_bins",
-    "format_benchmark_key",
     "_BENCHMARK_BIN_NAMES",
     # GPU-batched image metrics
     "GPUImageMetricsBatcher",

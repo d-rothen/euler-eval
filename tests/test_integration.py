@@ -34,7 +34,6 @@ from euler_eval.evaluate import _extract_hierarchy, _get_intrinsics_K, _get_sky_
 
 H, W = 4, 6
 NUM_FILES = 3
-SCALE_TO_METERS = 0.01
 K_MATRIX = np.array(
     [[525.0, 0.0, 319.5], [0.0, 525.0, 239.5], [0.0, 0.0, 1.0]],
     dtype=np.float32,
@@ -156,7 +155,7 @@ def dataset_root(tmp_path):
             "test_depth",
             "depth",
             depth_files,
-            meta={"scale_to_meters": SCALE_TO_METERS, "radial_depth": False},
+            meta={"radial_depth": False},
         ),
     )
     paths["gt_depth"] = str(gt_depth_dir)
@@ -257,7 +256,6 @@ class TestDepthDatasetIntegration:
             },
         )
         meta = get_depth_metadata(ds)
-        assert meta["scale_to_meters"] == 1.0
         assert meta["radial_depth"] is False
 
     def test_sample_structure(self, dataset_root):
@@ -297,7 +295,6 @@ class TestDepthDatasetIntegration:
         # Raw values are already in meters (1000-5000 in this fixture)
         processed = process_depth(
             depth_gt,
-            scale_to_meters=meta["scale_to_meters"],
             is_radial=meta["radial_depth"],
         )
         assert processed.dtype == np.float32
@@ -368,13 +365,11 @@ class TestDepthWithCalibrationIntegration:
 
         processed = process_depth(
             depth_gt,
-            scale_to_meters=meta["scale_to_meters"],
             is_radial=meta["radial_depth"],  # False → triggers conversion
             intrinsics_K=K,
         )
         # After planar→radial, values should be >= the planar depth.
-        scaled = depth_gt
-        assert np.all(processed >= scaled - 1e-5)
+        assert np.all(processed >= depth_gt - 1e-5)
 
 
 class TestDepthWithSegmentationIntegration:
@@ -484,7 +479,6 @@ class TestFullPipelineIntegration:
         )
 
         meta = get_depth_metadata(ds)
-        assert meta["scale_to_meters"] == 1.0
         assert meta["radial_depth"] is False
 
         for i in range(len(ds)):
@@ -503,7 +497,7 @@ class TestFullPipelineIntegration:
 
             # Process depth (planar→radial)
             processed_gt = process_depth(
-                depth_gt, meta["scale_to_meters"], meta["radial_depth"], K
+                depth_gt, meta["radial_depth"], K
             )
             assert processed_gt.dtype == np.float32
             assert np.all(np.isfinite(processed_gt))

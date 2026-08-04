@@ -1,4 +1,4 @@
-"""Tests for main.py config validation."""
+"""Tests for euler_eval.cli config validation."""
 
 import json
 import zipfile
@@ -43,36 +43,9 @@ class TestValidateGtConfig:
             "calibration": {"path": str(tmp_path / "calibration")},
         }
         validate_gt_config(gt)
-
-    def test_valid_with_semantic_segmentation_alias(self, tmp_path):
-        """GT config accepts semantic_segmentation as a segmentation alias."""
-        for name in ("depth", "semantic_segmentation"):
-            (tmp_path / name).mkdir()
-
-        gt = {
-            "depth": {"path": str(tmp_path / "depth")},
-            "semantic_segmentation": {
-                "path": str(tmp_path / "semantic_segmentation")
-            },
-        }
-        validate_gt_config(gt)
         key, entry = _gt_segmentation_entry(gt)
-        assert key == "semantic_segmentation"
-        assert entry == gt["semantic_segmentation"]
-
-    def test_rejects_duplicate_segmentation_aliases(self, tmp_path):
-        for name in ("depth", "segmentation", "semantic_segmentation"):
-            (tmp_path / name).mkdir()
-
-        gt = {
-            "depth": {"path": str(tmp_path / "depth")},
-            "segmentation": {"path": str(tmp_path / "segmentation")},
-            "semantic_segmentation": {
-                "path": str(tmp_path / "semantic_segmentation")
-            },
-        }
-        with pytest.raises(ValueError, match="multiple segmentation entries"):
-            validate_gt_config(gt)
+        assert key == "segmentation"
+        assert entry == gt["segmentation"]
 
     def test_depth_only_gt_is_valid(self, tmp_path):
         depth_path = tmp_path / "depth"

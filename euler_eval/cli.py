@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Main entry point for depth and RGB evaluation.
+"""Main entry point for depth, sparse depth, RGB, rays, and points_3d evaluation.
 
 Parses config.json and runs evaluation using euler_loading datasets.
 """
@@ -192,7 +192,6 @@ def _points_3d_eval_axes() -> dict[str, AxisDeclaration]:
 
 
 _PRED_DEPTH_KEYS = ("depth", "relative_depth", "affine_depth")
-_GT_SEGMENTATION_KEYS = ("segmentation", "semantic_segmentation")
 
 # Downstream eval consumers validate metricSet.metricNamespace with a stricter
 # first-segment rule than euler_metric_naming's modality validator. Keep the
@@ -799,21 +798,10 @@ def _prediction_depth_space_hint(key: str | None) -> str | None:
 
 
 def _gt_segmentation_entry(gt: dict) -> tuple[str | None, dict | None]:
-    """Return the configured GT segmentation entry, accepting legacy aliases."""
-    matches = [
-        key
-        for key in _GT_SEGMENTATION_KEYS
-        if key in gt and "path" in gt.get(key, {})
-    ]
-    if not matches:
-        return None, None
-    if len(matches) > 1:
-        raise ValueError(
-            "gt contains multiple segmentation entries "
-            f"{matches}. Use only one of {list(_GT_SEGMENTATION_KEYS)}."
-        )
-    key = matches[0]
-    return key, gt[key]
+    """Return the configured GT segmentation entry, if any."""
+    if "segmentation" in gt and "path" in gt.get("segmentation", {}):
+        return "segmentation", gt["segmentation"]
+    return None, None
 
 
 def validate_gt_config(gt: dict) -> None:
@@ -859,7 +847,6 @@ def validate_gt_config(gt: dict) -> None:
         "rays",
         "points_3d",
         "segmentation",
-        "semantic_segmentation",
         "calibration",
         "intrinsics",
         "camera_extrinsics",
@@ -1088,7 +1075,7 @@ def print_results(results: dict, title: str) -> None:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Evaluate depth and RGB datasets using euler_loading"
+        description="Evaluate depth, sparse depth, RGB, rays, and points_3d datasets using euler_loading"
     )
     parser.add_argument(
         "config",
@@ -1225,8 +1212,7 @@ def main():
     if args.mask_sky:
         if segmentation_entry is None:
             print(
-                "Warning: --mask-sky requires gt.segmentation or "
-                "gt.semantic_segmentation in config. "
+                "Warning: --mask-sky requires gt.segmentation in config. "
                 "Sky masking disabled.",
                 file=sys.stderr,
             )

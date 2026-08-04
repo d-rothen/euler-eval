@@ -183,9 +183,7 @@ def compute_sparse_cloud_distance_metrics(
     dominated by that sparsity rather than by error.  This function therefore
     reports only the meaningful ``gt→pred`` direction — **completeness** (is
     every GT return covered by a nearby predicted point?) and the matching
-    **recall** at each distance threshold — mirroring the recommendation in
-    ``points_3d_metrics_proposal.md`` §4-D ("lead with completeness / recall;
-    restrict or omit accuracy / precision").
+    **recall** at each distance threshold.
 
     The result reuses the dense ``cloud_distance`` schema so the two paths share
     metric descriptions: ``chamfer.completeness`` / ``chamfer.median`` carry the

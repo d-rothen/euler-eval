@@ -1,8 +1,8 @@
-"""Data loading bridge between euler_loading and depth-eval.
+"""Data loading bridge between euler_loading and euler-eval.
 
 Provides utilities to build MultiModalDataset instances from config
-and convert loaded tensors to the numpy formats expected by depth-eval
-metrics.
+and convert loaded tensors to the numpy formats expected by euler-eval
+metrics for depth, RGB, rays, and points_3d.
 """
 
 from collections.abc import Mapping
@@ -259,16 +259,13 @@ def to_numpy_directions(data: Any) -> np.ndarray:
 
 def process_depth(
     depth: np.ndarray,
-    scale_to_meters: float,
     is_radial: bool,
     intrinsics_K: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Apply optional scaling and planar→radial conversion to a depth map.
+    """Apply planar→radial conversion to a depth map.
 
     Args:
-        depth: Depth array ``(H, W)``.
-        scale_to_meters: Legacy multiplier to convert to metres.
-            For euler_loading-provided depth, this should remain ``1.0``.
+        depth: Depth array ``(H, W)`` in metres.
         is_radial: If True, depth is already radial (Euclidean).
                    If False and ``intrinsics_K`` is provided, convert.
         intrinsics_K: ``(3, 3)`` camera matrix. Required when
@@ -277,7 +274,6 @@ def process_depth(
     Returns:
         Depth in metres, ``(H, W)`` float32.
     """
-    depth = depth * scale_to_meters
     if not is_radial and intrinsics_K is not None:
         intrinsics_dict = {
             "fx": float(intrinsics_K[0, 0]),
@@ -655,9 +651,8 @@ def _resolve_sky_mask_loader(
         )
     except FileNotFoundError:
         index = index_dataset_from_path(modality.path)
-    # Resolve euler_loading metadata the same way euler-loading does:
-    # try the contract addon API first (handles addons.euler_loading),
-    # then fall back to top-level euler_loading for legacy indices.
+    # Resolve euler_loading metadata the same way euler-loading does: via the
+    # contract addon API (addons.euler_loading in the ds-crawler index).
     euler_meta = None
     try:
         contract = get_dataset_contract(dict(index))
@@ -665,7 +660,7 @@ def _resolve_sky_mask_loader(
     except Exception:
         pass
     if not isinstance(euler_meta, Mapping):
-        euler_meta = index.get("euler_loading", {})
+        euler_meta = {}
     loader_name = euler_meta.get("loader")
     if loader_name is None:
         raise ValueError(
@@ -1044,14 +1039,11 @@ def get_depth_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
     """Extract depth modality metadata from a dataset.
 
     Returns:
-        Dict with ``scale_to_meters`` (float, always 1.0) and
-        ``radial_depth`` (bool).
+        Dict with ``radial_depth`` (bool).
     """
     meta = dataset.get_modality_metadata("gt")
 
     return {
-        # euler_loading is expected to return depth in metres.
-        "scale_to_meters": 1.0,
         "radial_depth": bool(meta.get("radial_depth", True)),
     }
 
@@ -1062,7 +1054,6 @@ def get_sparse_depth_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
     pred_meta = dataset.get_modality_metadata("pred")
 
     return {
-        "scale_to_meters": 1.0,
         "representation": sparse_meta.get("representation", "point_cloud"),
         "coordinate_unit": sparse_meta.get("coordinate_unit", "meters"),
         "point_columns": sparse_meta.get("columns"),

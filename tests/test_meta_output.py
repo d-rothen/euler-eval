@@ -83,7 +83,6 @@ class TestMetaBlockStructure:
             },
             "modality_params": {
                 "radial_depth": True,
-                "scale_to_meters": 1.0,
             },
             "eval_params": {
                 "sky_masking": False,

@@ -30,11 +30,13 @@ dependencies = [
     "Pillow>=8.0.0",
     "torch>=1.9.0",
     "torchvision>=0.10.0",
+    "opencv-python-headless>=4.5.0",
     "lpips>=0.1.4",
     "torchmetrics>=1.0",
     "tqdm>=4.62.0",
     "euler-loading",
     "ds-crawler",
+    "euler-metric-naming",
 ]
 
 [project.optional-dependencies]
@@ -62,6 +64,7 @@ py-modules = ["init_cache"]
 ds-crawler = { git = "https://github.com/d-rothen/ds-crawler" }
 euler-loading = { git = "https://github.com/d-rothen/euler-loading" }
 euler-train = { git = "https://github.com/d-rothen/euler-train" }
+euler-metric-naming = { git = "https://github.com/d-rothen/euler-metric-naming" }
 
 [tool.setuptools.packages.find]
 where = ["."]

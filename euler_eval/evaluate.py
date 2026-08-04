@@ -1,6 +1,7 @@
 """Dataset evaluation orchestrator.
 
-Runs all metrics over depth and RGB datasets loaded via euler_loading.
+Runs all metrics over depth, sparse depth, RGB, rays, and points_3d
+datasets loaded via euler_loading.
 """
 
 import copy
@@ -15,10 +16,8 @@ from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from .calibration import (
-    get_first_hierarchical_value as _get_first_hierarchical_value,
     get_sample_intrinsics as _get_intrinsics_K,
     get_sample_pointcloud_to_camera_extrinsics as _get_pointcloud_to_camera_extrinsics,
-    iter_hierarchical_values as _iter_hierarchical_values,
 )
 from .data import (
     align_to_prediction,
@@ -508,11 +507,7 @@ def _get_sky_mask(sample: dict) -> Optional[np.ndarray]:
 
 
 # Calibration extraction lives in euler_eval.calibration (imported above with
-# private aliases to keep the long-standing evaluate.py import surface stable).
-def _get_camera_extrinsics(sample: dict) -> Optional[np.ndarray]:
-    """Backward-compatible wrapper for direct sparse projection callers."""
-    transform, _ = _get_pointcloud_to_camera_extrinsics(sample)
-    return transform
+# private aliases that tests import from euler_eval.evaluate).
 
 
 # ---------------------------------------------------------------------------
@@ -1076,8 +1071,8 @@ def evaluate_depth_samples(
                         if alignment_mode == "auto_affine":
                             print("  Scale-and-shift: skipping calibration")
 
-                depth_gt = process_depth(depth_gt, 1.0, is_radial, intrinsics_K)
-                depth_pred_raw = process_depth(depth_pred, 1.0, is_radial, intrinsics_K)
+                depth_gt = process_depth(depth_gt, is_radial, intrinsics_K)
+                depth_pred_raw = process_depth(depth_pred, is_radial, intrinsics_K)
 
                 if alignment_mode == "none":
                     depth_pred_aligned = depth_pred_raw
@@ -1809,7 +1804,7 @@ def evaluate_sparse_depth_samples(
                         sky_valid = align_to_prediction(sky_valid, depth_pred)
 
                 depth_pred_raw = process_depth(
-                    depth_pred, 1.0, pred_is_radial, intrinsics_K
+                    depth_pred, pred_is_radial, intrinsics_K
                 )
 
                 if alignment_mode == "none":
@@ -2315,7 +2310,6 @@ def evaluate_rgb_samples(
                         intrinsics_K = _get_intrinsics_K(sample)
                         gt_depth = process_depth(
                             gt_depth_raw,
-                            1.0,
                             depth_meta["radial_depth"],
                             intrinsics_K,
                         )
@@ -3429,8 +3423,8 @@ def evaluate_points_3d_sparse_samples(
 ) -> dict:
     """Evaluate a depth **or** ``points_3d`` prediction against sparse GT.
 
-    The sparse-LiDAR counterpart of :func:`evaluate_points_3d_samples`
-    (see ``points_3d_metrics_proposal.md`` §4-D).  The ground truth is a sparse
+    The sparse-LiDAR counterpart of :func:`evaluate_points_3d_samples`.
+    The ground truth is a sparse
     point cloud (``gt.sparse_depth``), transformed into the camera frame and
     projected into the prediction plane to yield both a visible GT point cloud
     and per-pixel correspondences.  The prediction is one of:
@@ -3810,7 +3804,7 @@ def evaluate_points_3d_sparse_samples(
                 # per-space validity masks, per prediction kind.
                 if pred_is_depth:
                     depth_pred_raw = process_depth(
-                        depth_pred, 1.0, pred_is_radial, intrinsics_K
+                        depth_pred, pred_is_radial, intrinsics_K
                     )
                     if alignment_mode == "none":
                         depth_pred_aligned = depth_pred_raw

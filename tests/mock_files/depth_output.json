@@ -2,7 +2,6 @@
   "name": "VKITTI2",
   "type": "depth",
   "meta": {
-    "scale_to_meters": 0.01,
     "radial_depth": false
   },
   "dataset": {

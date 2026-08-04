@@ -1,4 +1,4 @@
-"""Shared fixtures for depth-eval tests."""
+"""Shared fixtures for euler-eval tests."""
 
 import json
 from pathlib import Path
@@ -15,7 +15,7 @@ MOCK_FILES = Path(__file__).parent / "mock_files"
 
 @pytest.fixture
 def depth_index_output():
-    """Parsed depth output.json with scale_to_meters and radial_depth meta."""
+    """Parsed depth output.json with radial_depth meta."""
     with open(MOCK_FILES / "depth_output.json") as f:
         return json.load(f)
 

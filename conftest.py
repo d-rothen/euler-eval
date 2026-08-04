@@ -7,7 +7,6 @@ without error.
 
 import builtins
 import sys
-from typing import Any
 from unittest.mock import MagicMock
 
 
@@ -55,23 +54,3 @@ def _install_import_hook() -> None:
 # Heavy optional dependencies that may not be installed in the test env
 _stub_missing_package("lpips", "torchvision")
 _install_import_hook()
-
-
-# ---------------------------------------------------------------------------
-# Ensure MultiModalDataset.get_modality_metadata exists (added in 0.4.1)
-# ---------------------------------------------------------------------------
-
-def _ensure_get_modality_metadata() -> None:
-    """Patch get_modality_metadata onto MultiModalDataset if missing."""
-    from euler_loading import MultiModalDataset
-
-    if hasattr(MultiModalDataset, "get_modality_metadata"):
-        return
-
-    def get_modality_metadata(self, modality_name: str) -> dict[str, Any]:
-        return self._index_outputs.get(modality_name, {}).get("meta", {})
-
-    MultiModalDataset.get_modality_metadata = get_modality_metadata
-
-
-_ensure_get_modality_metadata()

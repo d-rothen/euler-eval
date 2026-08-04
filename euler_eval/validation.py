@@ -416,7 +416,7 @@ def evaluate_sparse_depth_sample(
         pred = pred_raw.astype(np.float32, copy=True)
     else:
         # Projected GT depth is radial; harmonize a planar prediction.
-        pred = process_depth(pred_raw, 1.0, pred_is_radial, K)
+        pred = process_depth(pred_raw, pred_is_radial, K)
 
     valid = (
         sparse_mask

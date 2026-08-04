@@ -3,8 +3,7 @@
 Covers the directed (completeness/recall) cloud-distance metric, the
 ``project_point_cloud_to_point_map`` helper, and the
 ``evaluate_points_3d_sparse_samples`` pipeline that unprojects a dense depth
-prediction and scores it as a 3D point map against a sparse LiDAR cloud
-(``points_3d_metrics_proposal.md`` §4-D).
+prediction and scores it as a 3D point map against a sparse LiDAR cloud.
 """
 
 import json

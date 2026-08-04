@@ -164,30 +164,20 @@ class TestToNumpyIntrinsics:
 
 
 class TestProcessDepth:
-    def test_scale_only(self):
-        depth = np.array([[100.0, 200.0], [300.0, 400.0]], dtype=np.float32)
-        result = process_depth(depth, scale_to_meters=0.01, is_radial=True)
-        expected = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-        np.testing.assert_allclose(result, expected)
-
-    def test_scale_identity(self):
+    def test_radial_passthrough(self):
         depth = np.array([[1.0, 2.0]], dtype=np.float32)
-        result = process_depth(depth, scale_to_meters=1.0, is_radial=True)
+        result = process_depth(depth, is_radial=True)
         np.testing.assert_array_equal(result, depth)
 
     def test_radial_skips_conversion(self, sample_K):
         depth = np.ones((4, 6), dtype=np.float32) * 10.0
-        result = process_depth(
-            depth, scale_to_meters=1.0, is_radial=True, intrinsics_K=sample_K
-        )
+        result = process_depth(depth, is_radial=True, intrinsics_K=sample_K)
         # When radial=True, no conversion should happen
         np.testing.assert_array_equal(result, depth)
 
     def test_planar_to_radial_conversion(self, sample_K):
         depth = np.ones((4, 6), dtype=np.float32) * 10.0
-        result = process_depth(
-            depth, scale_to_meters=1.0, is_radial=False, intrinsics_K=sample_K
-        )
+        result = process_depth(depth, is_radial=False, intrinsics_K=sample_K)
         # Center pixel (cx=319.5, cy=239.5) is far from (4,6) image, so all
         # pixels have significant correction. Result should be >= input.
         assert result.dtype == np.float32
@@ -197,19 +187,9 @@ class TestProcessDepth:
 
     def test_planar_without_K_does_nothing(self):
         depth = np.ones((2, 2), dtype=np.float32) * 5.0
-        result = process_depth(
-            depth, scale_to_meters=1.0, is_radial=False, intrinsics_K=None
-        )
+        result = process_depth(depth, is_radial=False, intrinsics_K=None)
         # No K provided, so planar-to-radial skipped even though is_radial=False
         np.testing.assert_array_equal(result, depth)
-
-    def test_scale_and_convert_combined(self, sample_K):
-        depth = np.ones((4, 6), dtype=np.float32) * 1000.0
-        result = process_depth(
-            depth, scale_to_meters=0.001, is_radial=False, intrinsics_K=sample_K
-        )
-        # After scaling: 1.0 everywhere, then planar→radial should increase
-        assert np.all(result >= 1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +201,6 @@ class TestGetDepthMetadata:
     def test_reads_from_output_json(self, mock_dataset, depth_index_output):
         ds = mock_dataset({"gt": depth_index_output})
         meta = get_depth_metadata(ds)
-        assert meta["scale_to_meters"] == 1.0
         assert meta["radial_depth"] is False
 
     def test_ignores_manifest_scale_and_uses_meters(self, mock_dataset):
@@ -234,27 +213,24 @@ class TestGetDepthMetadata:
             }
         )
         meta = get_depth_metadata(ds)
-        assert meta["scale_to_meters"] == 1.0
+        # Legacy manifest scale key is ignored; only radial_depth is read.
+        assert "scale_to_meters" not in meta
         assert meta["radial_depth"] is False
 
     def test_defaults_when_no_meta(self, mock_dataset):
         ds = mock_dataset({"gt": {"dataset": {}}})
         meta = get_depth_metadata(ds)
-        assert meta["scale_to_meters"] == 1.0
         assert meta["radial_depth"] is True
 
     def test_defaults_when_modality_missing(self, mock_dataset):
         ds = mock_dataset({})
         meta = get_depth_metadata(ds)
-        assert meta["scale_to_meters"] == 1.0
         assert meta["radial_depth"] is True
 
     def test_partial_meta(self, mock_dataset):
         ds = mock_dataset({"gt": {"meta": {"scale_to_meters": 0.5}}})
         meta = get_depth_metadata(ds)
-        assert meta["scale_to_meters"] == 1.0
         assert meta["radial_depth"] is True  # default
-
 
 class TestGetRgbMetadata:
     def test_reads_from_output_json(self, mock_dataset, rgb_index_output):
