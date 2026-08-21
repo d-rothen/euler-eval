@@ -39,6 +39,12 @@ from .evaluate import (
     evaluate_rgb_samples,
     evaluate_sparse_depth_samples,
 )
+from .metric_sets import (
+    DOMAIN_METRIC_SETS,
+    available_domains,
+    resolve_metric_sets,
+    selected_domain_categories,
+)
 from .sanity_checker import SanityChecker
 
 try:
@@ -106,18 +112,25 @@ _BENCHMARK_BIN_AXIS = AxisDeclaration(
     description="Depth benchmark bin",
 )
 
-_RGB_CATEGORY_AXIS = AxisDeclaration(
-    position=0,
-    values=(
-        "image_quality",
-        "edge_f1",
-        "tail_errors",
-        "high_frequency",
-        "depth_binned_photometric",
-    ),
-    optional=True,
-    description="Metric category",
+_RGB_CORE_CATEGORIES = (
+    "image_quality",
+    "edge_f1",
+    "tail_errors",
+    "high_frequency",
+    "depth_binned_photometric",
 )
+
+
+def _rgb_category_axis(domains=None) -> AxisDeclaration:
+    return AxisDeclaration(
+        position=0,
+        values=(*_RGB_CORE_CATEGORIES, *selected_domain_categories(domains)),
+        optional=True,
+        description="Metric category",
+    )
+
+
+_RGB_CATEGORY_AXIS = _rgb_category_axis()
 
 _RGB_BENCHMARK_BIN_AXIS = AxisDeclaration(
     position=1,
@@ -149,8 +162,10 @@ def _sparse_depth_eval_axes(*, benchmark: bool = False) -> dict[str, AxisDeclara
     return axes
 
 
-def _rgb_eval_axes(*, benchmark: bool = False) -> dict[str, AxisDeclaration]:
-    axes = {"category": _RGB_CATEGORY_AXIS}
+def _rgb_eval_axes(
+    *, benchmark: bool = False, domains=None
+) -> dict[str, AxisDeclaration]:
+    axes = {"category": _rgb_category_axis(domains)}
     if benchmark:
         axes["bin"] = _RGB_BENCHMARK_BIN_AXIS
     return axes
@@ -373,6 +388,12 @@ _RGB_EVAL_DESCRIPTIONS = {
     "mae": MetricDescription(is_higher_better=False, display_name="MAE"),
     "mse": MetricDescription(is_higher_better=False, display_name="MSE"),
 }
+for _metric_set in DOMAIN_METRIC_SETS.values():
+    for _metric in _metric_set.rgb_no_reference:
+        _RGB_EVAL_DESCRIPTIONS[_metric.name] = MetricDescription(
+            is_higher_better=_metric.is_higher_better,
+            display_name=_metric.display_name,
+        )
 
 _RAYS_EVAL_DESCRIPTIONS = {
     "rho_a.mean": MetricDescription(
@@ -1110,6 +1131,17 @@ def main():
         help="Enable verbose output",
     )
     parser.add_argument(
+        "--domain",
+        dest="domains",
+        action="append",
+        choices=available_domains(),
+        default=[],
+        help=(
+            "Add a domain-specific metric set to the always-enabled core set. "
+            "May be repeated (available: %(choices)s)."
+        ),
+    )
+    parser.add_argument(
         "--skip-depth",
         action="store_true",
         help="Skip depth evaluation",
@@ -1188,6 +1220,8 @@ def main():
 
     args = parser.parse_args()
 
+    selected_metric_sets = resolve_metric_sets(args.domains)
+
     # Emit producer provenance before configuration loading or evaluation work.
     package_metadata = _log_package_metadata()
 
@@ -1204,6 +1238,10 @@ def main():
     print_device_info(requested_device, args.device)
     print(f"Depth alignment: {args.depth_alignment}")
     print(f"RGB FID backend: {args.rgb_fid_backend}")
+    print(
+        "Metric sets: "
+        + ", ".join(metric_set.name for metric_set in selected_metric_sets)
+    )
     if args.benchmark_depth_range:
         bdr = args.benchmark_depth_range
         print(f"Benchmark depth range: [{bdr[0]}, {bdr[1]}] meters")
@@ -1757,6 +1795,7 @@ def main():
                     if args.benchmark_depth_range
                     else None
                 ),
+                domains=tuple(args.domains),
             )
 
             if sanity_checker is not None:
@@ -1773,11 +1812,21 @@ def main():
                 producer="euler-eval",
                 producer_version=_get_version(),
                 modalities=("rgb",),
-                axes=_rgb_eval_axes(benchmark=has_benchmark),
+                axes=_rgb_eval_axes(
+                    benchmark=has_benchmark,
+                    domains=args.domains,
+                ),
                 descriptions=_RGB_EVAL_DESCRIPTIONS,
             )
             rgb_save = {
-                "metricSet": rgb_ns.metric_set_envelope("rgb"),
+                "metricSet": rgb_ns.metric_set_envelope(
+                    "rgb",
+                    metadata={
+                        "metric_sets": [
+                            metric_set.name for metric_set in selected_metric_sets
+                        ]
+                    },
+                ),
                 "dataset_info": rgb_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -1803,6 +1852,9 @@ def main():
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "fid_backend": args.rgb_fid_backend,
+                        "metric_sets": [
+                            metric_set.name for metric_set in selected_metric_sets
+                        ],
                         "batch_size": args.batch_size,
                         "num_workers": args.num_workers,
                         "benchmark_depth_range": (

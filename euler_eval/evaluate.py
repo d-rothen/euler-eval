@@ -39,6 +39,7 @@ from .data import (
     to_numpy_rgb,
     unproject_depth_to_points,
 )
+from .metric_sets import resolve_metric_sets
 from .metrics import (
     _BENCHMARK_BIN_NAMES,
     POINTS3D_ABS_THRESHOLDS,
@@ -2127,6 +2128,7 @@ def evaluate_rgb_samples(
     sky_mask_enabled: bool = False,
     fid_backend: str = "builtin",
     benchmark_depth_range: Optional[tuple[float, float]] = None,
+    domains: Optional[tuple[str, ...]] = None,
 ) -> dict:
     """Evaluate all RGB metrics from a MultiModalDataset.
 
@@ -2150,6 +2152,9 @@ def evaluate_rgb_samples(
         benchmark_depth_range: Optional ``(min_meters, max_meters)`` tuple.
             When set and depth is available, computes RGB photometric error
             for pixels within this range, subdivided into square-root-scaled bins.
+        domains: Optional additive metric-domain names. The ``core`` metric set
+            is always evaluated. For example, ``("dehazing",)`` adds the
+            prediction-only NIQE and FADE metrics.
 
     Returns:
         Dictionary containing aggregate and per-file metrics, and
@@ -2188,6 +2193,17 @@ def evaluate_rgb_samples(
             f"Invalid fid_backend '{fid_backend}'. "
             f"Expected one of {sorted(valid_fid_backends)}."
         )
+
+    metric_sets = resolve_metric_sets(domains)
+    domain_metric_sets = [
+        metric_set for metric_set in metric_sets if metric_set.category is not None
+    ]
+    domain_metric_values = {
+        metric_set.category: {
+            metric.name: [] for metric in metric_set.rgb_no_reference
+        }
+        for metric_set in domain_metric_sets
+    }
 
     has_depth = "gt_depth" in dataset.modality_paths() and depth_meta is not None
 
@@ -2334,6 +2350,27 @@ def evaluate_rgb_samples(
                     gt_masked,
                 )
 
+                # Domain metrics are no-reference measures of the prediction.
+                # They intentionally use the unmasked prediction: filling a
+                # masked region would alter the natural-scene statistics that
+                # NIQE and FADE are designed to measure.
+                domain_metrics = {}
+                for metric_set in domain_metric_sets:
+                    category_metrics = {}
+                    for metric in metric_set.rgb_no_reference:
+                        value = _safe_compute(
+                            f"{metric_set.name}.{metric.name}",
+                            entry_id,
+                            metric.compute,
+                            img_pred,
+                        )
+                        value = _none_if_nan(value)
+                        domain_metric_values[metric_set.category][metric.name].append(
+                            value
+                        )
+                        category_metrics[metric.name] = value
+                    domain_metrics[metric_set.category] = category_metrics
+
                 depth_binned_entry = None
                 if has_depth:
                     try:
@@ -2436,6 +2473,7 @@ def evaluate_rgb_samples(
                         else None,
                     },
                 }
+                rgb_metrics.update(domain_metrics)
                 if depth_binned_entry is not None:
                     rgb_metrics["depth_binned_photometric"] = depth_binned_entry
 
@@ -2580,6 +2618,15 @@ def evaluate_rgb_samples(
                     "relative_diff": _none_if_nan(high_freq_agg["relative_diff_mean"]),
                 },
             }
+
+            for metric_set in domain_metric_sets:
+                rgb_results[metric_set.category] = {
+                    metric.name: _safe_mean(
+                        domain_metric_values[metric_set.category][metric.name],
+                        f"{metric_set.name}.{metric.name}",
+                    )
+                    for metric in metric_set.rgb_no_reference
+                }
 
             if depth_binned_results:
                 rgb_results["depth_binned_photometric"] = aggregate_depth_binned_errors(

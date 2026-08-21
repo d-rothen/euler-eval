@@ -14,6 +14,7 @@ RGB metrics:
 - Tail errors (p95/p99)
 - High-frequency energy ratio
 - Depth-binned photometric error (MAE/MSE per depth bin)
+- Domain-specific no-reference metrics: NIQE and FADE (dehazing)
 
 Rays metrics:
 - ρ_A: AUC of angular accuracy curve between predicted and GT ray directions
@@ -41,6 +42,7 @@ from .depth_standard import (
     init_standard_depth_store,
     summarize_standard_depth_store,
 )
+from .fade import compute_fade
 from .fid_kid import FIDKIDMetric, compute_clean_fid
 from .gpu_depth_batch import GPUDepthMetricsBatcher
 from .gpu_image_batch import GPUImageMetricsBatcher
@@ -50,6 +52,7 @@ from .high_freq_energy import (
     compute_high_freq_energy_ratio,
 )
 from .lpips_metric import LPIPSMetric
+from .niqe import compute_niqe
 from .normal_consistency import (
     aggregate_normal_consistency,
     compute_normal_angles,
@@ -135,6 +138,8 @@ __all__ = [
     "compute_rgb_ssim",
     "RGBLPIPSMetric",
     "compute_sce",
+    "compute_niqe",
+    "compute_fade",
     # RGB depth-binned metrics
     "compute_depth_binned_mae",
     "compute_depth_binned_mse",

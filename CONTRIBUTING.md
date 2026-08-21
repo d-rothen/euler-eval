@@ -45,8 +45,11 @@ mathematical names (`K`, `R`, `T`, `P`), as does `torch.nn.functional as F`.
    the [programmatic validation API](docs/validation.md).
 2. **Export it** from `euler_eval/metrics/__init__.py`, adding it to `__all__`
    under the right group.
-3. **Wire it into the evaluator** in `euler_eval/evaluate.py`, and make sure the
-   value lands under the correct metric key.
+3. **Wire core metrics into the evaluator** in `euler_eval/evaluate.py`, and
+   make sure the value lands under the correct metric key. Domain-specific,
+   no-reference RGB metrics should instead be declared in
+   `euler_eval/metric_sets.py`; the shared evaluator loop will compute and
+   aggregate them.
 4. **Declare it** in `euler_eval/cli.py`: add a `MetricDescription` (unit,
    direction, bounds) to the relevant `_*_EVAL_DESCRIPTIONS` mapping, and extend
    the axis declarations if the metric introduces a new category. This is what
@@ -60,6 +63,11 @@ mathematical names (`K`, `R`, `T`, `P`), as does `torch.nn.functional as F`.
 If the metric needs a sanity threshold, add it to
 [`metrics_config.json`](metrics_config.json) with a `description` explaining
 what the check catches, and a validator in `euler_eval/sanity_checker.py`.
+
+New domains belong in `DOMAIN_METRIC_SETS`. Give each one a unique result
+category and describe every contributed metric in its `MetricSet`; this makes
+the repeatable `--domain` flag, namespace axis, metric descriptions, and output
+aggregation extend together rather than through separate CLI conditionals.
 
 ## Documentation
 

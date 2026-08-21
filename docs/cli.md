@@ -17,6 +17,7 @@ validation exits with status `1` before any dataset is opened.
 | `--batch-size` | `int` | `16` | Batch size for metrics that support batching |
 | `--num-workers` | `int` | `4` | Number of data-loading workers |
 | `--verbose`, `-v` | flag | off | Enable verbose output |
+| `--domain` | `{dehazing}` | none | Add a domain-specific metric set to the core metrics; repeatable |
 | `--skip-depth` | flag | off | Skip depth evaluation |
 | `--skip-rgb` | flag | off | Skip RGB evaluation |
 | `--skip-rays` | flag | off | Skip rays (spherical direction map) evaluation |
@@ -47,6 +48,9 @@ euler-eval config.json --depth-alignment affine
 # Use clean-fid for RGB FID
 euler-eval config.json --rgb-fid-backend clean-fid
 
+# Keep all core metrics and add no-reference dehazing metrics (NIQE + FADE)
+euler-eval config.json --domain dehazing
+
 # Benchmark depth/RGB metrics within a depth range (near/mid/far bins)
 euler-eval config.json --benchmark-depth-range 0.01 80.0
 
@@ -60,12 +64,26 @@ euler-eval example_points_3d_config.json --skip-depth --skip-rgb --skip-rays
 euler-eval example_points_3d_config.json --points-3d-alignment similarity
 ```
 
+## Metric domains
+
+The default metric set is named `core` and is always enabled. `--domain` adds
+metrics suited to a particular evaluation domain without removing or changing
+the core results. The flag is repeatable so future domains can be composed in a
+single run.
+
+`--domain dehazing` adds NIQE and FADE under `rgb.eval.dehazing`. Both are
+no-reference metrics: they score each predicted RGB image, do not use the paired
+GT image, and are averaged across valid images for the dataset result. They use
+the full prediction even with `--mask-sky`, because filling masked pixels would
+change the natural-scene statistics being measured. See [Metrics](metrics.md#dehazing-domain).
+
 ## What a run prints
 
 Before any dataset is opened, the run prints its own provenance — package
 version, Python, torch and CUDA versions — which is also what gets recorded in
 `meta` and, when configured, in the euler-train run. It then echoes the resolved
-device, alignment mode, FID backend and benchmark range, followed by one block
+device, alignment mode, selected metric sets, FID backend and benchmark range,
+followed by one block
 per prediction dataset and modality with the GT and prediction paths, the
 resolved modality metadata (such as `radial_depth`), and the number of matched
 pairs.

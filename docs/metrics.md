@@ -91,6 +91,29 @@ skipped. Results serialize under the `sparsedepth.eval` root:
 | High-frequency energy | `rgb.high_frequency` | HF energy preservation ratio and relative difference |
 | Depth-binned photometric | `rgb.depth_binned_photometric` | MAE/MSE in near/mid/far depth bins (needs GT depth) |
 
+### Dehazing domain
+
+Enable this additive metric set with `--domain dehazing`. The regular RGB
+metrics above remain enabled.
+
+| Metric | Key | Description |
+|---|---|---|
+| NIQE | `rgb.eval.dehazing.niqe` | Natural Image Quality Evaluator; distance from pristine natural-scene statistics (lower is better) |
+| FADE | `rgb.eval.dehazing.fade` | Fog Aware Density Evaluator; perceptual fog density from foggy/fog-free natural-scene models (lower is better) |
+
+Both metrics are no-reference: each value is computed from the predicted image
+alone, included in `per_file_metrics`, and the dataset value is the arithmetic
+mean of its valid per-image values. NIQE keeps the reference model's 96×96 block
+size and therefore reports no value for images smaller than 96×96. FADE crops
+the bottom and right edges to its 8×8 patch grid and requires at least 16×16
+pixels. Neither metric applies sky mask fills, which would create artificial
+edges and alter the statistics being scored.
+
+The pristine NIQE parameters and foggy/fog-free FADE parameters are bundled
+from the official LIVE software releases for deterministic offline evaluation;
+their provenance and terms are recorded in
+[`THIRD_PARTY_NOTICES.md`](../euler_eval/THIRD_PARTY_NOTICES.md).
+
 ## Rays
 
 | Metric | Key | Description |

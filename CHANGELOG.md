@@ -3,6 +3,17 @@
 Notable changes to euler-eval. Releases before 2.25.0 predate this file; see
 the git history for those.
 
+## Unreleased
+
+### Added
+
+- Additive evaluation metric sets selected with repeatable `--domain` flags;
+  the existing metrics remain the always-enabled `core` set.
+- `--domain dehazing` adds per-image and dataset-mean NIQE and FADE scores for
+  predicted RGB images. The official LIVE natural-scene model parameters are
+  bundled for deterministic offline evaluation and recorded in the output
+  metadata.
+
 ## 2.25.0
 
 ### Fixed
