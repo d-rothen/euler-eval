@@ -107,11 +107,16 @@ against a sparse pointcloud, e.g. raw LiDAR returns.
 
 The evaluator projects the sparse GT cloud into the prediction plane using
 `gt.intrinsics` and `gt.camera_extrinsics`, then computes pointwise depth
-metrics only at projected valid pixels. It also produces 3D (`points_3d`)
-metrics unless `--skip-points-3d` is set — the scored prediction is either a
-predicted `points_3d` map (similarity gauge) or a dense depth map unprojected
-with the GT intrinsics (affine gauge). If a dataset provides both, the
-`points_3d` map is preferred.
+metrics only at projected valid pixels. The resulting depth `eval.json` is an
+atomic `sparsedepth.eval` metric set; a depth prediction is not also unprojected
+and evaluated as `points_3d`.
+
+An explicit `datasets[].points_3d` prediction can be evaluated separately
+against the same sparse cloud. That evaluation uses the points-3D similarity
+gauge, writes an atomic `points3d.eval` metric set beside the point-map
+prediction, and is controlled by `--skip-points-3d`. If a dataset provides both
+depth and `points_3d`, each prediction modality gets its own `eval.json` at its
+own path.
 
 Sparse depth does not require segmentation GT. `gt.segmentation` is loaded only
 when `--mask-sky` is set, and then excludes sky pixels from projected-point

@@ -54,7 +54,7 @@ euler-eval config.json --domain dehazing
 # Benchmark depth/RGB metrics within a depth range (near/mid/far bins)
 euler-eval config.json --benchmark-depth-range 0.01 80.0
 
-# Dense depth against sparse pointcloud GT (pointwise + 3D metrics)
+# Dense depth against sparse pointcloud GT (pointwise sparse-depth metrics)
 euler-eval example_sparse_depth_config.json --skip-rgb --skip-rays
 
 # Per-pixel 3D point maps (predict-your-own-camera models)

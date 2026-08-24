@@ -147,7 +147,9 @@ emitted — dense-neighbourhood `geometric` metrics are skipped — and
 `cloud_distance` reports only the directed `gt→pred` side
 (completeness/recall), since a correct dense prediction legitimately contains
 many points far from any sparse GT return. Results serialize under
-`points3d.eval.{native,metric}`.
+`points3d.eval.{native,metric}`. They are computed only for an explicit
+`datasets[].points_3d` prediction; a depth prediction against the same sparse
+GT produces only the separate `sparsedepth.eval` metric set.
 
 ## Benchmark bins
 

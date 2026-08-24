@@ -109,10 +109,10 @@ straight out of the archive. Full schema: [Configuration](docs/configuration.md)
 | Modality | Config key | Scored against | Headline metrics |
 |---|---|---|---|
 | **Depth** | `depth`, `relative_depth`, `affine_depth` | dense GT depth | `absrel`…`delta3`, PSNR/SSIM/LPIPS/FID/KID, surface-normal consistency, depth-edge F1 |
-| **Sparse depth** | `depth` + `gt.sparse_depth` | a LiDAR-style point cloud, projected into the prediction plane | pointwise depth metrics at projected points, plus directed 3D completeness |
+| **Sparse depth** | `depth` + `gt.sparse_depth` | a LiDAR-style point cloud, projected into the prediction plane | pointwise depth metrics at projected points |
 | **RGB** | `rgb` | GT RGB | PSNR, SSIM, LPIPS, FID, SCE, edge F1, tail errors, HF energy ratio, depth-binned photometric error; optional NIQE/FADE dehazing metrics |
 | **Rays** | `rays` | GT ray direction map | ρ_A (angular-accuracy AUC), angular error, threshold percentages |
-| **Points-3D** | `points_3d` | GT point map, or GT depth unprojected on the fly | 3D EPE/RMSE/δ, radial-vs-lateral decomposition, true-3D normals and edge F1, Chamfer / F-score |
+| **Points-3D** | `points_3d` | GT point map, GT depth unprojected on the fly, or a sparse point cloud | 3D EPE/RMSE/δ, radial-vs-lateral decomposition, true-3D normals and edge F1, Chamfer / F-score |
 
 A run evaluates whichever modalities are configured on both sides; a depth-only
 prediction is a perfectly ordinary run. The full inventory, with the key each

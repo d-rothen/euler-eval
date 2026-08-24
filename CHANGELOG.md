@@ -5,6 +5,13 @@ the git history for those.
 
 ## Unreleased
 
+### Fixed
+
+- Sparse pointcloud evaluation now follows the configured prediction modality:
+  depth predictions emit only an atomic `sparsedepth.eval`, while sparse
+  points-3D metrics require an explicit `points_3d` prediction. This prevents an
+  implicitly derived `points3d.eval` from overwriting the depth `eval.json`.
+
 ### Added
 
 - Additive evaluation metric sets selected with repeatable `--domain` flags;
