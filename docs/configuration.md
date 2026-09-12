@@ -122,12 +122,10 @@ sky color in the mask dataset's `meta.sky_mask` (`[R, G, B]`) and returns a
 `(1, H, W)` tensor. Masks at another resolution follow the depth grid's crop
 rule or use nearest-neighbor resizing.
 
-`--sky-depth` applies to dense and sparse depth evaluation, including the 3D
-metrics derived from depth against sparse GT. GT and both native and aligned
-prediction branches are capped after depth conversion and affine fitting;
-predicted sky pixels are then set to the cap. Predicted sky pixels are excluded
-from the affine fit. In derived 3D evaluation, GT points are capped radially
-while preserving their ray directions. Benchmark bins use the capped GT depth.
+`--sky-depth` applies to dense and sparse depth evaluation. GT and both native
+and aligned prediction branches are capped after depth conversion and affine
+fitting; predicted sky pixels are then set to the cap. Predicted sky pixels are
+excluded from the affine fit. Benchmark bins use the capped GT depth.
 
 The cap also works without a predicted mask. Positive infinity is capped;
 NaNs and nonpositive depths remain invalid, except that masked prediction
@@ -147,11 +145,16 @@ against a sparse pointcloud, e.g. raw LiDAR returns.
 
 The evaluator projects the sparse GT cloud into the prediction plane using
 `gt.intrinsics` and `gt.camera_extrinsics`, then computes pointwise depth
-metrics only at projected valid pixels. It also produces 3D (`points_3d`)
-metrics unless `--skip-points-3d` is set — the scored prediction is either a
-predicted `points_3d` map (similarity gauge) or a dense depth map unprojected
-with the GT intrinsics (affine gauge). If a dataset provides both, the
-`points_3d` map is preferred.
+metrics only at projected valid pixels. The resulting depth `eval.json` is an
+atomic `sparsedepth.eval` metric set; a depth prediction is not also unprojected
+and evaluated as `points_3d`.
+
+An explicit `datasets[].points_3d` prediction can be evaluated separately
+against the same sparse cloud. That evaluation uses the points-3D similarity
+gauge, writes an atomic `points3d.eval` metric set beside the point-map
+prediction, and is controlled by `--skip-points-3d`. If a dataset provides both
+depth and `points_3d`, each prediction modality gets its own `eval.json` at its
+own path.
 
 Sparse depth does not require segmentation GT. `gt.segmentation` is loaded only
 when `--mask-sky` is set, and then excludes sky pixels from projected-point

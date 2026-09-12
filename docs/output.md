@@ -12,6 +12,12 @@ beside it, so zip-backed datasets stay self-contained.
 dataset as a whole, so when several modalities are evaluated for the same
 dataset the per-modality default locations are usually what you want.
 
+Each `eval.json` is atomic and declares one metric namespace. With
+`gt.sparse_depth`, a depth-family prediction writes only `sparsedepth.eval`; an
+explicit `points_3d` prediction writes only `points3d.eval` beside the point
+map. A depth prediction does not implicitly produce a second points-3D metric
+set.
+
 ## Anatomy of `eval.json`
 
 ```json
