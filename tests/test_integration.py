@@ -16,10 +16,12 @@ from euler_loading import Modality, MultiModalDataset
 from PIL import Image
 
 from euler_eval.data import (
+    build_depth_eval_dataset,
     get_depth_metadata,
     get_rgb_metadata,
     process_depth,
     to_numpy_depth,
+    to_numpy_mask,
     to_numpy_rgb,
 )
 from euler_eval.evaluate import _extract_hierarchy, _get_intrinsics_K, _get_sky_mask
@@ -515,3 +517,18 @@ class TestFullPipelineIntegration:
             hierarchy, fid = _extract_hierarchy(sample)
             assert len(hierarchy) >= 1
             assert fid in [f"{j:05d}" for j in range(NUM_FILES)]
+
+
+def test_prediction_sky_mask_generic_loader_and_id_pairing(indexed_sky_prediction):
+    paths = indexed_sky_prediction
+    dataset = build_depth_eval_dataset(
+        gt_depth_path=paths["gt"], pred_depth_path=paths["pred"],
+        pred_sky_mask_path=paths["sky_mask"],
+    )
+    assert len(dataset) == 2
+    for sample in dataset:
+        predicted_sky = to_numpy_mask(sample["pred_sky_mask"])
+        assert predicted_sky.shape == (2, 2)
+        assert predicted_sky.sum() == 1
+        np.testing.assert_array_equal(predicted_sky, to_numpy_depth(sample["gt"]) == 100)
+        assert "segmentation" not in sample

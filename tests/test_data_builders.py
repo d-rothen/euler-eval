@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from euler_eval import data
 
 
@@ -378,3 +380,43 @@ def test_modality_parses_inline_split_and_scope():
     assert modality.path == "/datasets/frame_camera_trainvaltest.zip"
     assert modality.split == "fog_day"
     assert modality.metadata_scope == "intrinsics"
+
+
+@pytest.mark.parametrize("sparse", [False, True])
+def test_depth_builder_pairs_predicted_sky_mask_by_id(monkeypatch, sparse):
+    _install_captured_dataset(monkeypatch)
+    kwargs = {
+        "pred_depth_path": "/predictions/depth",
+        "pred_sky_mask_path": "/predictions/shared.zip:test#scope=predicted_sky",
+    }
+    if sparse:
+        dataset = data.build_sparse_depth_eval_dataset(
+            gt_sparse_depth_path="/gt/lidar",
+            intrinsics_path="/gt/intrinsics",
+            camera_extrinsics_path="/gt/extrinsics",
+            **kwargs,
+        )
+    else:
+        dataset = data.build_depth_eval_dataset(gt_depth_path="/gt/depth", **kwargs)
+
+    mask = dataset.modalities["pred_sky_mask"]
+    _assert_modality(
+        mask, key="sky_mask", scope="predicted_sky", split="test", used_as="output"
+    )
+    assert mask.path == "/predictions/shared.zip"
+    assert mask.loader is None  # Resolved from the prediction's own metadata.
+    assert "pred_sky_mask" not in dataset.hierarchical_modalities
+
+
+def test_depth_builder_accepts_explicit_sky_mask_split(monkeypatch):
+    _install_captured_dataset(monkeypatch)
+    dataset = data.build_depth_eval_dataset(
+        gt_depth_path="/gt/depth",
+        pred_depth_path="/pred/depth",
+        pred_sky_mask_path="/pred/sky_mask",
+        pred_sky_mask_split="val",
+    )
+    _assert_modality(
+        dataset.modalities["pred_sky_mask"],
+        key="sky_mask", split="val", used_as="output",
+    )

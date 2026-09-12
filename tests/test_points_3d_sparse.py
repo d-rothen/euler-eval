@@ -582,3 +582,33 @@ class TestCliNamespace:
         assert "chamfer.median" in descs
         assert "recall" in descs
         assert "mae3d" in descs
+
+
+@pytest.mark.parametrize("alignment_mode", ["none", "auto_affine"])
+def test_depth_derived_sparse_points_use_sky_depth(alignment_mode):
+    K = np.eye(3, dtype=np.float32)
+    gt_depth = np.array([[2, 4], [8, 100]], dtype=np.float32)
+    gt_points = unproject_depth_to_points(gt_depth, K, depth_is_radial=True)
+    pred = gt_depth.copy()
+    if alignment_mode == "auto_affine":
+        pred /= 100.0
+    else:
+        pred[1, 0] = 200.0
+    pred[1, 1] = 0.9  # Sky estimate must not bias the affine fit.
+    sample = {
+        "id": "frame", "gt": gt_points.reshape(-1, 3), "pred": pred,
+        "pred_sky_mask": np.array([[False, False], [False, True]]),
+        "intrinsics": K, "camera_extrinsics": np.eye(4, dtype=np.float32),
+    }
+    result = evaluate_points_3d_sparse_samples(
+        [sample], pred_is_radial=True, num_workers=0,
+        alignment_mode=alignment_mode, sky_depth=5.0,
+    )
+
+    assert result["dataset_info"]["evaluated_points"] == 4
+    assert result["dataset_info"]["max_depth"] == 5.0
+    assert result["dataset_info"]["f_a_max_threshold"] == 0.25
+    metrics = result["points_3d_metric"] if alignment_mode == "auto_affine" else result["points_3d_native"]
+    assert metrics["point_error"]["pixel_pool"]["mae3d"] < 1e-5
+    assert metrics["cloud_distance"]["chamfer"]["completeness"] < 1e-5
+    np.testing.assert_array_equal(gt_depth, [[2, 4], [8, 100]])

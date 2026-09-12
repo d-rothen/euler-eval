@@ -1,6 +1,7 @@
 """Tests for sparse pointcloud depth projection and evaluation."""
 
 import numpy as np
+import pytest
 
 from euler_eval.data import (
     compose_sensor_to_camera_extrinsics,
@@ -298,3 +299,23 @@ def test_sparse_depth_per_file_reports_zero_valid_support():
     assert per_file["depth_metrics"]["valid_pixel_count"] == 0
     assert per_file["depth_metrics"]["absrel"] is None
     assert per_file["depth_metrics"]["rmse"] is None
+
+
+@pytest.mark.parametrize("with_mask", [False, True])
+def test_sparse_depth_caps_only_projected_pixels_and_fills_predicted_sky(with_mask):
+    sample = _OneSampleSparseDataset()[0]
+    sample["pred"][1, 1] = 20.0
+    sample["pred"][1, 2] = np.nan if with_mask else 10.0
+    if with_mask:
+        sample["pred_sky_mask"] = np.ones((1, 3, 3), dtype=bool)
+    result = evaluate_sparse_depth_samples(
+        [sample], pred_is_radial=True, num_workers=0,
+        alignment_mode="none", sky_depth=3.0, benchmark_depth_range=(1.0, 5.0),
+    )
+    assert result["dataset_info"]["evaluated_pixels"] == 2
+    assert result["sparse_depth_metric"]["standard"]["pixel_pool"]["mae"] == 0.0
+    per_file = result["per_file_metrics"]["files"][0]["metrics"]["sparse_depth_metric"]
+    assert per_file["depth_metrics"]["valid_pixel_count"] == 2
+    assert per_file["standard"]["mae"] == 0.0
+    benchmark = result["sparse_depth_benchmark"]["metric"]["all"]
+    assert benchmark["standard"]["pixel_pool"]["mae"] == 0.0

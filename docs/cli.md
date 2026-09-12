@@ -23,6 +23,7 @@ validation exits with status `1` before any dataset is opened.
 | `--skip-rays` | flag | off | Skip rays (spherical direction map) evaluation |
 | `--skip-points-3d` | flag | off | Skip points_3d (per-pixel 3D point map) evaluation |
 | `--mask-sky` | flag | off | Mask sky regions from metrics using GT segmentation |
+| `--sky-depth` | `float` | none | Cap GT and predicted depths in meters and fill predicted `sky_mask` pixels with this value; must be finite and positive |
 | `--no-sanity-check` | flag | off | Disable sanity checking of metric configurations |
 | `--metrics-config` | `str` | auto-detect | Path to `metrics_config.json` for sanity checking |
 | `--depth-alignment` | `{none,auto_affine,affine}` | `auto_affine` | Depth calibration mode ([details](alignment.md#depth-alignment)) |
@@ -38,6 +39,9 @@ euler-eval config.json --batch-size 32
 
 # Sky masking (requires gt.segmentation)
 euler-eval config.json --mask-sky -v
+
+# Cap depth at 100 m and fill predicted sky at 100 m (optional datasets[].sky_mask)
+euler-eval config.json --sky-depth 100
 
 # Only depth evaluation
 euler-eval config.json --skip-rgb --skip-rays --skip-points-3d

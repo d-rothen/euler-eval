@@ -3,7 +3,13 @@
 import numpy as np
 import torch
 
-from euler_eval.evaluate import _extract_hierarchy, _get_intrinsics_K, _get_sky_mask
+from euler_eval.evaluate import (
+    _apply_sky_depth,
+    _extract_hierarchy,
+    _get_intrinsics_K,
+    _get_prediction_sky_mask,
+    _get_sky_mask,
+)
 
 # ---------------------------------------------------------------------------
 # _get_sky_mask
@@ -176,3 +182,40 @@ class TestExtractHierarchy:
         hierarchy, file_id = _extract_hierarchy(sample)
         assert hierarchy == ["Scene01", "clone"]
         assert file_id == "00001"
+
+
+def test_prediction_sky_mask_resizes_boolean_tensor_with_nearest_neighbor():
+    mask = torch.tensor([[[True, False], [False, True]]])
+    result = _get_prediction_sky_mask(
+        {"pred_sky_mask": mask}, np.zeros((4, 4), dtype=np.float32)
+    )
+    np.testing.assert_array_equal(result, [
+        [True, True, False, False],
+        [True, True, False, False],
+        [False, False, True, True],
+        [False, False, True, True],
+    ])
+
+
+def test_prediction_sky_mask_follows_depth_crop():
+    mask = np.zeros((9, 9), dtype=bool)
+    mask[7:, 7:] = True
+    result = _get_prediction_sky_mask(
+        {"pred_sky_mask": mask}, np.zeros((8, 8), dtype=np.float32)
+    )
+    assert result.shape == (8, 8)
+    assert result.sum() == 1
+    assert result[7, 7]
+
+
+def test_sky_depth_preserves_invalid_values_except_when_filling_predicted_sky():
+    gt = np.array([[0, -1, np.nan, np.inf, 200, 10]], dtype=np.float32)
+    pred = np.array([[np.nan, -1, 2, np.inf, 0, 10]], dtype=np.float32)
+    sky = np.array([[True, False, False, False, True, False]])
+    capped_gt, capped_pred, aligned = _apply_sky_depth(gt, pred, pred, 50.0, sky)
+
+    np.testing.assert_equal(capped_gt, [[0, -1, np.nan, 50, 50, 10]])
+    np.testing.assert_equal(capped_pred, [[50, -1, 2, 50, 50, 10]])
+    assert aligned is capped_pred
+    assert np.isnan(pred[0, 0])
+    assert np.isinf(gt[0, 3])

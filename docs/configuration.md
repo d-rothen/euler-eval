@@ -89,6 +89,7 @@ would be ambiguous.
 | `depth.path` | no\* | Predicted dense metric depth; also used against sparse pointcloud GT |
 | `relative_depth.path` | no\* | Predicted dense relative depth (scale/shift alignment supported) |
 | `affine_depth.path` | no\* | Predicted dense affine depth (scale/shift alignment supported) |
+| `sky_mask.path` | no | Auxiliary predicted sky mask for a dense depth entry; used with `--sky-depth` |
 | `rays.path` | no\* | Predicted ray direction map dataset |
 | `points_3d.path` | no\* | Predicted per-pixel 3D point map `(H,W,3)` |
 | `output_file` | no | Custom results path (default: `eval.json` in the first modality path) |
@@ -99,6 +100,45 @@ Which entry you use is also a *declaration*: `relative_depth` and `affine_depth`
 tell the evaluator the prediction is not metric, which is what
 `--depth-alignment auto_affine` and `--points-3d-alignment auto` key off. See
 [Spaces & alignment](alignment.md).
+
+### Predicted sky depth
+
+Add a `sky_mask` entry alongside `depth`, `relative_depth`, or `affine_depth`
+and run with `--sky-depth 100` to evaluate predicted sky at 100 meters:
+
+```json
+{
+  "name": "model_with_sky",
+  "depth": { "path": "/data/model/depth" },
+  "sky_mask": { "path": "/data/model/sky_mask", "split": "test" }
+}
+```
+
+The sky mask is paired with GT and predicted depth by sample ID and hierarchy.
+It supports the same archive, split, and `#scope=` selectors as depth, defaulting
+to the `sky_mask` metadata scope. Its loader must return a boolean mask with
+**True meaning sky**. For example, `generic_dense_depth.sky_mask` uses the RGB
+sky color in the mask dataset's `meta.sky_mask` (`[R, G, B]`) and returns a
+`(1, H, W)` tensor. Masks at another resolution follow the depth grid's crop
+rule or use nearest-neighbor resizing.
+
+`--sky-depth` applies to dense and sparse depth evaluation, including the 3D
+metrics derived from depth against sparse GT. GT and both native and aligned
+prediction branches are capped after depth conversion and affine fitting;
+predicted sky pixels are then set to the cap. Predicted sky pixels are excluded
+from the affine fit. In derived 3D evaluation, GT points are capped radially
+while preserving their ray directions. Benchmark bins use the capped GT depth.
+
+The cap also works without a predicted mask. Positive infinity is capped;
+NaNs and nonpositive depths remain invalid, except that masked prediction
+pixels are filled even if their original depth is invalid. Sparse GT still
+contributes only at projected points. Predicted sky stays in the scores where
+GT is valid; `--mask-sky` separately excludes pixels using GT segmentation and
+can be combined with `--sky-depth`.
+
+Without `--sky-depth`, the predicted mask is not loaded and depth evaluation
+uses the usual uncapped values. The effective cap and mask source are recorded
+in `eval.json` under `meta.eval_params.sky_depth` and `meta.pred.sky_mask`.
 
 ## Sparse depth (pointcloud GT)
 

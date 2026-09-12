@@ -3,9 +3,11 @@
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 
 from euler_eval import cli
+from euler_eval.evaluate import evaluate_depth_samples, evaluate_sparse_depth_samples
 from euler_eval.metrics.fid_kid import FIDKIDMetric
 
 
@@ -129,3 +131,21 @@ def test_pad_collate_centers_variable_width_tensors():
     assert torch.all(batch[0, :, :, offset : offset + 400] == 1)
     assert torch.all(batch[0, :, :, offset + 400 :] == 0)
     assert torch.all(batch[1] == 2)
+
+
+@pytest.mark.parametrize("sky_depth", ["0", "-1", "nan", "inf", "-inf"])
+def test_cli_rejects_invalid_sky_depth_before_opening_config(monkeypatch, capsys, sky_depth):
+    monkeypatch.setattr(cli.sys, "argv", [
+        "euler-eval", "nonexistent.json", f"--sky-depth={sky_depth}",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 2
+    assert "--sky-depth: sky_depth must be a finite positive value" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("sky_depth", [0.0, -1.0, np.nan, np.inf, -np.inf])
+@pytest.mark.parametrize("evaluator", [evaluate_depth_samples, evaluate_sparse_depth_samples])
+def test_depth_api_rejects_invalid_sky_depth(evaluator, sky_depth):
+    with pytest.raises(ValueError, match="sky_depth must be a finite positive value"):
+        evaluator([], True, sky_depth=sky_depth)

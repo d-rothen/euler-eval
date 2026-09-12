@@ -7,6 +7,10 @@ the git history for those.
 
 ### Added
 
+- Predicted `sky_mask` inputs alongside dense depth and optional `--sky-depth`
+  capping/inpainting for dense depth, sparse depth, and depth-derived sparse 3D
+  evaluation. Sky pixels are filled after calibration and remain evaluated
+  unless excluded by GT validity or `--mask-sky`.
 - Additive evaluation metric sets selected with repeatable `--domain` flags;
   the existing metrics remain the always-enabled `core` set.
 - `--domain dehazing` adds per-image and dataset-mean NIQE and FADE scores for

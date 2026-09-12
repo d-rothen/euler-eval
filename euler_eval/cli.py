@@ -30,6 +30,7 @@ from .data import (
     get_rays_metadata,
     get_rgb_metadata,
     get_sparse_depth_metadata,
+    validate_sky_depth,
 )
 from .evaluate import (
     evaluate_depth_samples,
@@ -906,7 +907,16 @@ def validate_dataset_entry(entry: dict, index: int) -> None:
             "or 'points_3d.path'"
         )
 
-    for modality in ("rgb", *_PRED_DEPTH_KEYS, "rays", "points_3d"):
+    if "sky_mask" in entry:
+        if not isinstance(entry["sky_mask"], dict) or not entry["sky_mask"].get("path"):
+            raise ValueError(f"{label}.sky_mask must have a 'path' field")
+        if not has_depth:
+            raise ValueError(
+                f"{label}.sky_mask requires a dense depth prediction "
+                "('depth', 'relative_depth', or 'affine_depth')"
+            )
+
+    for modality in ("rgb", *_PRED_DEPTH_KEYS, "rays", "points_3d", "sky_mask"):
         if modality in entry and "path" in entry[modality]:
             p = normalize_modality_path(
                 entry[modality]["path"],
@@ -1167,6 +1177,17 @@ def main():
         help="Mask sky regions from metrics using GT segmentation",
     )
     parser.add_argument(
+        "--sky-depth",
+        type=float,
+        default=None,
+        metavar="METERS",
+        help=(
+            "Cap GT and predicted depths at this finite positive value after "
+            "conversion/alignment; fill predicted sky_mask pixels with it "
+            "(default: disabled)"
+        ),
+    )
+    parser.add_argument(
         "--no-sanity-check",
         action="store_true",
         help="Disable sanity checking of metric configurations",
@@ -1219,6 +1240,10 @@ def main():
     )
 
     args = parser.parse_args()
+    try:
+        validate_sky_depth(args.sky_depth)
+    except ValueError as e:
+        parser.error(f"--sky-depth: {e}")
 
     selected_metric_sets = resolve_metric_sets(args.domains)
 
@@ -1237,6 +1262,8 @@ def main():
     configure_torch_runtime(args.device)
     print_device_info(requested_device, args.device)
     print(f"Depth alignment: {args.depth_alignment}")
+    if args.sky_depth is not None:
+        print(f"Sky depth: {args.sky_depth} meters (depth cap and predicted sky fill)")
     print(f"RGB FID backend: {args.rgb_fid_backend}")
     print(
         "Metric sets: "
@@ -1320,6 +1347,11 @@ def main():
         ds_name = dataset_config["name"]
         pred_depth_key, pred_depth_config = _prediction_depth_entry(dataset_config)
         has_depth = pred_depth_config is not None
+        pred_sky_mask_config = (
+            dataset_config.get("sky_mask", {}) if args.sky_depth is not None else {}
+        )
+        pred_sky_mask_path = pred_sky_mask_config.get("path")
+        pred_sky_mask_split = pred_sky_mask_config.get("split")
         has_rgb = "rgb" in dataset_config and "path" in dataset_config["rgb"]
         has_rays = "rays" in dataset_config and "path" in dataset_config["rays"]
         has_points_3d = (
@@ -1364,6 +1396,8 @@ def main():
             depth_dataset = build_depth_eval_dataset(
                 gt_depth_path=gt_depth_path,
                 pred_depth_path=pred_depth_path,
+                pred_sky_mask_path=pred_sky_mask_path,
+                pred_sky_mask_split=pred_sky_mask_split,
                 calibration_path=calibration_path,
                 segmentation_path=segmentation_path,
                 pred_depth_metadata_scope=(
@@ -1392,6 +1426,7 @@ def main():
                 verbose=args.verbose,
                 sanity_checker=sanity_checker,
                 sky_mask_enabled=args.mask_sky,
+                sky_depth=args.sky_depth,
                 alignment_mode=args.depth_alignment,
                 benchmark_depth_range=(
                     tuple(args.benchmark_depth_range)
@@ -1452,6 +1487,7 @@ def main():
                         "split": pred_depth_split,
                         "entry": pred_depth_key,
                         "dimensions": depth_spatial.get("pred_dimensions"),
+                        "sky_mask": pred_sky_mask_config or None,
                     },
                     "spatial_alignment": {
                         "method": depth_spatial.get("method", "none"),
@@ -1463,6 +1499,7 @@ def main():
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "depth_alignment_mode": args.depth_alignment,
+                        "sky_depth": args.sky_depth,
                         "batch_size": args.batch_size,
                         "num_workers": args.num_workers,
                         "benchmark_depth_range": (
@@ -1555,6 +1592,8 @@ def main():
             sparse_depth_dataset = build_sparse_depth_eval_dataset(
                 gt_sparse_depth_path=gt_sparse_depth_path,
                 pred_depth_path=pred_depth_path,
+                pred_sky_mask_path=pred_sky_mask_path,
+                pred_sky_mask_split=pred_sky_mask_split,
                 intrinsics_path=intrinsics_path,
                 camera_extrinsics_path=camera_extrinsics_path,
                 lidar_extrinsics_path=lidar_extrinsics_path,
@@ -1585,6 +1624,7 @@ def main():
                 verbose=args.verbose,
                 sanity_checker=sanity_checker,
                 sky_mask_enabled=args.mask_sky,
+                sky_depth=args.sky_depth,
                 alignment_mode=args.depth_alignment,
                 benchmark_depth_range=(
                     tuple(args.benchmark_depth_range)
@@ -1640,6 +1680,7 @@ def main():
                         "split": pred_depth_split,
                         "entry": pred_depth_key,
                         "dimensions": sparse_depth_spatial.get("pred_dimensions"),
+                        "sky_mask": pred_sky_mask_config or None,
                     },
                     "calibration": {
                         "intrinsics_path": intrinsics_path,
@@ -1661,6 +1702,7 @@ def main():
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "depth_alignment_mode": args.depth_alignment,
+                        "sky_depth": args.sky_depth,
                         "num_workers": args.num_workers,
                         "benchmark_depth_range": (
                             list(args.benchmark_depth_range)
@@ -2222,6 +2264,8 @@ def main():
                 points_3d_sparse_dataset = build_sparse_depth_eval_dataset(
                     gt_sparse_depth_path=gt_sparse_depth_path,
                     pred_depth_path=p3s_pred_path,
+                    pred_sky_mask_path=pred_sky_mask_path,
+                    pred_sky_mask_split=pred_sky_mask_split,
                     intrinsics_path=intrinsics_path,
                     camera_extrinsics_path=camera_extrinsics_path,
                     lidar_extrinsics_path=lidar_extrinsics_path,
@@ -2281,6 +2325,7 @@ def main():
                 alignment_mode=p3s_alignment_mode,
                 input_space_hint=p3s_input_hint,
                 pred_is_depth=p3s_pred_is_depth,
+                sky_depth=args.sky_depth if p3s_pred_is_depth else None,
             )
 
             if sanity_checker is not None:
@@ -2338,6 +2383,9 @@ def main():
                         "entry": p3s_pred_entry,
                         "representation": "depth" if p3s_pred_is_depth else "points_3d",
                         "dimensions": p3s_spatial.get("pred_dimensions"),
+                        "sky_mask": (
+                            pred_sky_mask_config or None if p3s_pred_is_depth else None
+                        ),
                     },
                     "calibration": {
                         "intrinsics_path": intrinsics_path,
@@ -2357,6 +2405,7 @@ def main():
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "alignment_mode": p3s_alignment_mode,
+                        "sky_depth": args.sky_depth if p3s_pred_is_depth else None,
                         "num_workers": args.num_workers,
                     },
                 }),

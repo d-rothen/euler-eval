@@ -614,6 +614,12 @@ def align_to_prediction(gt: np.ndarray, pred: np.ndarray) -> np.ndarray:
     return result.astype(bool) if is_bool else result
 
 
+def validate_sky_depth(sky_depth: Optional[float]) -> None:
+    """Require a finite positive depth cap when sky-depth processing is enabled."""
+    if sky_depth is not None and (not np.isfinite(sky_depth) or sky_depth <= 0):
+        raise ValueError("sky_depth must be a finite positive value")
+
+
 def compute_scale_and_shift(
     pred: np.ndarray,
     gt: np.ndarray,
@@ -760,11 +766,14 @@ def build_depth_eval_dataset(
     segmentation_split: Optional[str] = None,
     pred_depth_metadata_scope: Optional[str] = None,
     segmentation_modality_key: str = "segmentation",
+    pred_sky_mask_path: Optional[str] = None,
+    pred_sky_mask_split: Optional[str] = None,
 ) -> MultiModalDataset:
     """Build a MultiModalDataset for depth evaluation.
 
     The returned dataset yields samples with keys ``"gt"``, ``"pred"``,
-    and optionally ``"calibration"`` and ``"segmentation"``.
+    and optionally ``"calibration"``, ``"segmentation"`` (GT), and
+    ``"pred_sky_mask"`` (prediction, True = sky).
 
     Loaders are resolved automatically from each dataset directory's
     ds-crawler index metadata.
@@ -781,6 +790,9 @@ def build_depth_eval_dataset(
         pred_depth_metadata_scope: Optional metadata scope for the prediction
             depth modality, useful when loading depth-like outputs such as
             ``relative_depth`` or ``affine_depth`` through the depth loader.
+        pred_sky_mask_path: Optional predicted ``sky_mask`` dataset, paired
+            with depth by sample ID using its own loader metadata.
+        pred_sky_mask_split: Optional split for the predicted sky mask.
 
     Returns:
         A MultiModalDataset instance.
@@ -799,6 +811,13 @@ def build_depth_eval_dataset(
             split=pred_depth_split,
         ),
     }
+    if pred_sky_mask_path is not None:
+        modalities["pred_sky_mask"] = _modality(
+            path=pred_sky_mask_path,
+            modality_key="sky_mask",
+            used_as="output",
+            split=pred_sky_mask_split,
+        )
 
     hierarchical = {}
     if calibration_path is not None:
@@ -840,6 +859,8 @@ def build_sparse_depth_eval_dataset(
     segmentation_split: Optional[str] = None,
     pred_depth_metadata_scope: Optional[str] = None,
     segmentation_modality_key: str = "segmentation",
+    pred_sky_mask_path: Optional[str] = None,
+    pred_sky_mask_split: Optional[str] = None,
 ) -> MultiModalDataset:
     """Build a MultiModalDataset for sparse pointcloud depth evaluation.
 
@@ -855,6 +876,8 @@ def build_sparse_depth_eval_dataset(
     such as ``relative_depth`` or ``affine_depth`` while still loading it
     as a dense depth map. Segmentation remains optional for sparse depth and is
     only loaded by callers that request sky masking.
+    ``pred_sky_mask_path`` optionally adds an ID-paired ``"pred_sky_mask"``
+    prediction (True = sky), with its own ``pred_sky_mask_split`` selector.
     """
     modalities = {
         "gt": _modality(
@@ -870,6 +893,13 @@ def build_sparse_depth_eval_dataset(
             split=pred_depth_split,
         ),
     }
+    if pred_sky_mask_path is not None:
+        modalities["pred_sky_mask"] = _modality(
+            path=pred_sky_mask_path,
+            modality_key="sky_mask",
+            used_as="output",
+            split=pred_sky_mask_split,
+        )
 
     hierarchical = _sparse_projection_hierarchical(
         intrinsics_path=intrinsics_path,

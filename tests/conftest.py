@@ -7,6 +7,9 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+from ds_crawler import build_dataset_head
+from ds_crawler.artifacts import save_output_artifacts
+from PIL import Image
 
 MOCK_FILES = Path(__file__).parent / "mock_files"
 
@@ -71,3 +74,50 @@ def mock_dataset():
         return ds
 
     return _make
+
+
+@pytest.fixture
+def indexed_sky_prediction(tmp_path):
+    """Real generic loader metadata for depth and an RGB-encoded sky mask."""
+    paths = {}
+    for name in ("gt", "pred", "sky_mask"):
+        root = tmp_path / name
+        root.mkdir()
+        paths[name] = str(root)
+        is_mask = name == "sky_mask"
+        modality = "sky_mask" if is_mask else "depth"
+        meta = {"sky_mask": [12, 34, 56]} if is_mask else {"radial_depth": True}
+        # Reverse mask order so pairing by position would score the wrong mask.
+        ids = ["second", "first"] if is_mask else ["first", "second"]
+        files = []
+        for frame_id in ids:
+            path = f"{frame_id}.png" if is_mask else f"{frame_id}.npy"
+            files.append({"path": path, "id": frame_id})
+            sky_index = (1, 1) if frame_id == "first" else (0, 0)
+            if is_mask:
+                rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+                rgb[sky_index] = meta["sky_mask"]
+                Image.fromarray(rgb).save(root / path)
+            else:
+                depth = np.array(
+                    [[10, 20], [30, 100]] if name == "gt" else [[10, 20], [80, 1]],
+                    dtype=np.float32,
+                )
+                if frame_id == "second":
+                    depth = np.flip(depth)
+                np.save(root / path, depth)
+        head = build_dataset_head(
+            dataset={"name": "sky_test"},
+            modality={"key": modality, "meta": meta},
+            addons={"euler_loading": {
+                "version": "1.0", "loader": "generic_dense_depth",
+                "function": modality,
+            }},
+        )
+        save_output_artifacts(root, {
+            "contract": {"kind": "dataset_index", "version": "1.0"},
+            "head_file": "dataset-head.json", "head": head,
+            "generator": {"name": "tests"}, "indexing": {}, "execution": {},
+            "index": {"files": files},
+        }, metadata_scope=modality)
+    return paths

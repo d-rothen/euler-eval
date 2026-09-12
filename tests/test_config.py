@@ -142,6 +142,42 @@ class TestValidateGtConfig:
 
 
 class TestValidateDatasetEntry:
+    @pytest.mark.parametrize("depth_key", ["depth", "relative_depth", "affine_depth"])
+    def test_valid_prediction_sky_mask(self, tmp_path, depth_key):
+        archive = tmp_path / "predictions.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr("dummy.txt", "x")
+        validate_dataset_entry({
+            "name": "with_sky",
+            depth_key: {"path": str(tmp_path)},
+            "sky_mask": {"path": f"{archive}:test#scope=sky_mask"},
+        }, 0)
+
+    def test_prediction_sky_mask_path_must_exist(self, tmp_path):
+        with pytest.raises(ValueError, match=r"datasets\[2\].sky_mask.path does not exist"):
+            validate_dataset_entry({
+                "name": "with_sky",
+                "depth": {"path": str(tmp_path)},
+                "sky_mask": {"path": str(tmp_path / "missing")},
+            }, 2)
+
+    @pytest.mark.parametrize("mask_entry", [None, {}, "mask", {"path": ""}])
+    def test_prediction_sky_mask_requires_path(self, tmp_path, mask_entry):
+        with pytest.raises(ValueError, match="sky_mask must have a 'path'"):
+            validate_dataset_entry({
+                "name": "with_sky",
+                "depth": {"path": str(tmp_path)},
+                "sky_mask": mask_entry,
+            }, 0)
+
+    def test_prediction_sky_mask_requires_dense_depth(self, tmp_path):
+        with pytest.raises(ValueError, match="sky_mask requires a dense depth"):
+            validate_dataset_entry({
+                "name": "with_sky",
+                "rgb": {"path": str(tmp_path)},
+                "sky_mask": {"path": str(tmp_path)},
+            }, 0)
+
     def test_valid_depth_only(self, tmp_path):
         depth_path = tmp_path / "depth"
         depth_path.mkdir()

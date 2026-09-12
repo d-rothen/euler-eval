@@ -38,6 +38,7 @@ from .data import (
     to_numpy_points_3d,
     to_numpy_rgb,
     unproject_depth_to_points,
+    validate_sky_depth,
 )
 from .metric_sets import resolve_metric_sets
 from .metrics import (
@@ -504,6 +505,48 @@ def _get_sky_mask(sample: dict) -> Optional[np.ndarray]:
     return ~sky  # invert: True = non-sky = valid
 
 
+def _get_prediction_sky_mask(
+    sample: dict, depth_pred: np.ndarray
+) -> Optional[np.ndarray]:
+    """Return the predicted sky mask on the depth grid (True = sky)."""
+    mask_data = sample.get("pred_sky_mask")
+    if mask_data is None:
+        return None
+    return align_to_prediction(to_numpy_mask(mask_data), depth_pred)
+
+
+def _apply_sky_depth(
+    depth_gt: np.ndarray,
+    depth_pred_raw: np.ndarray,
+    depth_pred_aligned: np.ndarray,
+    sky_depth: Optional[float],
+    pred_sky_mask: Optional[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Cap evaluation depths and fill predicted sky after conversion/alignment.
+
+    Preserve the shared prediction object when no alignment was needed, since
+    evaluators use its identity to avoid computing the same metrics twice.
+    NaNs and nonpositive values remain invalid unless filled by the sky mask;
+    positive infinity is truncated to the cap like any other larger depth.
+    """
+    if sky_depth is None:
+        return depth_gt, depth_pred_raw, depth_pred_aligned
+
+    def _cap_prediction(depth):
+        capped = np.minimum(depth, sky_depth)
+        if pred_sky_mask is not None:
+            capped[pred_sky_mask] = sky_depth
+        return capped
+
+    aligned_is_raw = depth_pred_aligned is depth_pred_raw
+    depth_gt = np.minimum(depth_gt, sky_depth)
+    depth_pred_raw = _cap_prediction(depth_pred_raw)
+    depth_pred_aligned = (
+        depth_pred_raw if aligned_is_raw else _cap_prediction(depth_pred_aligned)
+    )
+    return depth_gt, depth_pred_raw, depth_pred_aligned
+
+
 # Calibration extraction lives in euler_eval.calibration (imported above with
 # private aliases that tests import from euler_eval.evaluate).
 
@@ -582,6 +625,7 @@ def evaluate_depth_samples(
     alignment_mode: str = "auto_affine",
     benchmark_depth_range: Optional[tuple[float, float]] = None,
     input_space_hint: Optional[str] = None,
+    sky_depth: Optional[float] = None,
 ) -> dict:
     """Evaluate all depth metrics from a MultiModalDataset.
 
@@ -607,6 +651,11 @@ def evaluate_depth_samples(
         input_space_hint: Optional declaration from the prediction config.
             ``relative`` or ``affine`` makes ``auto_affine`` run alignment
             even when values are outside the normalized range.
+        sky_depth: Optional finite positive maximum evaluation depth in meters.
+            After conversion/alignment, cap GT and both prediction branches and
+            fill ``sample["pred_sky_mask"]`` pixels (True = sky) with this value.
+            Predicted sky is excluded from affine fitting, but remains scored
+            unless excluded by GT validity or ``sky_mask_enabled``.
 
     Returns:
         Dictionary containing depth aggregate/per-file metrics with:
@@ -614,6 +663,7 @@ def evaluate_depth_samples(
         backward-compatible canonical ``depth``, and optionally
         per-space ``depth_benchmark`` summaries.
     """
+    validate_sky_depth(sky_depth)
     valid_alignment_modes = {"none", "auto_affine", "affine"}
     if alignment_mode not in valid_alignment_modes:
         raise ValueError(
@@ -1095,6 +1145,11 @@ def evaluate_depth_samples(
 
                 depth_gt = process_depth(depth_gt, is_radial, intrinsics_K)
                 depth_pred_raw = process_depth(depth_pred, is_radial, intrinsics_K)
+                pred_sky_mask = (
+                    _get_prediction_sky_mask(sample, depth_pred)
+                    if sky_depth is not None
+                    else None
+                )
 
                 if alignment_mode == "none":
                     depth_pred_aligned = depth_pred_raw
@@ -1114,6 +1169,8 @@ def evaluate_depth_samples(
                         )
                         if sky_valid is not None:
                             fit_mask = fit_mask & sky_valid
+                        if pred_sky_mask is not None:
+                            fit_mask &= ~pred_sky_mask
                         depth_pred_aligned, s, t = compute_scale_and_shift(
                             fit_source,
                             depth_gt,
@@ -1129,6 +1186,11 @@ def evaluate_depth_samples(
                             print(f"  Fitted scale={s:.4f}, shift={t:.4f}")
                     else:
                         depth_pred_aligned = depth_pred_raw
+
+                depth_gt, depth_pred_raw, depth_pred_aligned = _apply_sky_depth(
+                    depth_gt, depth_pred_raw, depth_pred_aligned,
+                    sky_depth, pred_sky_mask,
+                )
 
                 if verbose and not logged_stats:
                     _log_sample_stats(depth_gt, depth_pred_aligned, "DEPTH")
@@ -1577,6 +1639,7 @@ def evaluate_sparse_depth_samples(
     alignment_mode: str = "auto_affine",
     benchmark_depth_range: Optional[tuple[float, float]] = None,
     input_space_hint: Optional[str] = None,
+    sky_depth: Optional[float] = None,
 ) -> dict:
     """Evaluate dense depth predictions against sparse pointcloud GT.
 
@@ -1584,7 +1647,10 @@ def evaluate_sparse_depth_samples(
     dense prediction image plane, and metrics are computed only at projected
     valid pixels. The emitted metric categories intentionally exclude dense
     image/geometric metrics such as SSIM, LPIPS, FID, normals, and edge F1.
+    ``sky_depth`` caps projected GT and predictions and fills optional
+    ``sample["pred_sky_mask"]`` pixels, as in :func:`evaluate_depth_samples`.
     """
+    validate_sky_depth(sky_depth)
     valid_alignment_modes = {"none", "auto_affine", "affine"}
     if alignment_mode not in valid_alignment_modes:
         raise ValueError(
@@ -1838,6 +1904,11 @@ def evaluate_sparse_depth_samples(
                 depth_pred_raw = process_depth(
                     depth_pred, pred_is_radial, intrinsics_K
                 )
+                pred_sky_mask = (
+                    _get_prediction_sky_mask(sample, depth_pred)
+                    if sky_depth is not None
+                    else None
+                )
 
                 if alignment_mode == "none":
                     depth_pred_aligned = depth_pred_raw
@@ -1853,6 +1924,8 @@ def evaluate_sparse_depth_samples(
                         )
                         if sky_valid is not None:
                             fit_mask &= sky_valid
+                        if pred_sky_mask is not None:
+                            fit_mask &= ~pred_sky_mask
                         depth_pred_aligned, s, t = compute_scale_and_shift(
                             fit_source,
                             sparse_depth_gt,
@@ -1868,6 +1941,11 @@ def evaluate_sparse_depth_samples(
                             print(f"  Fitted scale={s:.4f}, shift={t:.4f}")
                     else:
                         depth_pred_aligned = depth_pred_raw
+
+                sparse_depth_gt, depth_pred_raw, depth_pred_aligned = _apply_sky_depth(
+                    sparse_depth_gt, depth_pred_raw, depth_pred_aligned,
+                    sky_depth, pred_sky_mask,
+                )
 
                 if verbose and not logged_stats:
                     _log_sample_stats(sparse_depth_gt, depth_pred_aligned, "SPARSE DEPTH")
@@ -3498,6 +3576,7 @@ def evaluate_points_3d_sparse_samples(
     input_space_hint: Optional[str] = None,
     max_cloud_points: int = POINTS3D_DEFAULT_MAX_POINTS,
     pred_is_depth: bool = True,
+    sky_depth: Optional[float] = None,
 ) -> dict:
     """Evaluate a depth **or** ``points_3d`` prediction against sparse GT.
 
@@ -3555,6 +3634,9 @@ def evaluate_points_3d_sparse_samples(
         max_cloud_points: Per-cloud subsample cap for the cloud-distance query.
         pred_is_depth: Whether the prediction is a dense depth map (unprojected)
             or a native ``points_3d`` map (scored directly).
+        sky_depth: Optional depth cap and predicted-sky fill value, supported
+            for depth predictions. GT points are capped radially, preserving
+            their directions, to match the sparse-depth evaluation range.
 
     Returns:
         Dict shaped like :func:`evaluate_points_3d_samples`:
@@ -3562,6 +3644,9 @@ def evaluate_points_3d_sparse_samples(
         ``per_file_metrics``, ``dataset_info``, ``space_info`` and
         ``spatial_info``.
     """
+    validate_sky_depth(sky_depth)
+    if sky_depth is not None and not pred_is_depth:
+        raise ValueError("sky_depth is only supported for depth predictions")
     if pred_is_depth:
         valid_alignment_modes = {"none", "auto_affine", "affine"}
         valid_input_space_hints = {None, "relative", "affine"}
@@ -3614,6 +3699,8 @@ def evaluate_points_3d_sparse_samples(
                     dataset_max_depth,
                     float(np.max(finite_depths)),
                 )
+    if sky_depth is not None:
+        dataset_max_depth = min(dataset_max_depth, sky_depth)
     f_a_max_threshold = dataset_max_depth / 20.0
 
     resolved_domain: Optional[str] = fov_domain
@@ -3884,6 +3971,11 @@ def evaluate_points_3d_sparse_samples(
                     depth_pred_raw = process_depth(
                         depth_pred, pred_is_radial, intrinsics_K
                     )
+                    pred_sky_mask = (
+                        _get_prediction_sky_mask(sample, depth_pred)
+                        if sky_depth is not None
+                        else None
+                    )
                     if alignment_mode == "none":
                         depth_pred_aligned = depth_pred_raw
                     else:
@@ -3904,6 +3996,8 @@ def evaluate_points_3d_sparse_samples(
                             )
                             if sky_valid is not None:
                                 fit_mask &= sky_valid
+                            if pred_sky_mask is not None:
+                                fit_mask &= ~pred_sky_mask
                             depth_pred_aligned, s_fit, t_fit = compute_scale_and_shift(
                                 fit_source,
                                 gt_radial,
@@ -3919,6 +4013,19 @@ def evaluate_points_3d_sparse_samples(
                                 print(f"  Fitted scale={s_fit:.4f}, shift={t_fit:.4f}")
                         else:
                             depth_pred_aligned = depth_pred_raw
+
+                    if sky_depth is not None:
+                        # Keep actual GT ray directions, including subpixel
+                        # offsets, while limiting each point's radial depth.
+                        gt_scale = np.ones_like(gt_radial)
+                        beyond_cap = gt_radial > sky_depth
+                        gt_scale[beyond_cap] = sky_depth / gt_radial[beyond_cap]
+                        gt_point_map = gt_point_map * gt_scale[..., None]
+                        gt_cloud = gt_point_map[gt_valid]
+                    gt_radial, depth_pred_raw, depth_pred_aligned = _apply_sky_depth(
+                        gt_radial, depth_pred_raw, depth_pred_aligned,
+                        sky_depth, pred_sky_mask,
+                    )
 
                     if verbose and not logged_stats:
                         _log_sample_stats(gt_radial, depth_pred_raw, "SPARSE POINTS_3D")

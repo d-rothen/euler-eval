@@ -1,10 +1,13 @@
 """Tests for semantic depth-space output and calibration behavior."""
 
+import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 import euler_eval.evaluate as eval_mod
+from euler_eval import cli
 
 
 class _DummyDepthDataset:
@@ -435,3 +438,129 @@ def test_normal_consistency_without_calibration_reports_planar_depth(monkeypatch
     for kwargs in calls:
         assert kwargs["intrinsics"] is None
         assert kwargs["is_radial"] is False
+
+
+@pytest.mark.parametrize(
+    "sky_depth, with_mask, expected_mae",
+    [(None, True, 37.25), (50.0, False, 17.25), (50.0, True, 5.0)],
+)
+def test_sky_depth_reaches_all_depth_metric_outputs(
+    monkeypatch, sky_depth, with_mask, expected_mae
+):
+    _patch_depth_metrics(monkeypatch)
+    sample = {
+        "id": "frame",
+        "gt": np.array([[10, 20], [30, 100]], dtype=np.float32),
+        "pred": np.array([[10, 20], [80, 1]], dtype=np.float32),
+    }
+    original_pred = sample["pred"].copy()
+    if with_mask:
+        sample["pred_sky_mask"] = np.array([[False, False], [False, True]])
+    result = eval_mod.evaluate_depth_samples(
+        _DummyDepthDataset([sample]), is_radial=True, device="cpu",
+        num_workers=0, alignment_mode="none", sky_depth=sky_depth,
+        benchmark_depth_range=(1.0, 200.0),
+    )
+
+    assert result["depth_metric"]["standard"]["pixel_pool"]["mae"] == expected_mae
+    assert result["depth_metric"]["image_quality"]["lpips"] == expected_mae
+    assert result["depth_metric"]["image_quality"]["fid"] == expected_mae
+    per_file = result["per_file_metrics"]["files"][0]["metrics"]["depth_metric"]
+    assert per_file["standard"]["mae"] == expected_mae
+    benchmark = result["depth_benchmark"]["metric"]["all"]
+    assert benchmark["standard"]["pixel_pool"]["mae"] == expected_mae
+    np.testing.assert_array_equal(sample["pred"], original_pred)
+
+
+def test_predicted_sky_is_filled_after_affine_fit(monkeypatch):
+    _patch_depth_metrics(monkeypatch)
+    sample = {
+        "id": "frame",
+        "gt": np.array([[10, 20], [30, 100]], dtype=np.float32),
+        "pred": np.array([[0.1, 0.2], [0.3, 0.9]], dtype=np.float32),
+        "pred_sky_mask": np.array([[[False, False], [False, True]]]),
+    }
+    calls = []
+    original = eval_mod.compute_standard_depth_metrics
+
+    def capture(pred, gt, **kwargs):
+        calls.append((pred.copy(), gt.copy()))
+        return original(pred, gt, **kwargs)
+
+    monkeypatch.setattr(eval_mod, "compute_standard_depth_metrics", capture)
+    result = eval_mod.evaluate_depth_samples(
+        _DummyDepthDataset([sample]), is_radial=True, device="cpu",
+        num_workers=0, sky_depth=25.0,
+    )
+
+    assert result["space_info"]["input_space_detected"] == "normalized"
+    assert result["space_info"]["calibration_applied"]
+    assert len(calls) == 2
+    np.testing.assert_allclose(calls[0][0], [[0.1, 0.2], [0.3, 25.0]])
+    np.testing.assert_allclose(calls[1][0], [[10, 20], [25, 25]], atol=1e-5)
+    np.testing.assert_array_equal(calls[1][1], [[10, 20], [25, 25]])
+    assert result["depth_metric"]["standard"]["pixel_pool"]["mae"] < 1e-5
+
+
+def test_sky_depth_fills_after_planar_to_radial_conversion(monkeypatch):
+    _patch_depth_metrics(monkeypatch)
+    sample = {
+        "id": "frame",
+        "gt": np.array([[2, 20], [20, 20]], dtype=np.float32),
+        "pred": np.array([[2, 1], [20, 20]], dtype=np.float32),
+        "calibration": np.eye(3, dtype=np.float32),
+        "pred_sky_mask": np.array([[False, True], [False, False]]),
+    }
+    result = eval_mod.evaluate_depth_samples(
+        _DummyDepthDataset([sample]), is_radial=False, device="cpu",
+        num_workers=0, alignment_mode="none", sky_depth=10.0,
+    )
+    assert result["depth_metric"]["standard"]["pixel_pool"]["mae"] == 0.0
+
+
+def test_prediction_sky_fill_still_respects_gt_sky_exclusion(monkeypatch):
+    _patch_depth_metrics(monkeypatch)
+    sample = {
+        "id": "frame",
+        "gt": np.array([[10, 20], [30, 40]], dtype=np.float32),
+        "pred": np.array([[10, 20], [30, 1]], dtype=np.float32),
+        "pred_sky_mask": np.array([[False, False], [False, True]]),
+        "segmentation": np.array([[False, False], [False, True]]),
+    }
+    result = eval_mod.evaluate_depth_samples(
+        _DummyDepthDataset([sample]), is_radial=True, device="cpu",
+        num_workers=0, alignment_mode="none", sky_depth=50.0, sky_mask_enabled=True,
+    )
+    assert result["depth_metric"]["standard"]["pixel_pool"]["mae"] == 0.0
+
+
+@pytest.mark.parametrize("sky_depth", [None, 50.0])
+def test_cli_uses_prediction_sky_mask_and_records_provenance(
+    monkeypatch, indexed_sky_prediction, tmp_path, sky_depth
+):
+    _patch_depth_metrics(monkeypatch)
+    paths = indexed_sky_prediction
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "gt": {"depth": {"path": paths["gt"]}},
+        "datasets": [{
+            "name": "sky_prediction",
+            "depth": {"path": paths["pred"]},
+            "sky_mask": {"path": paths["sky_mask"]},
+        }],
+    }))
+    argv = [
+        "euler-eval", str(config_path), "--device", "cpu", "--num-workers", "0",
+        "--no-sanity-check", "--depth-alignment", "none",
+    ]
+    if sky_depth is not None:
+        argv.extend(["--sky-depth", str(sky_depth)])
+    monkeypatch.setattr(cli.sys, "argv", argv)
+    cli.main()
+
+    saved = json.loads((Path(paths["pred"]) / "eval.json").read_text())
+    expected_mae = 5.0 if sky_depth is not None else 37.25
+    assert saved["depth"]["eval"]["metric"]["standard"]["pixel_pool"]["mae"] == expected_mae
+    assert saved["meta"]["eval_params"].get("sky_depth") == sky_depth
+    if sky_depth is not None:
+        assert saved["meta"]["pred"]["sky_mask"] == {"path": paths["sky_mask"]}
