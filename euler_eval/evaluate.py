@@ -40,6 +40,13 @@ from .data import (
     unproject_depth_to_points,
     validate_sky_depth,
 )
+from .distribution_contract import finalize_distributions
+from .distributions import (
+    DistributionConfig,
+    ErrorDistribution,
+    depth_error_magnitudes,
+    point_error_magnitudes,
+)
 from .metric_sets import resolve_metric_sets
 from .metrics import (
     _BENCHMARK_BIN_NAMES,
@@ -106,11 +113,16 @@ SKY_MASK_ALIGNMENT_MAX_GT_PERCENTILE = 95.0
 # ---------------------------------------------------------------------------
 
 
-def _init_benchmark_bin_store(temp_dir: Path, prefix: str) -> dict:
+def _init_benchmark_bin_store(
+    temp_dir: Path, prefix: str, distribution_config: Optional[DistributionConfig] = None
+) -> dict:
     """Create streaming stores for a single benchmark depth bin."""
     return {
         "absrel_store": _StreamingValueStore(str(temp_dir / f"{prefix}_absrel.bin")),
         "rmse_store": _StreamingValueStore(str(temp_dir / f"{prefix}_rmse.bin")),
+        "distribution": (
+            ErrorDistribution(distribution_config) if distribution_config else None
+        ),
         "silog_store": _StreamingValueStore(str(temp_dir / f"{prefix}_silog.bin")),
         "silog_full_values": [],
         "normal_store": _StreamingValueStore(str(temp_dir / f"{prefix}_normal.bin")),
@@ -138,6 +150,11 @@ def _safe_mean_values(values: list) -> Optional[float]:
     return float(np.mean(valid)) if valid else None
 
 
+def _distribution_summary(store: dict) -> dict:
+    distribution = store.get("distribution")
+    return {"distributions": distribution.summary()} if distribution is not None else {}
+
+
 def _build_benchmark_bin_summary(store: dict) -> dict:
     """Build aggregate metric summary for a single benchmark depth bin."""
     absrel_median, absrel_p90 = store["absrel_store"].quantiles([0.5, 0.9])
@@ -158,6 +175,7 @@ def _build_benchmark_bin_summary(store: dict) -> dict:
         pct_30 = float("nan")
 
     return {
+        **_distribution_summary(store),
         "standard": summarize_standard_depth_store(store["standard_store"]),
         "depth_metrics": {
             "absrel": {"median": absrel_median, "p90": absrel_p90},
@@ -626,6 +644,7 @@ def evaluate_depth_samples(
     benchmark_depth_range: Optional[tuple[float, float]] = None,
     input_space_hint: Optional[str] = None,
     sky_depth: Optional[float] = None,
+    distribution_config: Optional[DistributionConfig] = None,
 ) -> dict:
     """Evaluate all depth metrics from a MultiModalDataset.
 
@@ -656,6 +675,8 @@ def evaluate_depth_samples(
             fill ``sample["pred_sky_mask"]`` pixels (True = sky) with this value.
             Predicted sky is excluded from affine fitting, but remains scored
             unless excluded by GT validity or ``sky_mask_enabled``.
+        distribution_config: Enable RMSE error-magnitude histograms with shared
+            bins, per sample and pooled over valid pixels. Disabled by default.
 
     Returns:
         Dictionary containing depth aggregate/per-file metrics with:
@@ -695,6 +716,9 @@ def evaluate_depth_samples(
             "pred_depth_paths": [],
             "absrel_store": _StreamingValueStore(str(temp_dir / f"{name}_absrel.bin")),
             "rmse_store": _StreamingValueStore(str(temp_dir / f"{name}_rmse.bin")),
+            "distribution": (
+                ErrorDistribution(distribution_config) if distribution_config else None
+            ),
             "silog_store": _StreamingValueStore(str(temp_dir / f"{name}_silog.bin")),
             "normal_store": _StreamingValueStore(str(temp_dir / f"{name}_normal.bin")),
             "normal_below_11_25": 0,
@@ -756,6 +780,10 @@ def evaluate_depth_samples(
         edge_f1 = compute_depth_edge_f1(depth_pred, depth_gt, valid_mask=valid_mask)
 
         return {
+            "distribution_errors": (
+                depth_error_magnitudes(depth_pred, depth_gt, valid_mask)
+                if distribution_config else None
+            ),
             "psnr_val": psnr_val,
             "psnr_meta": psnr_meta,
             "ssim_val": ssim_val,
@@ -778,6 +806,10 @@ def evaluate_depth_samples(
         }
 
     def _append_metrics(store: dict, metrics: dict, pred_depth_path: str) -> None:
+        if store["distribution"] is not None:
+            metrics["distributions"] = store["distribution"].add(
+                metrics.pop("distribution_errors")
+            )
         store["psnr_values"].append(metrics["psnr_val"])
         store["ssim_values"].append(metrics["ssim_val"])
         store["lpips_values"].append(metrics["lpips_val"])
@@ -850,6 +882,7 @@ def evaluate_depth_samples(
             pct_30 = float("nan")
 
         return {
+            **_distribution_summary(store),
             "image_quality": {
                 "psnr": _safe_mean(store["psnr_values"]),
                 "ssim": _safe_mean(store["ssim_values"]),
@@ -891,6 +924,10 @@ def evaluate_depth_samples(
         edge_f1 = metrics["edge_f1"]
 
         return {
+            **(
+                {"distributions": metrics["distributions"]}
+                if distribution_config else {}
+            ),
             "image_quality": {
                 "psnr": float(metrics["psnr_val"])
                 if np.isfinite(metrics["psnr_val"])
@@ -1052,11 +1089,15 @@ def evaluate_depth_samples(
             )
             benchmark_stores = {
                 "native": {
-                    bn: _init_benchmark_bin_store(temp_dir, f"bench_native_{bn}")
+                    bn: _init_benchmark_bin_store(
+                        temp_dir, f"bench_native_{bn}", distribution_config
+                    )
                     for bn in _BENCHMARK_BIN_NAMES
                 },
                 "metric": {
-                    bn: _init_benchmark_bin_store(temp_dir, f"bench_metric_{bn}")
+                    bn: _init_benchmark_bin_store(
+                        temp_dir, f"bench_metric_{bn}", distribution_config
+                    )
                     for bn in _BENCHMARK_BIN_NAMES
                 },
             }
@@ -1400,6 +1441,12 @@ def evaluate_depth_samples(
 
                             bm_store["absrel_store"].append(bm_absrel)
                             bm_store["rmse_store"].append(np.sqrt(bm_rmse))
+                            if bm_store["distribution"] is not None:
+                                bm_store["distribution"].add(
+                                    depth_error_magnitudes(
+                                        depth_pred_raw, depth_gt, native_bin_mask
+                                    )
+                                )
                             bm_store["silog_store"].append(bm_silog_arr)
                             bm_store["silog_full_values"].append(bm_silog_val)
                             append_standard_depth_metrics(
@@ -1463,6 +1510,12 @@ def evaluate_depth_samples(
 
                                 bm_store["absrel_store"].append(bm_absrel)
                                 bm_store["rmse_store"].append(np.sqrt(bm_rmse))
+                                if bm_store["distribution"] is not None:
+                                    bm_store["distribution"].add(
+                                        depth_error_magnitudes(
+                                            depth_pred_aligned, depth_gt, metric_bin_mask
+                                        )
+                                    )
                                 bm_store["silog_store"].append(bm_silog_arr)
                                 bm_store["silog_full_values"].append(bm_silog_val)
                                 append_standard_depth_metrics(
@@ -1611,7 +1664,7 @@ def evaluate_depth_samples(
                     else None,
                 },
             }
-            return result
+            return finalize_distributions(result, distribution_config, "rmse", "depth")
         finally:
             for branch_store in stores.values():
                 branch_store["absrel_store"].close()
@@ -1640,6 +1693,7 @@ def evaluate_sparse_depth_samples(
     benchmark_depth_range: Optional[tuple[float, float]] = None,
     input_space_hint: Optional[str] = None,
     sky_depth: Optional[float] = None,
+    distribution_config: Optional[DistributionConfig] = None,
 ) -> dict:
     """Evaluate dense depth predictions against sparse pointcloud GT.
 
@@ -1649,6 +1703,8 @@ def evaluate_sparse_depth_samples(
     image/geometric metrics such as SSIM, LPIPS, FID, normals, and edge F1.
     ``sky_depth`` caps projected GT and predictions and fills optional
     ``sample["pred_sky_mask"]`` pixels, as in :func:`evaluate_depth_samples`.
+    ``distribution_config`` enables per-sample and pooled RMSE histograms of
+    the evaluated projected pixels, using the same bins in every space.
     """
     validate_sky_depth(sky_depth)
     valid_alignment_modes = {"none", "auto_affine", "affine"}
@@ -1674,6 +1730,9 @@ def evaluate_sparse_depth_samples(
             "pred_depth_paths": [],
             "absrel_store": _StreamingValueStore(str(temp_dir / f"{name}_absrel.bin")),
             "rmse_store": _StreamingValueStore(str(temp_dir / f"{name}_rmse.bin")),
+            "distribution": (
+                ErrorDistribution(distribution_config) if distribution_config else None
+            ),
             "silog_store": _StreamingValueStore(str(temp_dir / f"{name}_silog.bin")),
             "standard_store": init_standard_depth_store(),
         }
@@ -1695,6 +1754,10 @@ def evaluate_sparse_depth_samples(
             depth_pred, depth_gt, valid_mask=valid_mask
         )
         return {
+            "distribution_errors": (
+                depth_error_magnitudes(depth_pred, depth_gt, valid_mask)
+                if distribution_config else None
+            ),
             "absrel_arr": absrel_arr,
             "absrel_meta": absrel_meta,
             "rmse_arr": rmse_arr,
@@ -1706,6 +1769,10 @@ def evaluate_sparse_depth_samples(
         }
 
     def _append_sparse_metrics(store: dict, metrics: dict, pred_depth_path: str) -> None:
+        if store["distribution"] is not None:
+            metrics["distributions"] = store["distribution"].add(
+                metrics.pop("distribution_errors")
+            )
         store["silog_full_values"].append(metrics["silog_full"])
         store["pred_depth_paths"].append(pred_depth_path)
         append_standard_depth_metrics(
@@ -1745,6 +1812,7 @@ def evaluate_sparse_depth_samples(
         rmse_median, rmse_p90 = store["rmse_store"].quantiles([0.5, 0.9])
         silog_median, silog_p90 = store["silog_store"].quantiles([0.5, 0.9])
         return {
+            **_distribution_summary(store),
             "standard": summarize_standard_depth_store(store["standard_store"]),
             "depth_metrics": {
                 "absrel": {"median": absrel_median, "p90": absrel_p90},
@@ -1761,6 +1829,10 @@ def evaluate_sparse_depth_samples(
         absrel_arr = metrics["absrel_arr"]
         rmse_arr = metrics["rmse_arr"]
         return {
+            **(
+                {"distributions": metrics["distributions"]}
+                if distribution_config else {}
+            ),
             "standard": {
                 key: float(value) if np.isfinite(value) else None
                 for key, value in metrics["standard_metrics"].items()
@@ -2173,7 +2245,7 @@ def evaluate_sparse_depth_samples(
                     else None,
                 },
             }
-            return result
+            return finalize_distributions(result, distribution_config, "rmse", "sparse_depth")
         finally:
             for branch_store in stores.values():
                 branch_store["absrel_store"].close()
@@ -3052,6 +3124,7 @@ def evaluate_points_3d_samples(
     max_cloud_points: int = POINTS3D_DEFAULT_MAX_POINTS,
     gt_is_depth: bool = False,
     gt_depth_is_radial: bool = True,
+    distribution_config: Optional[DistributionConfig] = None,
 ) -> dict:
     """Evaluate per-pixel 3D point map (``points_3d``) predictions.
 
@@ -3083,6 +3156,8 @@ def evaluate_points_3d_samples(
         input_space_hint: Optional declared input space (``'metric'`` or
             ``'relative'``) that drives ``auto`` alignment.
         max_cloud_points: Per-cloud subsample cap for the cloud_distance KD-tree.
+        distribution_config: Optional shared bins for per-sample and pooled
+            ``rmse3d.distribution`` counts of Euclidean correspondence errors.
 
     Returns:
         Dict with ``points_3d_native``/``points_3d_metric``/``points_3d``
@@ -3144,6 +3219,10 @@ def evaluate_points_3d_samples(
             "edge_images": [],
             "cloud_images": [],
             "e_store": _StreamingValueStore(str(temp_dir / f"{name}_e.bin")),
+            "distribution": (
+                ErrorDistribution(distribution_config, "rmse3d")
+                if distribution_config else None
+            ),
             "rel_store": _StreamingValueStore(str(temp_dir / f"{name}_rel.bin")),
             "normal_store": _StreamingValueStore(str(temp_dir / f"{name}_normal.bin")),
             "acc_counts": {tau: 0 for tau in POINTS3D_ABS_THRESHOLDS},
@@ -3209,7 +3288,7 @@ def evaluate_points_3d_samples(
 
         cloud = _reduce_dicts(store["cloud_images"], np.mean)
 
-        summary: dict = {}
+        summary: dict = _distribution_summary(store)
         if point_error:
             summary["point_error"] = point_error
         if decomposition:
@@ -3366,10 +3445,13 @@ def evaluate_points_3d_samples(
                         pv_sp = apply_point_transform(pv, scale, rot, trans)
 
                     pe = dec = cd = ef = None
+                    distribution_errors = np.empty(0)
                     per_img_normal_mean = None
                     if pv_sp.shape[0] > 0:
                         st = stores[sp]
                         dd = decompose_point_errors(pv_sp, gv)
+                        if distribution_config is not None:
+                            distribution_errors = point_error_magnitudes(pv_sp, gv)
                         pe = compute_point_error_metrics(
                             dd["euclidean"], dd["relative"]
                         )
@@ -3425,6 +3507,10 @@ def evaluate_points_3d_samples(
                             st["cloud_images"].append(cd)
 
                     fval: dict = {}
+                    if stores[sp]["distribution"] is not None:
+                        fval["distributions"] = stores[sp]["distribution"].add(
+                            distribution_errors
+                        )
                     if pe:
                         fval["point_error"] = pe
                     dval = dict(dec) if dec else {}
@@ -3507,7 +3593,7 @@ def evaluate_points_3d_samples(
             canonical_summary = metric_summary if emit_metric else native_summary
             emitted_spaces = ["native"] + (["metric"] if emit_metric else [])
 
-            return {
+            result = {
                 "points_3d_native": native_summary,
                 "points_3d_metric": metric_summary,
                 "points_3d": canonical_summary,
@@ -3555,6 +3641,7 @@ def evaluate_points_3d_samples(
                     else None,
                 },
             }
+            return finalize_distributions(result, distribution_config, "rmse3d", "points_3d")
         finally:
             for st in stores.values():
                 st["e_store"].close()
@@ -3577,10 +3664,13 @@ def evaluate_points_3d_sparse_samples(
     max_cloud_points: int = POINTS3D_DEFAULT_MAX_POINTS,
     pred_is_depth: bool = True,
     sky_depth: Optional[float] = None,
+    distribution_config: Optional[DistributionConfig] = None,
 ) -> dict:
     """Evaluate a depth **or** ``points_3d`` prediction against sparse GT.
 
     The sparse-LiDAR counterpart of :func:`evaluate_points_3d_samples`.
+    ``distribution_config`` enables per-sample and pooled ``rmse3d`` histograms
+    of Euclidean errors at the evaluated projected correspondences.
     The ground truth is a sparse
     point cloud (``gt.sparse_depth``), transformed into the camera frame and
     projected into the prediction plane to yield both a visible GT point cloud
@@ -3714,6 +3804,10 @@ def evaluate_points_3d_sparse_samples(
             "dec_images": [],
             "cloud_images": [],
             "e_store": _StreamingValueStore(str(temp_dir / f"p3ds_{name}_e.bin")),
+            "distribution": (
+                ErrorDistribution(distribution_config, "rmse3d")
+                if distribution_config else None
+            ),
             "rel_store": _StreamingValueStore(str(temp_dir / f"p3ds_{name}_rel.bin")),
             "acc_counts": {tau: 0 for tau in POINTS3D_ABS_THRESHOLDS},
             "acc_rel_counts": {tau: 0 for tau in POINTS3D_REL_THRESHOLDS},
@@ -3756,7 +3850,7 @@ def evaluate_points_3d_sparse_samples(
 
         cloud = _reduce_metric_dicts(store["cloud_images"], np.mean)
 
-        summary: dict = {}
+        summary: dict = _distribution_summary(store)
         if point_error:
             summary["point_error"] = point_error
         if decomposition:
@@ -3778,10 +3872,13 @@ def evaluate_points_3d_sparse_samples(
         corr_valid = gt_valid & pred_ok
 
         fval: dict = {}
+        distribution_errors = np.empty(0)
         pv = pred_map[corr_valid]
         gv = gt_point_map[corr_valid]
         if pv.shape[0] > 0:
             dd = decompose_point_errors(pv, gv)
+            if distribution_config is not None:
+                distribution_errors = point_error_magnitudes(pv, gv)
             pe = compute_point_error_metrics(dd["euclidean"], dd["relative"])
             dec = compute_decomposition_metrics(dd["radial"], dd["lateral"])
             store["e_store"].append(dd["euclidean"])
@@ -3797,6 +3894,8 @@ def evaluate_points_3d_sparse_samples(
             if dec:
                 store["dec_images"].append(dec)
                 fval["error_decomposition"] = dict(dec)
+        if store["distribution"] is not None:
+            fval["distributions"] = store["distribution"].add(distribution_errors)
         cd = compute_sparse_cloud_distance_metrics(
             pred_map[pred_ok],
             gt_cloud,
@@ -4222,7 +4321,7 @@ def evaluate_points_3d_sparse_samples(
             canonical_summary = metric_summary if emit_metric else native_summary
             emitted_spaces = ["native"] + (["metric"] if emit_metric else [])
 
-            return {
+            result = {
                 "points_3d_native": native_summary,
                 "points_3d_metric": metric_summary,
                 "points_3d": canonical_summary,
@@ -4274,6 +4373,7 @@ def evaluate_points_3d_sparse_samples(
                     else None,
                 },
             }
+            return finalize_distributions(result, distribution_config, "rmse3d", "points_3d")
         finally:
             for st in stores.values():
                 st["e_store"].close()

@@ -30,6 +30,15 @@ validation exits with status `1` before any dataset is opened.
 | `--points-3d-alignment` | `{none,scale,similarity,auto}` | `auto` | points_3d gauge alignment ([details](alignment.md#points-3d-gauge-alignment)) |
 | `--rgb-fid-backend` | `{builtin,clean-fid}` | `builtin` | RGB FID backend; `clean-fid` requires the `[fid]` extra |
 | `--benchmark-depth-range` | `float float` | none | Depth range `[MIN, MAX]` (m) for near/mid/far benchmark bins ([details](alignment.md#benchmark-depth-bins)) |
+| `--distributions` | flag | off | Enable per-sample and pixel-pool RMSE error histograms for depth and point maps ([details](distributions.md)) |
+| `--no-distributions` | flag | off | Disable histograms, overriding config settings |
+| `--distribution-bins` | `int` | `50` | Total histogram bins, including tails; minimum 3 |
+| `--distribution-scale` | `{log,linear}` | `log` | Spacing of finite histogram bins |
+| `--distribution-range` | `float float` | `0.001 100` | Finite error range `[MIN, MAX)` in evaluated space units; zero/small-error and overflow bins retain the tails |
+
+Histogram settings can also be specified in the config's `distributions`
+section. A bin, scale or range flag enables histograms and overrides that
+config field; `--no-distributions` disables them regardless.
 
 ## Examples
 
@@ -57,6 +66,9 @@ euler-eval config.json --domain dehazing
 
 # Benchmark depth/RGB metrics within a depth range (near/mid/far bins)
 euler-eval config.json --benchmark-depth-range 0.01 80.0
+
+# Per-image and pooled RMSE error histograms with shared logarithmic bins
+euler-eval config.json --distributions --distribution-bins 64
 
 # Dense depth against sparse pointcloud GT (pointwise sparse-depth metrics)
 euler-eval example_sparse_depth_config.json --skip-rgb --skip-rays

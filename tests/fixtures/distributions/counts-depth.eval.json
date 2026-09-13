@@ -1,0 +1,324 @@
+{
+  "metricSet": {
+    "metricNamespace": "depth.eval",
+    "producerKey": "euler-eval",
+    "producerVersion": "contract-fixture-v1",
+    "sourceKind": "computed",
+    "metadata": {
+      "input_space_detected": "relative",
+      "calibration_applied": true,
+      "calibration_mode": "affine",
+      "emitted_spaces": [
+        "native",
+        "metric"
+      ],
+      "canonical_space": "metric",
+      "distributions": {
+        "schemaVersion": 1,
+        "binSets": {
+          "error_magnitude": {
+            "binEdges": [
+              0.0,
+              1.0,
+              2.0,
+              3.0,
+              null
+            ],
+            "interval": "[left, right)",
+            "spacing": "linear"
+          }
+        },
+        "definitions": {
+          "rmse_native_error_count": {
+            "binSetId": "error_magnitude",
+            "metric": "rmse",
+            "space": "native",
+            "axes": {
+              "x": {
+                "quantity": "absolute_error",
+                "unit": "unspecified"
+              },
+              "y": {
+                "quantity": "observations",
+                "statistic": "count",
+                "unit": "1"
+              }
+            },
+            "observationUnit": "pixel",
+            "merge": "sum"
+          },
+          "rmse_metric_error_count": {
+            "binSetId": "error_magnitude",
+            "metric": "rmse",
+            "space": "metric",
+            "axes": {
+              "x": {
+                "quantity": "absolute_error",
+                "unit": "m"
+              },
+              "y": {
+                "quantity": "observations",
+                "statistic": "count",
+                "unit": "1"
+              }
+            },
+            "observationUnit": "pixel",
+            "merge": "sum"
+          }
+        }
+      }
+    },
+    "axes": {
+      "space": {
+        "position": 0,
+        "optional": false,
+        "values": [
+          "native",
+          "metric"
+        ],
+        "description": "Depth space semantics"
+      },
+      "category": {
+        "position": 1,
+        "optional": true,
+        "values": [
+          "image_quality",
+          "standard",
+          "depth_metrics",
+          "geometric_metrics",
+          "distributions"
+        ],
+        "description": "Metric category"
+      },
+      "reduction": {
+        "position": 2,
+        "optional": true,
+        "values": [
+          "image_mean",
+          "image_median",
+          "pixel_pool"
+        ],
+        "description": "Dataset reduction mode"
+      }
+    },
+    "metricDescriptions": {
+      "rmse.distribution": {
+        "min": 0.0,
+        "unit": "pixels",
+        "displayName": "RMSE error magnitude histogram"
+      }
+    }
+  },
+  "dataset_info": {
+    "num_pairs": 3,
+    "gt_name": "synthetic",
+    "pred_name": "contract-fixture"
+  },
+  "depth": {
+    "eval": {
+      "native": {
+        "distributions": {
+          "pixel_pool": {
+            "rmse": {
+              "distribution": {
+                "type": "distribution",
+                "definitionId": "rmse_native_error_count",
+                "values": [
+                  0,
+                  0,
+                  0,
+                  6
+                ]
+              }
+            }
+          }
+        },
+        "standard": {
+          "pixel_pool": {
+            "rmse": 2.0
+          }
+        }
+      },
+      "metric": {
+        "distributions": {
+          "pixel_pool": {
+            "rmse": {
+              "distribution": {
+                "type": "distribution",
+                "definitionId": "rmse_metric_error_count",
+                "values": [
+                  2,
+                  2,
+                  1,
+                  1
+                ]
+              }
+            }
+          }
+        },
+        "standard": {
+          "pixel_pool": {
+            "rmse": 2.0
+          }
+        }
+      }
+    }
+  },
+  "per_file_metrics": {
+    "children": {
+      "scene": {
+        "children": {
+          "left": {
+            "files": [
+              {
+                "id": "frame_0",
+                "metrics": {
+                  "depth": {
+                    "eval": {
+                      "native": {
+                        "distributions": {
+                          "rmse": {
+                            "distribution": {
+                              "type": "distribution",
+                              "definitionId": "rmse_native_error_count",
+                              "values": [
+                                0,
+                                0,
+                                0,
+                                4
+                              ]
+                            }
+                          }
+                        },
+                        "depth_metrics": {
+                          "rmse": 2.0
+                        }
+                      },
+                      "metric": {
+                        "distributions": {
+                          "rmse": {
+                            "distribution": {
+                              "type": "distribution",
+                              "definitionId": "rmse_metric_error_count",
+                              "values": [
+                                2,
+                                1,
+                                0,
+                                1
+                              ]
+                            }
+                          }
+                        },
+                        "depth_metrics": {
+                          "rmse": 2.0
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "right": {
+            "files": [
+              {
+                "id": "frame_0",
+                "metrics": {
+                  "depth": {
+                    "eval": {
+                      "native": {
+                        "distributions": {
+                          "rmse": {
+                            "distribution": {
+                              "type": "distribution",
+                              "definitionId": "rmse_native_error_count",
+                              "values": [
+                                0,
+                                0,
+                                0,
+                                2
+                              ]
+                            }
+                          }
+                        },
+                        "depth_metrics": {
+                          "rmse": 2.0
+                        }
+                      },
+                      "metric": {
+                        "distributions": {
+                          "rmse": {
+                            "distribution": {
+                              "type": "distribution",
+                              "definitionId": "rmse_metric_error_count",
+                              "values": [
+                                0,
+                                1,
+                                1,
+                                0
+                              ]
+                            }
+                          }
+                        },
+                        "depth_metrics": {
+                          "rmse": 2.0
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "id": "empty",
+                "metrics": {
+                  "depth": {
+                    "eval": {
+                      "native": {
+                        "distributions": {
+                          "rmse": {
+                            "distribution": {
+                              "type": "distribution",
+                              "definitionId": "rmse_native_error_count",
+                              "values": [
+                                0,
+                                0,
+                                0,
+                                0
+                              ]
+                            }
+                          }
+                        },
+                        "depth_metrics": {
+                          "rmse": 2.0
+                        }
+                      },
+                      "metric": {
+                        "distributions": {
+                          "rmse": {
+                            "distribution": {
+                              "type": "distribution",
+                              "definitionId": "rmse_metric_error_count",
+                              "values": [
+                                0,
+                                0,
+                                0,
+                                0
+                              ]
+                            }
+                          }
+                        },
+                        "depth_metrics": {
+                          "rmse": 2.0
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

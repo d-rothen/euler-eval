@@ -67,6 +67,7 @@ fid = [
 ]
 dev = [
     "pytest>=7.0.0",
+    "jsonschema>=4.18",
     "pytest-cov>=3.0.0",
     "black>=22.0.0",
     "ruff>=0.2",  # [tool.ruff.lint] configuration requires 0.2+
@@ -80,7 +81,7 @@ euler-eval = "euler_eval.cli:main"
 py-modules = ["init_cache"]
 
 [tool.setuptools.package-data]
-euler_eval = ["THIRD_PARTY_NOTICES.md"]
+euler_eval = ["THIRD_PARTY_NOTICES.md", "schemas/*.schema.json"]
 
 [tool.uv.sources]
 ds-crawler = { git = "https://github.com/d-rothen/ds-crawler" }

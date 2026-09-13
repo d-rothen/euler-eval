@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:euler-eval:distributions:1",
+  "title": "Euler evaluation distribution registry, version 1",
+  "description": "Validates metricSet.metadata.distributions. Add #/$defs/value as a metric leaf alternative. References, ordered edges and value lengths also require semantic validation.",
+  "$ref": "#/$defs/registry",
+  "$defs": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+    },
+    "label": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "finiteNumber": {
+      "type": "number",
+      "minimum": -1.7976931348623157e308,
+      "maximum": 1.7976931348623157e308
+    },
+    "registry": {
+      "type": "object",
+      "required": ["schemaVersion", "binSets", "definitions"],
+      "additionalProperties": false,
+      "properties": {
+        "schemaVersion": { "const": 1, "type": "integer" },
+        "binSets": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/id" },
+          "additionalProperties": { "$ref": "#/$defs/binSet" }
+        },
+        "definitions": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "$ref": "#/$defs/id" },
+          "additionalProperties": { "$ref": "#/$defs/definition" }
+        }
+      }
+    },
+    "binSet": {
+      "type": "object",
+      "required": ["binEdges", "interval", "spacing"],
+      "additionalProperties": false,
+      "properties": {
+        "binEdges": {
+          "type": "array",
+          "minItems": 2,
+          "description": "Strictly increasing finite edges; only the last edge may be null, meaning positive infinity. There is one more edge than values.",
+          "items": { "anyOf": [{ "$ref": "#/$defs/finiteNumber" }, { "type": "null" }] }
+        },
+        "interval": { "const": "[left, right)" },
+        "spacing": {
+          "enum": ["linear", "log", "explicit"],
+          "description": "Construction of finite interior bins; not a display-axis scale. binEdges are authoritative."
+        }
+      }
+    },
+    "xAxis": {
+      "type": "object",
+      "required": ["quantity", "unit"],
+      "additionalProperties": false,
+      "properties": {
+        "quantity": { "$ref": "#/$defs/label" },
+        "unit": { "$ref": "#/$defs/label" }
+      }
+    },
+    "yAxis": {
+      "type": "object",
+      "required": ["quantity", "statistic", "unit"],
+      "additionalProperties": false,
+      "properties": {
+        "quantity": { "$ref": "#/$defs/label" },
+        "statistic": { "enum": ["count", "sum"] },
+        "unit": { "$ref": "#/$defs/label" }
+      }
+    },
+    "definition": {
+      "type": "object",
+      "required": ["binSetId", "metric", "space", "axes", "observationUnit", "merge"],
+      "additionalProperties": false,
+      "properties": {
+        "binSetId": { "$ref": "#/$defs/id" },
+        "metric": { "$ref": "#/$defs/label" },
+        "space": { "$ref": "#/$defs/label" },
+        "axes": {
+          "type": "object",
+          "required": ["x", "y"],
+          "additionalProperties": false,
+          "properties": {
+            "x": { "$ref": "#/$defs/xAxis" },
+            "y": { "$ref": "#/$defs/yAxis" }
+          }
+        },
+        "observationUnit": { "$ref": "#/$defs/label" },
+        "merge": { "const": "sum" }
+      }
+    },
+    "value": {
+      "type": "object",
+      "required": ["type", "definitionId", "values"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "distribution" },
+        "definitionId": { "$ref": "#/$defs/id" },
+        "values": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/finiteNumber" }
+        }
+      }
+    }
+  }
+}

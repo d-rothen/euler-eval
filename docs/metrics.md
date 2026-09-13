@@ -20,6 +20,16 @@ A dataset with a few very large or very dense images will separate
 `pixel_pool` from `image_mean`; a dataset with a handful of failures will
 separate `image_mean` from `image_median`.
 
+## Optional error distributions
+
+`--distributions` adds RMSE error-magnitude histograms for depth and sparse
+depth (`rmse.distribution`), and dense/sparse point maps (`rmse3d.distribution`).
+They appear under `{namespace}.{space}.distributions.pixel_pool` for datasets
+and `{namespace}.{space}.distributions` for individual files, with shared
+axes and bin definitions in the metric-set metadata. Existing scalar metrics
+keep their paths and values. See [Error distributions](distributions.md) for
+the exact counting rules, settings and JSON examples.
+
 ## Depth
 
 | Metric | Key | Description |

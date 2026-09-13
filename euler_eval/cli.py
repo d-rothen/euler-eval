@@ -32,6 +32,7 @@ from .data import (
     get_sparse_depth_metadata,
     validate_sky_depth,
 )
+from .distributions import DistributionConfig
 from .evaluate import (
     evaluate_depth_samples,
     evaluate_points_3d_samples,
@@ -141,10 +142,23 @@ _RGB_BENCHMARK_BIN_AXIS = AxisDeclaration(
 )
 
 
-def _depth_eval_axes(*, benchmark: bool = False) -> dict[str, AxisDeclaration]:
+def _distribution_category(axis: AxisDeclaration, enabled: bool) -> AxisDeclaration:
+    if not enabled:
+        return axis
+    return AxisDeclaration(
+        position=axis.position,
+        values=(*axis.values, "distributions"),
+        optional=axis.optional,
+        description=axis.description,
+    )
+
+
+def _depth_eval_axes(
+    *, benchmark: bool = False, distributions: bool = False
+) -> dict[str, AxisDeclaration]:
     axes = {
         "space": _DEPTH_SPACE_AXIS,
-        "category": _DEPTH_CATEGORY_AXIS,
+        "category": _distribution_category(_DEPTH_CATEGORY_AXIS, distributions),
         "reduction": _DEPTH_REDUCTION_AXIS,
     }
     if benchmark:
@@ -152,10 +166,12 @@ def _depth_eval_axes(*, benchmark: bool = False) -> dict[str, AxisDeclaration]:
     return axes
 
 
-def _sparse_depth_eval_axes(*, benchmark: bool = False) -> dict[str, AxisDeclaration]:
+def _sparse_depth_eval_axes(
+    *, benchmark: bool = False, distributions: bool = False
+) -> dict[str, AxisDeclaration]:
     axes = {
         "space": _DEPTH_SPACE_AXIS,
-        "category": _SPARSE_DEPTH_CATEGORY_AXIS,
+        "category": _distribution_category(_SPARSE_DEPTH_CATEGORY_AXIS, distributions),
         "reduction": _DEPTH_REDUCTION_AXIS,
     }
     if benchmark:
@@ -201,10 +217,10 @@ _POINTS_3D_REDUCTION_AXIS = AxisDeclaration(
 )
 
 
-def _points_3d_eval_axes() -> dict[str, AxisDeclaration]:
+def _points_3d_eval_axes(*, distributions: bool = False) -> dict[str, AxisDeclaration]:
     return {
         "space": _POINTS_3D_SPACE_AXIS,
-        "category": _POINTS_3D_CATEGORY_AXIS,
+        "category": _distribution_category(_POINTS_3D_CATEGORY_AXIS, distributions),
         "reduction": _POINTS_3D_REDUCTION_AXIS,
     }
 
@@ -575,6 +591,41 @@ def _points_3d_descriptions() -> dict:
 
 
 _POINTS_3D_EVAL_DESCRIPTIONS = _points_3d_descriptions()
+
+
+def _distribution_descriptions(
+    base: dict, config: DistributionConfig | None, metric: str
+) -> dict:
+    if config is None:
+        return base
+    return {
+        **base,
+        f"{metric}.distribution": MetricDescription(
+            unit="pixels", min_value=0.0,
+            display_name=f"{metric.upper()} error magnitude histogram",
+        ),
+    }
+
+
+def _distribution_metadata(results: dict) -> dict:
+    info = results.get("distribution_info")
+    return {"distributions": info} if info is not None else {}
+
+
+def _resolve_distribution_config(value, args) -> DistributionConfig | None:
+    settings = dict(value) if isinstance(value, dict) else {}
+    overrides = {}
+    if args.distribution_bins is not None:
+        overrides["n_bins"] = args.distribution_bins
+    if args.distribution_scale is not None:
+        overrides["scale"] = args.distribution_scale
+    if args.distribution_range is not None:
+        overrides["min_error"], overrides["max_error"] = args.distribution_range
+    enabled = args.distributions
+    if enabled is None:
+        enabled = value is True or isinstance(value, dict) or bool(overrides)
+    settings.update(overrides)
+    return DistributionConfig.from_config(settings if enabled else False)
 
 
 def _get_version() -> str:
@@ -977,6 +1028,8 @@ def load_config(config_path: str) -> dict:
     if "euler_train" in config:
         validate_euler_train_config(config["euler_train"])
 
+    DistributionConfig.from_config(config.get("distributions"))
+
     return config
 
 
@@ -1239,6 +1292,28 @@ def main():
         ),
     )
 
+    distributions_group = parser.add_mutually_exclusive_group()
+    distributions_group.add_argument(
+        "--distributions", action="store_true", default=None,
+        help="Compute per-sample and pixel-pool RMSE histograms for depth and points_3d",
+    )
+    distributions_group.add_argument(
+        "--no-distributions", dest="distributions", action="store_false",
+        help="Disable histograms, including those enabled in config.json",
+    )
+    parser.add_argument(
+        "--distribution-bins", type=int, default=None, metavar="N",
+        help="Total histogram bins including tails (default: 50; minimum: 3)",
+    )
+    parser.add_argument(
+        "--distribution-scale", choices=["log", "linear"], default=None,
+        help="Histogram bin spacing (default: log)",
+    )
+    parser.add_argument(
+        "--distribution-range", type=float, nargs=2, default=None, metavar=("MIN", "MAX"),
+        help="Finite histogram range in evaluated space units (default: 0.001 100); tails are included",
+    )
+
     args = parser.parse_args()
     try:
         validate_sky_depth(args.sky_depth)
@@ -1257,11 +1332,23 @@ def main():
         print(f"Error loading config: {e}", file=sys.stderr)
         sys.exit(1)
 
+    try:
+        distribution_config = _resolve_distribution_config(
+            config.get("distributions"), args
+        )
+    except ValueError as e:
+        parser.error(str(e))
+
     requested_device = args.device
     args.device = resolve_device(requested_device)
     configure_torch_runtime(args.device)
     print_device_info(requested_device, args.device)
     print(f"Depth alignment: {args.depth_alignment}")
+    if distribution_config is not None:
+        print(
+            f"RMSE distributions: {distribution_config.n_bins} bins "
+            f"({distribution_config.scale})"
+        )
     if args.sky_depth is not None:
         print(f"Sky depth: {args.sky_depth} meters (depth cap and predicted sky fill)")
     print(f"RGB FID backend: {args.rgb_fid_backend}")
@@ -1416,6 +1503,7 @@ def main():
             print(f"  Matched pairs: {len(depth_dataset)}")
 
             depth_results = evaluate_depth_samples(
+                distribution_config=distribution_config,
                 dataset=depth_dataset,
                 is_radial=depth_meta["radial_depth"],
                 gt_name=gt.get("name", "GT"),
@@ -1451,13 +1539,18 @@ def main():
                 producer="euler-eval",
                 producer_version=_get_version(),
                 modalities=("depth",),
-                axes=_depth_eval_axes(benchmark=has_benchmark),
-                descriptions=_DEPTH_EVAL_DESCRIPTIONS,
+                axes=_depth_eval_axes(
+                    benchmark=has_benchmark, distributions=distribution_config is not None
+                ),
+                descriptions=_distribution_descriptions(
+                    _DEPTH_EVAL_DESCRIPTIONS, distribution_config, "rmse"
+                ),
             )
             depth_save = {
                 "metricSet": depth_ns.metric_set_envelope(
                     "depth",
                     metadata={
+                        **_distribution_metadata(depth_results),
                         "input_space_detected": space_info.get(
                             "input_space_detected", "unknown"
                         ),
@@ -1538,7 +1631,7 @@ def main():
                         for category, metrics in bin_summary.items():
                             cleaned = _clean_metric_tree(metrics)
                             if cleaned:
-                                if category == "standard":
+                                if category in {"standard", "distributions"}:
                                     bucket = target.setdefault(category, {})
                                     for reduction, reduction_metrics in cleaned.items():
                                         bucket.setdefault(reduction, {})[bn] = reduction_metrics
@@ -1616,6 +1709,7 @@ def main():
             print(f"  Matched pairs: {len(sparse_depth_dataset)}")
 
             sparse_depth_results = evaluate_sparse_depth_samples(
+                distribution_config=distribution_config,
                 dataset=sparse_depth_dataset,
                 pred_is_radial=sparse_depth_meta["pred_radial_depth"],
                 gt_name=gt.get("name", "GT"),
@@ -1644,13 +1738,18 @@ def main():
                 producer="euler-eval",
                 producer_version=_get_version(),
                 modalities=("sparse_depth",),
-                axes=_sparse_depth_eval_axes(benchmark=has_benchmark),
-                descriptions=_SPARSE_DEPTH_EVAL_DESCRIPTIONS,
+                axes=_sparse_depth_eval_axes(
+                    benchmark=has_benchmark, distributions=distribution_config is not None
+                ),
+                descriptions=_distribution_descriptions(
+                    _SPARSE_DEPTH_EVAL_DESCRIPTIONS, distribution_config, "rmse"
+                ),
             )
             depth_save = {
                 "metricSet": _sparse_depth_metric_set_envelope(
                     sparse_depth_ns,
                     metadata={
+                        **_distribution_metadata(sparse_depth_results),
                         "input_space_detected": space_info.get(
                             "input_space_detected", "unknown"
                         ),
@@ -1737,7 +1836,7 @@ def main():
                         for category, metrics in bin_summary.items():
                             cleaned = _clean_metric_tree(metrics)
                             if cleaned:
-                                if category == "standard":
+                                if category in {"standard", "distributions"}:
                                     bucket = target.setdefault(category, {})
                                     for reduction, reduction_metrics in cleaned.items():
                                         bucket.setdefault(reduction, {})[bn] = (
@@ -2107,6 +2206,7 @@ def main():
             print(f"  Matched pairs: {len(points_3d_dataset)}")
 
             points_3d_results = evaluate_points_3d_samples(
+                distribution_config=distribution_config,
                 dataset=points_3d_dataset,
                 fov_domain=points_3d_meta["fov_domain"],
                 gt_name=gt.get("name", "GT"),
@@ -2131,13 +2231,16 @@ def main():
                 producer="euler-eval",
                 producer_version=_get_version(),
                 modalities=("points_3d",),
-                axes=_points_3d_eval_axes(),
-                descriptions=_POINTS_3D_EVAL_DESCRIPTIONS,
+                axes=_points_3d_eval_axes(distributions=distribution_config is not None),
+                descriptions=_distribution_descriptions(
+                    _POINTS_3D_EVAL_DESCRIPTIONS, distribution_config, "rmse3d"
+                ),
             )
             points_3d_save = {
                 "metricSet": _points_3d_metric_set_envelope(
                     points_3d_ns,
                     metadata={
+                        **_distribution_metadata(points_3d_results),
                         "input_space_detected": p3_space_info.get(
                             "input_space_detected", "unknown"
                         ),
@@ -2274,6 +2377,7 @@ def main():
             print(f"  Matched pairs: {len(points_3d_sparse_dataset)}")
 
             points_3d_sparse_results = evaluate_points_3d_sparse_samples(
+                distribution_config=distribution_config,
                 dataset=points_3d_sparse_dataset,
                 pred_is_radial=True,
                 gt_name=gt.get("name", "GT"),
@@ -2298,13 +2402,16 @@ def main():
                 producer="euler-eval",
                 producer_version=_get_version(),
                 modalities=("points_3d",),
-                axes=_points_3d_eval_axes(),
-                descriptions=_POINTS_3D_EVAL_DESCRIPTIONS,
+                axes=_points_3d_eval_axes(distributions=distribution_config is not None),
+                descriptions=_distribution_descriptions(
+                    _POINTS_3D_EVAL_DESCRIPTIONS, distribution_config, "rmse3d"
+                ),
             )
             points_3d_sparse_save = {
                 "metricSet": _points_3d_metric_set_envelope(
                     points_3d_sparse_ns,
                     metadata={
+                        **_distribution_metadata(points_3d_sparse_results),
                         "input_space_detected": p3s_space_info.get(
                             "input_space_detected", "unknown"
                         ),

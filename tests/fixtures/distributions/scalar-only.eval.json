@@ -1,0 +1,74 @@
+{
+  "metricSet": {
+    "metricNamespace": "depth.eval",
+    "producerKey": "euler-eval",
+    "producerVersion": "contract-fixture-v1",
+    "sourceKind": "computed",
+    "metadata": {
+      "input_space_detected": "relative",
+      "calibration_applied": true,
+      "calibration_mode": "affine",
+      "emitted_spaces": [
+        "native",
+        "metric"
+      ],
+      "canonical_space": "metric"
+    },
+    "axes": {
+      "space": {
+        "position": 0,
+        "optional": false,
+        "values": [
+          "native",
+          "metric"
+        ],
+        "description": "Depth space semantics"
+      },
+      "category": {
+        "position": 1,
+        "optional": true,
+        "values": [
+          "image_quality",
+          "standard",
+          "depth_metrics",
+          "geometric_metrics",
+          "distributions"
+        ],
+        "description": "Metric category"
+      },
+      "reduction": {
+        "position": 2,
+        "optional": true,
+        "values": [
+          "image_mean",
+          "image_median",
+          "pixel_pool"
+        ],
+        "description": "Dataset reduction mode"
+      }
+    },
+    "metricDescriptions": {
+      "rmse.distribution": {
+        "min": 0.0,
+        "unit": "pixels",
+        "displayName": "RMSE error magnitude histogram"
+      }
+    }
+  },
+  "dataset_info": {
+    "num_pairs": 3,
+    "gt_name": "synthetic",
+    "pred_name": "contract-fixture"
+  },
+  "depth": {
+    "eval": {
+      "metric": {
+        "standard": {
+          "pixel_pool": {
+            "rmse": 2.0
+          }
+        }
+      }
+    }
+  }
+}

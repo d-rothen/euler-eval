@@ -1,0 +1,3 @@
+recursive-include docs *.md
+recursive-include tests *.py *.json *.md
+include scripts/generate_distribution_fixtures.py

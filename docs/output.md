@@ -61,6 +61,13 @@ set.
 | *metric tree* | The metrics themselves, under the modality root (`depth`, `rgb`, `rays`, `sparsedepth`, `points3d`) |
 | `per_file_metrics` | The same metrics per image, in dataset-hierarchy order |
 
+With `--distributions`, the metric tree and per-file entries also contain
+typed histogram leaves under the `distributions` category, each containing
+`type: "distribution"`, a `definitionId` and a `values` array. Their versioned
+registry at `metricSet.metadata.distributions` shares bin boundaries across
+metric/space definitions. See [Error distributions](distributions.md) for the
+schema, paths, units and consumer fixtures.
+
 `meta` is what makes a result reproducible after the fact: it records the
 alignment mode that ran, whether sky masking was on, the benchmark range, and
 the exact paths and versions involved. `spatial_alignment.method` reports how a

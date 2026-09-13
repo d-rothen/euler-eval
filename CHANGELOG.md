@@ -14,6 +14,13 @@ the git history for those.
 
 ### Added
 
+- Optional per-sample and pooled RMSE error histograms for dense/sparse depth
+  and point maps, enabled with `--distributions` or the config's `distributions`
+  section. Configurable logarithmic or linear bins share JSON-safe boundaries
+  and axis definitions; existing scalar metrics keep their paths and values.
+  Typed histogram leaves reference a versioned registry with explicit units,
+  reusable bin sets, JavaScript-safe counts, a packaged JSON Schema and consumer
+  fixtures. The contract also supports future additive error sums by other axes.
 - Predicted `sky_mask` inputs alongside dense depth and optional `--sky-depth`
   capping/inpainting for dense and sparse depth evaluation. Sky pixels are
   filled after calibration and remain evaluated unless excluded by GT validity

@@ -36,6 +36,11 @@ The config is validated before any work starts: a missing `gt` section, an empty
 modality, and any path that does not exist all fail immediately with a message
 naming the offending field.
 
+The optional top-level [`distributions`](distributions.md#bin-settings) section
+enables per-sample and pooled RMSE histograms. Use `true` for defaults or an
+object with `n_bins`, `scale`, `min_error` and `max_error`; CLI histogram settings
+override the corresponding fields. Omitted or `false` leaves histograms disabled.
+
 ## Paths and splits
 
 Every modality entry is an object with a `path`, and optionally a `split`:
