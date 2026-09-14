@@ -83,3 +83,9 @@ pixels fall in which bin.
 The same binning is available programmatically through
 `benchmark_depth_range=(MIN, MAX)` — see
 [In-training validation](validation.md).
+
+With `--distributions`, default depth dataset/per-file histograms use the
+benchmark `all` population, with optional sky-depth capping applied before GT
+range selection. Their counts match the explicit `all` histogram, while the
+unbinned scalar summaries retain their existing population. See
+[Error distributions](distributions.md#benchmark-depth-range-and-sky-depth).

@@ -191,7 +191,13 @@ def test_dense_depth_counts_match_valid_pixel_pool_and_batch_path(
     assert_distribution_contract(result)
 
 
-def test_depth_distribution_follows_alignment_and_sky_cap(light_depth_backends):
+@pytest.mark.parametrize(
+    "benchmark_range,native_counts,metric_counts",
+    [(None, [54, 1, 1, 8], [64, 0, 0, 0]), ((10, 15), [0, 0, 0, 6], [6, 0, 0, 0])],
+)
+def test_depth_distribution_follows_alignment_and_sky_cap(
+    light_depth_backends, benchmark_range, native_counts, metric_counts
+):
     gt = np.arange(64, dtype=np.float32).reshape(8, 8) + 10
     pred = gt * 2
     config = DistributionConfig(n_bins=4, scale="linear", min_error=0, max_error=3)
@@ -202,11 +208,199 @@ def test_depth_distribution_follows_alignment_and_sky_cap(light_depth_backends):
         num_workers=0,
         alignment_mode="affine",
         sky_depth=20,
+        benchmark_depth_range=benchmark_range,
         distribution_config=config,
     )
-    assert _counts(result["depth_native"], pooled=True) == [54, 1, 1, 8]
-    assert _counts(result["depth_metric"], pooled=True) == [64, 0, 0, 0]
-    assert _counts(result["depth"], pooled=True) == [64, 0, 0, 0]
+    assert _counts(result["depth_native"], pooled=True) == native_counts
+    assert _counts(result["depth_metric"], pooled=True) == metric_counts
+    assert _counts(result["depth"], pooled=True) == metric_counts
+    if benchmark_range is not None:
+        for space, expected in (("native", native_counts), ("metric", metric_counts)):
+            assert (
+                _counts(result["depth_benchmark"][space]["all"], pooled=True)
+                == expected
+            )
+            assert (
+                _counts(
+                    result["per_file_metrics"]["files"][0]["metrics"][f"depth_{space}"]
+                )
+                == expected
+            )
+
+
+@pytest.mark.parametrize("backend", ["dense_cpu", "dense_batch", "sparse"])
+@pytest.mark.parametrize(
+    "sky_depth,expected_errors",
+    [
+        (None, {"lower": 29, "inside": 2, "upper": 1}),
+        (0.5, {}),
+        (
+            8,
+            {
+                "lower": 7,
+                "inside": 2,
+                "upper": 0,
+                "beyond": 6,
+                "infinite_pred": 4,
+                "pred_sky": 3,
+            },
+        ),
+        (
+            10,
+            {
+                "lower": 9,
+                "inside": 2,
+                "upper": 1,
+                "beyond": 8,
+                "infinite_pred": 6,
+                "pred_sky": 5,
+            },
+        ),
+        (12, {"lower": 11, "inside": 2, "upper": 1, "infinite_pred": 8, "pred_sky": 7}),
+    ],
+)
+@pytest.mark.filterwarnings(
+    "ignore:invalid value encountered in (multiply|subtract):RuntimeWarning"
+)
+def test_depth_distributions_use_benchmark_population_after_sky_cap(
+    backend, sky_depth, expected_errors, light_depth_backends, monkeypatch
+):
+    # One correspondence per image keeps the inclusive GT boundaries exact for
+    # both dense and real sparse projection. Predictions outside the benchmark
+    # range still contribute when their evaluated GT is inside it.
+    cases = {
+        "below": (0.5, 40),
+        "lower": (1, 30),
+        "inside": (5, 7),
+        "upper": (10, 9),
+        "beyond": (20, 2),
+        "infinite_pred": (4, np.inf),
+        "masked": (5, 70),
+        "pred_sky": (5, np.nan),
+        "invalid_gt": (0, 8),
+        "invalid_pred": (5, -1),
+    }
+    samples = []
+    for identifier, (gt_value, pred_value) in cases.items():
+        gt = np.zeros((8, 8), dtype=np.float32)
+        pred = np.zeros_like(gt)
+        gt[0, 0], pred[0, 0] = gt_value, pred_value
+        sky = np.zeros_like(gt, dtype=bool)
+        pred_sky = np.zeros_like(gt, dtype=bool)
+        sky[0, 0] = identifier == "masked"
+        pred_sky[0, 0] = identifier == "pred_sky"
+        sample = {
+            "id": identifier,
+            "full_id": f"/scene/{identifier}",
+            "gt": gt,
+            "pred": pred,
+            "segmentation": sky,
+            "pred_sky_mask": pred_sky,
+        }
+        if backend == "sparse":
+            sample.update(
+                gt=np.array([[0, 0, gt_value]], dtype=np.float32),
+                intrinsics=np.eye(3, dtype=np.float32),
+                camera_extrinsics=np.eye(4, dtype=np.float32),
+            )
+        samples.append(sample)
+
+    config = DistributionConfig(n_bins=6, scale="linear", min_error=0, max_error=5)
+    kwargs = dict(
+        num_workers=0,
+        alignment_mode="none",
+        sky_mask_enabled=True,
+        distribution_config=config,
+        benchmark_depth_range=(1, 10),
+        sky_depth=sky_depth,
+    )
+    if backend == "sparse":
+        result = evaluation.evaluate_sparse_depth_samples(
+            samples, pred_is_radial=True, **kwargs
+        )
+        branch = "sparse_depth"
+    else:
+        monkeypatch.setattr(
+            evaluation.GPUDepthMetricsBatcher,
+            "is_available",
+            lambda device: backend == "dense_batch",
+        )
+        result = evaluation.evaluate_depth_samples(
+            samples, is_radial=True, device="cpu", batch_size=3, **kwargs
+        )
+        branch = "depth"
+
+    edges = [0, 1, 2, 3, 4, 5, np.inf]
+    expected = np.histogram(list(expected_errors.values()), bins=edges)[0]
+    np.testing.assert_array_equal(_counts(result[branch], pooled=True), expected)
+    per_file = []
+    for entry in _files(result):
+        errors = (
+            [expected_errors[entry["id"]]] if entry["id"] in expected_errors else []
+        )
+        counts = _counts(entry["metrics"][branch])
+        np.testing.assert_array_equal(counts, np.histogram(errors, bins=edges)[0])
+        per_file.append(counts)
+    np.testing.assert_array_equal(np.sum(per_file, axis=0), expected)
+
+    benchmark = result[f"{branch}_benchmark"]["metric"]
+    np.testing.assert_array_equal(_counts(benchmark["all"], pooled=True), expected)
+    np.testing.assert_array_equal(
+        np.sum(
+            [_counts(benchmark[part], pooled=True) for part in ("near", "mid", "far")],
+            axis=0,
+        ),
+        expected,
+    )
+    rmse = benchmark["all"]["standard"]["pixel_pool"]["rmse"]
+    if expected_errors:
+        assert rmse == pytest.approx(
+            np.sqrt(np.mean(np.square(list(expected_errors.values()))))
+        )
+    else:
+        assert not np.isfinite(rmse)
+    assert result["distribution_population"] == {
+        "selection": "benchmark_all",
+        "gtDepthRange": [1, 10],
+        "skyDepth": sky_depth,
+        "rangeAppliedTo": "evaluated_gt",
+    }
+    assert_distribution_contract(result)
+
+
+@pytest.mark.parametrize(
+    "sky_depth,expected", [(None, [0, 0, 2, 0]), (3, [2, 1, 0, 0])]
+)
+def test_benchmark_histogram_selects_converted_radial_gt(
+    sky_depth, expected, light_depth_backends
+):
+    gt = np.zeros((8, 8), dtype=np.float32)
+    gt[0, :3] = 2
+    result = evaluation.evaluate_depth_samples(
+        [
+            {
+                "id": "0",
+                "full_id": "/scene/0",
+                "gt": gt,
+                "pred": gt * 2,
+                "intrinsics": np.eye(3, dtype=np.float32),
+            }
+        ],
+        is_radial=False,
+        device="cpu",
+        num_workers=0,
+        alignment_mode="none",
+        benchmark_depth_range=(1, 3),
+        sky_depth=sky_depth,
+        distribution_config=DistributionConfig(
+            n_bins=4, scale="linear", min_error=0, max_error=3
+        ),
+    )
+    # GT radial depths are 2, sqrt(8), sqrt(20). Capping at the inclusive
+    # benchmark maximum brings the third correspondence into the population.
+    assert _counts(result["depth"], pooled=True) == expected
+    assert _counts(_files(result)[0]["metrics"]["depth"]) == expected
+    assert _counts(result["depth_benchmark"]["metric"]["all"], pooled=True) == expected
 
 
 def _sparse_sample(points=False):
@@ -231,6 +425,35 @@ def _sparse_sample(points=False):
         "intrinsics": np.eye(3, dtype=np.float32),
         "camera_extrinsics": np.eye(4, dtype=np.float32),
     }
+
+
+def test_sparse_distributions_follow_alignment_cap_and_benchmark_selection():
+    sample = _sparse_sample()
+    sample["pred"][0, 0] = 4
+    sample["pred"][0, 2] = np.sqrt(20) * 2
+    sample["pred"][0, 1] = np.sqrt(32) * 2
+    result = evaluation.evaluate_sparse_depth_samples(
+        [sample],
+        pred_is_radial=True,
+        num_workers=0,
+        alignment_mode="affine",
+        benchmark_depth_range=(2, 4),
+        sky_depth=5,
+        distribution_config=DistributionConfig(
+            n_bins=4, scale="linear", min_error=0, max_error=3
+        ),
+    )
+    # Fit against uncapped correspondences, then cap. Only GT=2 is in range;
+    # predictions above range_max must still contribute to the native errors.
+    for space, expected in (("native", [0, 0, 1, 0]), ("metric", [1, 0, 0, 0])):
+        assert _counts(result[f"sparse_depth_{space}"], pooled=True) == expected
+        assert (
+            _counts(_files(result)[0]["metrics"][f"sparse_depth_{space}"]) == expected
+        )
+        assert (
+            _counts(result["sparse_depth_benchmark"][space]["all"], pooled=True)
+            == expected
+        )
 
 
 @pytest.mark.parametrize("points", [False, True])
@@ -318,6 +541,9 @@ def test_cli_serializes_typed_values_axes_and_shared_bin_definitions(
     config_path.write_text(json.dumps(config))
     if sparse:
         sample = _sparse_sample(points)
+        if not points:
+            # This projection stays outside [1, 20] after the sky-depth cap.
+            sample["gt"][2] *= 10
     elif points:
         gt_map = np.zeros((8, 8, 3), dtype=np.float32)
         gt_map[..., 2] = 10
@@ -329,6 +555,8 @@ def test_cli_serializes_typed_values_axes_and_shared_bin_definitions(
             "gt": np.full((8, 8), 10.0),
             "pred": np.full((8, 8), 10.0),
         }
+        sample["gt"][0, 0] = 30
+        sample["pred"][0, 0] = 5
     monkeypatch.setattr(cli, f"build_{kind}_eval_dataset", lambda **kw: [sample])
     metadata_kind = "points_3d" if points else kind
     monkeypatch.setattr(
@@ -354,7 +582,11 @@ def test_cli_serializes_typed_values_axes_and_shared_bin_definitions(
             "--distribution-bins",
             "4",
         ]
-        + ([] if points else ["--benchmark-depth-range", "1", "20"]),
+        + (
+            []
+            if points
+            else ["--benchmark-depth-range", "1", "20", "--sky-depth", "25"]
+        ),
     )
     cli.main()
     with zipfile.ZipFile(output) as archive:
@@ -384,6 +616,15 @@ def test_cli_serializes_typed_values_axes_and_shared_bin_definitions(
     if not points:
         benchmark = result[root]["eval"][space]["distributions"]["pixel_pool"]["all"]
         assert benchmark[metric]["distribution"]["values"] == aggregate
+        assert sum(aggregate) == (2 if sparse else 63)
+        assert envelope["metadata"]["distributionPopulation"] == {
+            "selection": "benchmark_all",
+            "gtDepthRange": [1.0, 20.0],
+            "skyDepth": 25.0,
+            "rangeAppliedTo": "evaluated_gt",
+        }
+    else:
+        assert "distributionPopulation" not in envelope["metadata"]
     json.dumps(result, allow_nan=False)
     assert_distribution_contract(result)
 
@@ -396,9 +637,16 @@ def test_distributions_are_opt_in_and_scalars_do_not_change(light_depth_backends
         [sample], distribution_config=DistributionConfig(), **kwargs
     )
     assert "distribution_info" not in baseline
+    assert "distribution_population" not in baseline
     assert "distributions" not in baseline["depth"]
     assert baseline["depth"] == {
         k: v for k, v in enabled["depth"].items() if k != "distributions"
+    }
+    assert enabled["distribution_population"] == {
+        "selection": "valid_pixels",
+        "gtDepthRange": None,
+        "skyDepth": None,
+        "rangeAppliedTo": "evaluated_gt",
     }
     assert "distributions" not in cli._depth_eval_axes()["category"].values
     args = SimpleNamespace(

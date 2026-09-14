@@ -40,6 +40,11 @@ Histogram settings can also be specified in the config's `distributions`
 section. A bin, scale or range flag enables histograms and overrides that
 config field; `--no-distributions` disables them regardless.
 
+For depth, `--benchmark-depth-range` also restricts the default dataset/per-file
+histograms to the benchmark's inclusive GT range. `--sky-depth` caps GT and
+predictions before this selection and error computation. See the
+[population rules](distributions.md#benchmark-depth-range-and-sky-depth).
+
 ## Examples
 
 ```bash

@@ -30,6 +30,60 @@ after projection visibility filtering, rather than every source cloud point.
 An image with no valid observations emits an array of zeros. Non-finite error
 values are excluded.
 
+## Benchmark depth range and sky depth
+
+For dense and sparse depth, `--benchmark-depth-range MIN MAX` restricts the
+**default dataset and per-file histograms** to valid observations whose evaluated
+GT depth is in the inclusive interval `[MIN, MAX]`. Their pooled counts equal
+the explicit benchmark `all` histogram. The `near`, `mid` and `far` histograms
+partition that same population.
+
+Depth conversion and prediction calibration run first. If `--sky-depth CAP` is
+set, both GT and prediction depths are capped, and predicted sky is filled,
+before the benchmark mask and absolute errors are computed. For example:
+
+```bash
+euler-eval config.json --distributions \
+  --benchmark-depth-range 0.1 80 --sky-depth 80
+```
+
+GT originally at 150 m is evaluated at 80 m in this example, so it is included
+at the range's upper boundary. If the cap were 100 m, that GT would remain
+outside the range. The range constrains **GT depth**, not prediction depth or
+error magnitude: a valid prediction outside the range still contributes its
+error when the evaluated GT is inside. Error bins retain their overflow bin.
+Sky exclusion (`--mask-sky`) and ordinary validity/projection masks still apply.
+
+Without a benchmark range, the default histograms count all valid observations.
+With a range, compare them to the benchmark scalar metrics, e.g.
+`depth.eval.metric.standard.pixel_pool.all.rmse`; the existing unbinned scalar
+summaries still cover their original, unrestricted population. No scalar metric
+calculation or calibration-fit population is changed by enabling distributions.
+
+The selection for the default dataset and per-file depth histograms is recorded
+at `metricSet.metadata.distributionPopulation`:
+
+```json
+{
+  "selection": "benchmark_all",
+  "gtDepthRange": [0.1, 80.0],
+  "skyDepth": 80.0,
+  "rangeAppliedTo": "evaluated_gt"
+}
+```
+
+Without a range, `selection` is `valid_pixels` and `gtDepthRange` is null;
+without a cap, `skyDepth` is null. `evaluated_gt` means after depth conversion
+and sky-depth capping. The Python evaluators expose this as
+`distribution_population`. Point-map distributions do not emit this depth-only
+metadata. Named benchmark paths further identify their `all`/`near`/`mid`/`far`
+population.
+
+This metadata is alongside the unchanged v1 distribution registry. Earlier
+files without it used full-range default histograms even when named benchmark
+histograms were present. Re-evaluate and re-import to obtain the corrected
+default counts; do not assume old default histograms are benchmark-filtered.
+
 ## Bin settings
 
 Settings can live in a top-level `distributions` section of `config.json`:

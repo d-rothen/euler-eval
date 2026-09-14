@@ -155,6 +155,30 @@ def _distribution_summary(store: dict) -> dict:
     return {"distributions": distribution.summary()} if distribution is not None else {}
 
 
+def _finalize_depth_distributions(
+    result: dict,
+    config: Optional[DistributionConfig],
+    branch: str,
+    benchmark_depth_range: Optional[tuple[float, float]],
+    sky_depth: Optional[float],
+) -> dict:
+    """Bind depth histograms and record their default evaluation population."""
+    if config is None:
+        return result
+    result["distribution_population"] = {
+        "selection": (
+            "benchmark_all" if benchmark_depth_range is not None else "valid_pixels"
+        ),
+        "gtDepthRange": (
+            [float(value) for value in benchmark_depth_range]
+            if benchmark_depth_range is not None else None
+        ),
+        "skyDepth": float(sky_depth) if sky_depth is not None else None,
+        "rangeAppliedTo": "evaluated_gt",
+    }
+    return finalize_distributions(result, config, "rmse", branch)
+
+
 def _build_benchmark_bin_summary(store: dict) -> dict:
     """Build aggregate metric summary for a single benchmark depth bin."""
     absrel_median, absrel_p90 = store["absrel_store"].quantiles([0.5, 0.9])
@@ -677,6 +701,8 @@ def evaluate_depth_samples(
             unless excluded by GT validity or ``sky_mask_enabled``.
         distribution_config: Enable RMSE error-magnitude histograms with shared
             bins, per sample and pooled over valid pixels. Disabled by default.
+            With a benchmark range, use its inclusive GT selection after
+            sky-depth capping, matching the benchmark ``all`` population.
 
     Returns:
         Dictionary containing depth aggregate/per-file metrics with:
@@ -735,6 +761,7 @@ def evaluate_depth_samples(
         *,
         intrinsics: Optional[np.ndarray] = None,
         depth_is_radial: bool = False,
+        distribution_mask: Optional[np.ndarray] = None,
     ) -> dict:
         standard_metrics, standard_pool_stats = compute_standard_depth_metrics(
             depth_pred, depth_gt, valid_mask=valid_mask
@@ -781,7 +808,9 @@ def evaluate_depth_samples(
 
         return {
             "distribution_errors": (
-                depth_error_magnitudes(depth_pred, depth_gt, valid_mask)
+                depth_error_magnitudes(
+                    depth_pred, depth_gt, valid_mask, selection_mask=distribution_mask
+                )
                 if distribution_config else None
             ),
             "psnr_val": psnr_val,
@@ -1233,6 +1262,17 @@ def evaluate_depth_samples(
                     sky_depth, pred_sky_mask,
                 )
 
+                # The default histogram and benchmark metrics must select the
+                # same evaluated GT, after conversion/alignment and depth caps.
+                bm_bins = None
+                if benchmark_stores is not None:
+                    bm_bins = get_benchmark_depth_bins(
+                        depth_gt, *benchmark_depth_range
+                    )
+                    if benchmark_boundaries is None:
+                        benchmark_boundaries = bm_bins["boundaries"]
+                distribution_mask = bm_bins["all"] if bm_bins is not None else None
+
                 if verbose and not logged_stats:
                     _log_sample_stats(depth_gt, depth_pred_aligned, "DEPTH")
                     logged_stats = True
@@ -1250,6 +1290,7 @@ def evaluate_depth_samples(
                     defer_to_batcher=defer_depth,
                     intrinsics=evaluated_K,
                     depth_is_radial=depth_is_radial,
+                    distribution_mask=distribution_mask,
                 )
                 _append_metrics(stores["raw"], raw_metrics, raw_pred_path)
 
@@ -1267,6 +1308,7 @@ def evaluate_depth_samples(
                         defer_to_batcher=defer_depth,
                         intrinsics=evaluated_K,
                         depth_is_radial=depth_is_radial,
+                        distribution_mask=distribution_mask,
                     )
                     aligned_pred_path = _write_npy_array(
                         str(aligned_pred_dir), i, depth_pred_aligned
@@ -1401,12 +1443,6 @@ def evaluate_depth_samples(
 
                 # -- Benchmark depth-range metrics per emitted semantic space --
                 if benchmark_stores is not None:
-                    bm_bins = get_benchmark_depth_bins(
-                        depth_gt, benchmark_depth_range[0], benchmark_depth_range[1]
-                    )
-                    if benchmark_boundaries is None:
-                        benchmark_boundaries = bm_bins["boundaries"]
-
                     for bn in _BENCHMARK_BIN_NAMES:
                         native_bin_mask = bm_bins[bn].copy()
                         native_bin_mask &= (depth_pred_raw > 0) & np.isfinite(
@@ -1664,7 +1700,9 @@ def evaluate_depth_samples(
                     else None,
                 },
             }
-            return finalize_distributions(result, distribution_config, "rmse", "depth")
+            return _finalize_depth_distributions(
+                result, distribution_config, "depth", benchmark_depth_range, sky_depth
+            )
         finally:
             for branch_store in stores.values():
                 branch_store["absrel_store"].close()
@@ -1704,7 +1742,8 @@ def evaluate_sparse_depth_samples(
     ``sky_depth`` caps projected GT and predictions and fills optional
     ``sample["pred_sky_mask"]`` pixels, as in :func:`evaluate_depth_samples`.
     ``distribution_config`` enables per-sample and pooled RMSE histograms of
-    the evaluated projected pixels, using the same bins in every space.
+    the evaluated projected pixels, using the same bins in every space and
+    restricting GT to the benchmark range after sky-depth capping, if enabled.
     """
     validate_sky_depth(sky_depth)
     valid_alignment_modes = {"none", "auto_affine", "affine"}
@@ -1741,6 +1780,8 @@ def evaluate_sparse_depth_samples(
         depth_gt: np.ndarray,
         depth_pred: np.ndarray,
         valid_mask: np.ndarray,
+        *,
+        distribution_mask: Optional[np.ndarray] = None,
     ) -> dict:
         standard_metrics, standard_pool_stats = compute_standard_depth_metrics(
             depth_pred, depth_gt, valid_mask=valid_mask
@@ -1755,7 +1796,9 @@ def evaluate_sparse_depth_samples(
         )
         return {
             "distribution_errors": (
-                depth_error_magnitudes(depth_pred, depth_gt, valid_mask)
+                depth_error_magnitudes(
+                    depth_pred, depth_gt, valid_mask, selection_mask=distribution_mask
+                )
                 if distribution_config else None
             ),
             "absrel_arr": absrel_arr,
@@ -2019,6 +2062,15 @@ def evaluate_sparse_depth_samples(
                     sky_depth, pred_sky_mask,
                 )
 
+                bm_bins = None
+                if benchmark_stores is not None:
+                    bm_bins = get_benchmark_depth_bins(
+                        sparse_depth_gt, *benchmark_depth_range
+                    )
+                    if benchmark_boundaries is None:
+                        benchmark_boundaries = bm_bins["boundaries"]
+                distribution_mask = bm_bins["all"] if bm_bins is not None else None
+
                 if verbose and not logged_stats:
                     _log_sample_stats(sparse_depth_gt, depth_pred_aligned, "SPARSE DEPTH")
                     logged_stats = True
@@ -2028,7 +2080,8 @@ def evaluate_sparse_depth_samples(
                     sparse_depth_gt, depth_pred_raw, sparse_mask, sky_valid
                 )
                 raw_metrics = _compute_sparse_metrics(
-                    sparse_depth_gt, depth_pred_raw, raw_valid_mask
+                    sparse_depth_gt, depth_pred_raw, raw_valid_mask,
+                    distribution_mask=distribution_mask,
                 )
                 _append_sparse_metrics(stores["raw"], raw_metrics, raw_pred_path)
 
@@ -2040,7 +2093,8 @@ def evaluate_sparse_depth_samples(
                         sparse_depth_gt, depth_pred_aligned, sparse_mask, sky_valid
                     )
                     aligned_metrics = _compute_sparse_metrics(
-                        sparse_depth_gt, depth_pred_aligned, aligned_valid_mask
+                        sparse_depth_gt, depth_pred_aligned, aligned_valid_mask,
+                        distribution_mask=distribution_mask,
                     )
                     aligned_pred_path = _write_npy_array(
                         str(aligned_pred_dir), i, depth_pred_aligned
@@ -2083,14 +2137,6 @@ def evaluate_sparse_depth_samples(
                 )
 
                 if benchmark_stores is not None:
-                    bm_bins = get_benchmark_depth_bins(
-                        sparse_depth_gt,
-                        benchmark_depth_range[0],
-                        benchmark_depth_range[1],
-                    )
-                    if benchmark_boundaries is None:
-                        benchmark_boundaries = bm_bins["boundaries"]
-
                     for bn in _BENCHMARK_BIN_NAMES:
                         native_bin_mask = bm_bins[bn].copy()
                         native_bin_mask &= raw_valid_mask
@@ -2245,7 +2291,10 @@ def evaluate_sparse_depth_samples(
                     else None,
                 },
             }
-            return finalize_distributions(result, distribution_config, "rmse", "sparse_depth")
+            return _finalize_depth_distributions(
+                result, distribution_config, "sparse_depth",
+                benchmark_depth_range, sky_depth,
+            )
         finally:
             for branch_store in stores.values():
                 branch_store["absrel_store"].close()

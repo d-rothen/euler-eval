@@ -134,15 +134,23 @@ class ErrorDistribution:
 
 
 def depth_error_magnitudes(
-    pred: np.ndarray, gt: np.ndarray, valid_mask: np.ndarray | None = None
+    pred: np.ndarray,
+    gt: np.ndarray,
+    valid_mask: np.ndarray | None = None,
+    *,
+    selection_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Per-pixel RMSE magnitudes with the standard depth metric validity rules.
 
     For a single scalar pixel, sqrt(squared error) is absolute error. Taking
     the difference in float64 avoids overflow from squaring float32 errors.
+    An optional selection mask further restricts the valid observations, e.g.
+    to the benchmark's GT range after depth conversion and sky-depth capping.
     """
     if valid_mask is None:
         valid_mask = (gt > 0) & (pred > 0) & np.isfinite(gt) & np.isfinite(pred)
+    if selection_mask is not None:
+        valid_mask = valid_mask & selection_mask
     return np.abs(
         pred[valid_mask].astype(np.float64) - gt[valid_mask].astype(np.float64)
     )

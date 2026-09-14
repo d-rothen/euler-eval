@@ -7,6 +7,9 @@ the git history for those.
 
 ### Fixed
 
+- Default dataset and per-file depth distributions now honor the benchmark GT
+  range after sky-depth capping, matching the named benchmark `all` histogram
+  and metrics. The selected population is recorded in metric-set metadata.
 - Sparse pointcloud evaluation now follows the configured prediction modality:
   depth predictions emit only an atomic `sparsedepth.eval`, while sparse
   points-3D metrics require an explicit `points_3d` prediction. This prevents an

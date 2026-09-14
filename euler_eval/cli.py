@@ -609,7 +609,12 @@ def _distribution_descriptions(
 
 def _distribution_metadata(results: dict) -> dict:
     info = results.get("distribution_info")
-    return {"distributions": info} if info is not None else {}
+    if info is None:
+        return {}
+    metadata = {"distributions": info}
+    if "distribution_population" in results:
+        metadata["distributionPopulation"] = results["distribution_population"]
+    return metadata
 
 
 def _resolve_distribution_config(value, args) -> DistributionConfig | None:

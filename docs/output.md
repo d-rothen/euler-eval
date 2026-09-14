@@ -67,6 +67,9 @@ typed histogram leaves under the `distributions` category, each containing
 registry at `metricSet.metadata.distributions` shares bin boundaries across
 metric/space definitions. See [Error distributions](distributions.md) for the
 schema, paths, units and consumer fixtures.
+For depth, `metricSet.metadata.distributionPopulation` also records the GT
+range, sky-depth cap and selection used by the default dataset/per-file
+histograms. With a benchmark range they represent its `all` population.
 
 `meta` is what makes a result reproducible after the fact: it records the
 alignment mode that ran, whether sky masking was on, the benchmark range, and
