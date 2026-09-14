@@ -10,6 +10,12 @@
 | [Results & output](output.md) | Where files land, the anatomy of `eval.json`, per-file metrics, the sanity-check report |
 | [In-training validation](validation.md) | The programmatic API for scoring in-memory predictions during training |
 
+## Proposed features
+
+- [Unified evaluation framework](feature-request-unified-evaluation-framework.md):
+  a shared evaluation lifecycle with explicit modality-specific preparation,
+  metric dependencies, populations, aggregation and output compatibility.
+
 ## Concepts in one page
 
 **A dataset is an indexed root, not a folder of files.** Every path in the
