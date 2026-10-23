@@ -547,6 +547,35 @@ def _get_sky_mask(sample: dict) -> Optional[np.ndarray]:
     return ~sky  # invert: True = non-sky = valid
 
 
+class _SkyMaskCoverage:
+    """Count the samples whose GT sky mask removed any pixel.
+
+    A wrong ``skyclass`` in the segmentation's dataset head, or segmentation
+    that matches no sample, yields masks without sky, and metrics then include
+    the sky without any error.
+    """
+
+    def __init__(self) -> None:
+        self.samples = 0
+        self.with_sky = 0
+
+    def add(self, sky_valid: Optional[np.ndarray]) -> None:
+        """Record one sample's :func:`_get_sky_mask` result."""
+        self.samples += 1
+        if sky_valid is not None and not np.all(sky_valid):
+            self.with_sky += 1
+
+    def warn_if_empty(self, modality: str) -> None:
+        if self.samples and not self.with_sky:
+            print(
+                f"Warning: --mask-sky found no sky in any of the {self.samples} "
+                f"{modality} samples, so no sky was masked. Check that the GT "
+                "segmentation matches these samples and that its dataset head "
+                "declares the right 'skyclass' (`euler-loading <segmentation "
+                "path>` reports the sky it decodes)."
+            )
+
+
 def _get_prediction_sky_mask(
     sample: dict, depth_pred: np.ndarray
 ) -> Optional[np.ndarray]:
@@ -1134,6 +1163,7 @@ def evaluate_depth_samples(
         try:
             print("Computing per-image depth metrics...")
             depth_iter = _prefetched_iter(dataset, num_workers)
+            sky_coverage = _SkyMaskCoverage()
             for i, sample in tqdm(
                 depth_iter,
                 total=num_samples,
@@ -1181,6 +1211,7 @@ def evaluate_depth_samples(
                 sky_valid = None
                 if sky_mask_enabled:
                     sky_valid = _get_sky_mask(sample)
+                    sky_coverage.add(sky_valid)
                     if (
                         sky_valid is not None
                         and sky_valid.shape[:2] != depth_pred.shape[:2]
@@ -1600,6 +1631,8 @@ def evaluate_depth_samples(
                         entry_id,
                     )
 
+            sky_coverage.warn_if_empty("depth")
+
             if depth_metrics_batcher is not None:
                 print("Computing batched GPU depth metrics (tail flush)...")
                 depth_metrics_batcher.finalize()
@@ -1946,6 +1979,7 @@ def evaluate_sparse_depth_samples(
         try:
             print("Computing sparse pointcloud depth metrics...")
             depth_iter = _prefetched_iter(dataset, num_workers)
+            sky_coverage = _SkyMaskCoverage()
             for i, sample in tqdm(
                 depth_iter,
                 total=num_samples,
@@ -2013,6 +2047,7 @@ def evaluate_sparse_depth_samples(
                 sky_valid = None
                 if sky_mask_enabled:
                     sky_valid = _get_sky_mask(sample)
+                    sky_coverage.add(sky_valid)
                     if sky_valid is not None and sky_valid.shape[:2] != depth_pred.shape[:2]:
                         sky_valid = align_to_prediction(sky_valid, depth_pred)
 
@@ -2199,6 +2234,8 @@ def evaluate_sparse_depth_samples(
                     sv = canonical_metrics["silog_full"]
                     if np.isfinite(sv):
                         sanity_checker.validate_depth_silog(sv, entry_id)
+
+            sky_coverage.warn_if_empty("sparse depth")
 
             print("Aggregating sparse depth results...")
 
@@ -2457,6 +2494,7 @@ def evaluate_rgb_samples(
         try:
             print("Computing per-image RGB metrics...")
             rgb_iter = _prefetched_iter(dataset, num_workers)
+            sky_coverage = _SkyMaskCoverage()
             for i, sample in tqdm(
                 rgb_iter,
                 total=num_samples,
@@ -2489,6 +2527,7 @@ def evaluate_rgb_samples(
                 sky_valid = None
                 if sky_mask_enabled:
                     sky_valid = _get_sky_mask(sample)
+                    sky_coverage.add(sky_valid)
                     if sky_valid is not None and sky_valid.shape[:2] != img_pred.shape[:2]:
                         sky_valid = align_to_prediction(sky_valid, img_pred)
 
@@ -2747,6 +2786,8 @@ def evaluate_rgb_samples(
                         )
                     if depth_binned_entry is not None:
                         sanity_checker.validate_depth_binned(depth_binned_entry, entry_id)
+
+            sky_coverage.warn_if_empty("RGB")
 
             if rgb_lpips_batcher is not None:
                 print("Computing batched RGB LPIPS (tail flush)...")
@@ -3371,6 +3412,7 @@ def evaluate_points_3d_samples(
         try:
             print("Computing per-image points_3d metrics...")
             points_iter = _prefetched_iter(dataset, num_workers)
+            sky_coverage = _SkyMaskCoverage()
             for i, sample in tqdm(
                 points_iter,
                 total=num_samples,
@@ -3429,6 +3471,7 @@ def evaluate_points_3d_samples(
                 valid = finite & (gt_norm > 0)
                 if sky_mask_enabled:
                     sky_valid = _get_sky_mask(sample)
+                    sky_coverage.add(sky_valid)
                     if sky_valid is not None:
                         if sky_valid.shape[:2] != pts_pred.shape[:2]:
                             sky_valid = align_to_prediction(sky_valid, pts_pred)
@@ -3612,6 +3655,8 @@ def evaluate_points_3d_samples(
                     entry_id,
                     {"id": entry_id, "metrics": metrics_dict},
                 )
+
+            sky_coverage.warn_if_empty("points_3d")
 
             print("Aggregating points_3d results...")
             if _agg_total > 0:
@@ -4018,6 +4063,7 @@ def evaluate_points_3d_sparse_samples(
         try:
             print("Computing sparse points_3d metrics...")
             points_iter = _prefetched_iter(dataset, num_workers)
+            sky_coverage = _SkyMaskCoverage()
             for i, sample in tqdm(
                 points_iter,
                 total=num_samples,
@@ -4096,6 +4142,7 @@ def evaluate_points_3d_sparse_samples(
                 sky_valid = None
                 if sky_mask_enabled:
                     sky_valid = _get_sky_mask(sample)
+                    sky_coverage.add(sky_valid)
                     if sky_valid is not None and sky_valid.shape[:2] != pred_shape:
                         ref = depth_pred if pred_is_depth else pts_pred
                         sky_valid = align_to_prediction(sky_valid, ref)
@@ -4339,6 +4386,8 @@ def evaluate_points_3d_sparse_samples(
                     entry_id,
                     {"id": entry_id, "metrics": metrics_dict},
                 )
+
+            sky_coverage.warn_if_empty("sparse points_3d")
 
             print("Aggregating sparse points_3d results...")
             if _agg_total > 0:

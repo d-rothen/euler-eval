@@ -534,6 +534,26 @@ def test_prediction_sky_fill_still_respects_gt_sky_exclusion(monkeypatch):
     assert result["depth_metric"]["standard"]["pixel_pool"]["mae"] == 0.0
 
 
+@pytest.mark.parametrize("has_sky, warned", [(False, True), (True, False)])
+def test_sky_masking_that_masks_nothing_is_reported(
+    monkeypatch, capsys, has_sky, warned
+):
+    # A wrong 'skyclass' in the segmentation head decodes to masks without sky.
+    _patch_depth_metrics(monkeypatch)
+    sample = {
+        "id": "frame",
+        "gt": np.array([[10, 20], [30, 40]], dtype=np.float32),
+        "pred": np.array([[10, 20], [30, 40]], dtype=np.float32),
+        "segmentation": np.array([[False, False], [False, has_sky]]),
+    }
+    eval_mod.evaluate_depth_samples(
+        _DummyDepthDataset([sample]), is_radial=True, device="cpu",
+        num_workers=0, alignment_mode="none", sky_mask_enabled=True,
+    )
+    out = capsys.readouterr().out
+    assert ("--mask-sky found no sky in any of the 1 depth samples" in out) is warned
+
+
 @pytest.mark.parametrize("sky_depth", [None, 50.0])
 def test_cli_uses_prediction_sky_mask_and_records_provenance(
     monkeypatch, indexed_sky_prediction, tmp_path, sky_depth

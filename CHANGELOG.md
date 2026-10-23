@@ -17,6 +17,9 @@ the git history for those.
 
 ### Added
 
+- `--mask-sky` warns when the GT segmentation masks no sky in any evaluated
+  sample of a modality, as a wrong `skyclass` in the segmentation's dataset
+  head or segmentation that matches no sample does; metrics then include sky.
 - Optional per-sample and pooled RMSE error histograms for dense/sparse depth
   and point maps, enabled with `--distributions` or the config's `distributions`
   section. Configurable logarithmic or linear bins share JSON-safe boundaries

@@ -9,6 +9,7 @@ from euler_eval.evaluate import (
     _get_intrinsics_K,
     _get_prediction_sky_mask,
     _get_sky_mask,
+    _SkyMaskCoverage,
 )
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,33 @@ class TestGetSkyMask:
         result = _get_sky_mask(sample)
         # Should use sky_a (first in dict)
         np.testing.assert_array_equal(result, ~sky_a)
+
+
+# ---------------------------------------------------------------------------
+# _SkyMaskCoverage
+# ---------------------------------------------------------------------------
+
+
+class TestSkyMaskCoverage:
+    def test_warns_when_no_sample_has_sky(self, capsys):
+        coverage = _SkyMaskCoverage()
+        coverage.add(np.ones((2, 2), dtype=bool))  # all valid: no sky
+        coverage.add(None)  # no segmentation matched the sample
+        coverage.warn_if_empty("depth")
+        out = capsys.readouterr().out
+        assert "--mask-sky found no sky in any of the 2 depth samples" in out
+        assert "'skyclass'" in out
+
+    def test_silent_when_any_sample_has_sky(self, capsys):
+        coverage = _SkyMaskCoverage()
+        coverage.add(np.ones((2, 2), dtype=bool))
+        coverage.add(np.array([[False, True], [True, True]]))
+        coverage.warn_if_empty("depth")
+        assert capsys.readouterr().out == ""
+
+    def test_silent_when_sky_masking_never_ran(self, capsys):
+        _SkyMaskCoverage().warn_if_empty("depth")
+        assert capsys.readouterr().out == ""
 
 
 # ---------------------------------------------------------------------------
