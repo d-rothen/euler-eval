@@ -86,7 +86,7 @@ def indexed_sky_prediction(tmp_path):
         paths[name] = str(root)
         is_mask = name == "sky_mask"
         modality = "sky_mask" if is_mask else "depth"
-        meta = {"sky_mask": [12, 34, 56]} if is_mask else {"radial_depth": True}
+        meta = {"skyclass": [12, 34, 56]} if is_mask else {"radial_depth": True}
         # Reverse mask order so pairing by position would score the wrong mask.
         ids = ["second", "first"] if is_mask else ["first", "second"]
         files = []
@@ -96,7 +96,7 @@ def indexed_sky_prediction(tmp_path):
             sky_index = (1, 1) if frame_id == "first" else (0, 0)
             if is_mask:
                 rgb = np.zeros((2, 2, 3), dtype=np.uint8)
-                rgb[sky_index] = meta["sky_mask"]
+                rgb[sky_index] = meta["skyclass"]
                 Image.fromarray(rgb).save(root / path)
             else:
                 depth = np.array(

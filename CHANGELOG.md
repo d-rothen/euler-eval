@@ -17,6 +17,21 @@ the git history for those.
 
 ### Added
 
+- Opt-in `--sky-iou` scores predicted sky against GT segmentation sky for
+  dense and sparse depth: IoU, precision and recall under
+  `{depth,sparsedepth}.eval.sky_segmentation.{explicit,implicit}.{pixel_pool,image_mean,image_median}`,
+  with per-file values and `meta.sky_segmentation` provenance. `explicit`
+  compares a `datasets[].sky_mask`; `implicit` compares `depth >= --sky-depth`
+  on metric predictions before calibration and capping. The two are never
+  merged, and implicit IoU depends on the threshold as much as on the model
+  (see `docs/metrics.md`). The flag requires GT segmentation and loads it, and
+  a `sky_mask`, without `--mask-sky` or `--sky-depth`; it changes no depth
+  value, and without it outputs are unchanged.
+- `gt.semantic_segmentation` is accepted as an alias of `gt.segmentation`;
+  configuring both is an error. Under either key, a GT segmentation path
+  without `#scope=` also finds an archive scope named after the other key, or
+  whose head declares it, where it previously failed to load.
+
 - `--mask-sky` warns when the GT segmentation masks no sky in any evaluated
   sample of a modality, as a wrong `skyclass` in the segmentation's dataset
   head or segmentation that matches no sample does; metrics then include sky.
@@ -37,6 +52,11 @@ the git history for those.
   predicted RGB images. The official LIVE natural-scene model parameters are
   bundled for deterministic offline evaluation and recorded in the output
   metadata.
+
+### Changed
+
+- Require `euler-loading>=2.29`, the first release whose `sky_mask` loaders
+  read the contract's `skyclass`.
 
 ## 2.25.0
 

@@ -13,11 +13,16 @@ import math
 import platform
 import sys
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import torch
 
-from .config_paths import normalize_modality_path
+from .config_paths import (
+    GT_SEGMENTATION_KEYS,
+    normalize_modality_path,
+    resolve_gt_segmentation_path,
+)
 from .data import (
     build_depth_eval_dataset,
     build_points_3d_eval_dataset,
@@ -25,6 +30,7 @@ from .data import (
     build_rays_eval_dataset,
     build_rgb_eval_dataset,
     build_sparse_depth_eval_dataset,
+    count_ids_dropped_by,
     get_depth_metadata,
     get_points_3d_metadata,
     get_rays_metadata,
@@ -177,6 +183,40 @@ def _sparse_depth_eval_axes(
     if benchmark:
         axes["bin"] = _BENCHMARK_BIN_AXIS
     return axes
+
+
+_SKY_SEGMENTATION_CATEGORY = "sky_segmentation"
+_SKY_SEGMENTATION_VARIANTS = ("explicit", "implicit")
+
+
+def _with_sky_segmentation_axes(
+    axes: dict[str, AxisDeclaration],
+) -> dict[str, AxisDeclaration]:
+    """Declare the ``sky_segmentation.{variant}.{reduction}.{metric}`` subtree.
+
+    Sky IoU does not depend on the evaluated depth space, so its keys carry no
+    space segment: the space axis becomes optional, ``sky_segmentation`` joins
+    the category values, and an optional ``variant`` axis follows the category.
+    Existing keys decompose exactly as before. Only used when sky IoU keys are
+    written, so other outputs keep their declarations.
+    """
+    category_position = axes["category"].position
+    extended = {}
+    for name, axis in axes.items():
+        if name == "space":
+            axis = replace(axis, optional=True)
+        elif name == "category":
+            axis = replace(axis, values=(*axis.values, _SKY_SEGMENTATION_CATEGORY))
+        if axis.position > category_position:
+            axis = replace(axis, position=axis.position + 1)
+        extended[name] = axis
+    extended["variant"] = AxisDeclaration(
+        position=category_position + 1,
+        values=_SKY_SEGMENTATION_VARIANTS,
+        optional=True,
+        description="Sky source: explicit sky_mask or implicit depth threshold",
+    )
+    return extended
 
 
 def _rgb_eval_axes(
@@ -379,6 +419,25 @@ _SPARSE_DEPTH_EVAL_DESCRIPTIONS["valid_pixel_count"] = MetricDescription(
     unit="pixels",
     display_name="Valid Pixel Count",
 )
+
+# Base names below ``sky_segmentation.{variant}.{reduction}`` (--sky-iou).
+_SKY_SEGMENTATION_EVAL_DESCRIPTIONS = {
+    "iou": MetricDescription(
+        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="Sky IoU"
+    ),
+    "precision": MetricDescription(
+        is_higher_better=True,
+        min_value=0.0,
+        max_value=1.0,
+        display_name="Sky Precision",
+    ),
+    "recall": MetricDescription(
+        is_higher_better=True,
+        min_value=0.0,
+        max_value=1.0,
+        display_name="Sky Recall",
+    ),
+}
 
 _RGB_EVAL_DESCRIPTIONS = {
     "psnr": MetricDescription(is_higher_better=True, unit="dB", display_name="PSNR"),
@@ -784,6 +843,8 @@ def _wrap_depth_space_pfm_metrics(
     }
     if not space_metrics and canonical_key in metrics:
         space_metrics[canonical_space or "metric"] = metrics[canonical_key]
+    if _SKY_SEGMENTATION_CATEGORY in metrics:
+        space_metrics[_SKY_SEGMENTATION_CATEGORY] = metrics[_SKY_SEGMENTATION_CATEGORY]
     return {metric_root: {"eval": space_metrics}}
 
 
@@ -878,9 +939,21 @@ def _prediction_depth_space_hint(key: str | None) -> str | None:
 
 
 def _gt_segmentation_entry(gt: dict) -> tuple[str | None, dict | None]:
-    """Return the configured GT segmentation entry, if any."""
-    if "segmentation" in gt and "path" in gt.get("segmentation", {}):
-        return "segmentation", gt["segmentation"]
+    """Return the configured GT segmentation ``(key, entry)``, if any.
+
+    ``gt.semantic_segmentation`` is accepted as an alias of the canonical
+    ``gt.segmentation``; configuring both is an error.
+    """
+    present = [key for key in GT_SEGMENTATION_KEYS if key in gt]
+    if len(present) > 1:
+        raise ValueError(
+            "gt.segmentation and gt.semantic_segmentation are aliases for the "
+            "same GT segmentation; configure only one (gt.segmentation is "
+            "canonical)"
+        )
+    for key in present:
+        if "path" in gt.get(key, {}):
+            return key, gt[key]
     return None, None
 
 
@@ -926,7 +999,7 @@ def validate_gt_config(gt: dict) -> None:
         "sparse_depth",
         "rays",
         "points_3d",
-        "segmentation",
+        *GT_SEGMENTATION_KEYS,
         "calibration",
         "intrinsics",
         "camera_extrinsics",
@@ -1164,6 +1237,84 @@ def print_results(results: dict, title: str) -> None:
     print_dict(results)
 
 
+def _build_keeping_depth_pairs(
+    build, kwargs: dict, *, sky_mask_for_iou_only: bool, ds_name: str
+) -> tuple:
+    """Build a depth eval dataset whose IoU-only ``sky_mask`` keeps every pair.
+
+    ``sky_mask`` is ID-paired with the depth prediction, so a mask that lacks
+    some frames removes them from every metric. Without ``--sky-depth`` it is
+    read only for ``--sky-iou``, which must not change the evaluated pairs: in
+    that case rebuild without it, which skips the explicit variant.
+
+    Returns ``(dataset, explicit_skip_reason)``.
+    """
+    dataset = build(**kwargs)
+    if not sky_mask_for_iou_only:
+        return dataset, None
+    dropped = count_ids_dropped_by(dataset, "pred_sky_mask")
+    if not dropped:
+        return dataset, None
+    print(
+        f"Warning: --sky-iou: the sky_mask of '{ds_name}' lacks {dropped} depth "
+        "pairs. Without --sky-depth it is read only for the sky IoU, which must "
+        "not change the evaluated pairs, so it is not loaded and the explicit "
+        "variant is skipped."
+    )
+    dataset = build(
+        **{**kwargs, "pred_sky_mask_path": None, "pred_sky_mask_split": None}
+    )
+    return dataset, "sky_mask does not cover every depth pair"
+
+
+def _sky_segmentation_tree(results: dict) -> dict:
+    """Return the cleaned ``sky_segmentation`` metric tree ({} when absent)."""
+    return _clean_metric_tree(results.get(_SKY_SEGMENTATION_CATEGORY) or {})
+
+
+def _sky_segmentation_meta(
+    results: dict, gt_key: str | None, explicit_skip_reason: str | None
+) -> dict | None:
+    """Return ``meta.sky_segmentation`` provenance, or ``None`` without --sky-iou."""
+    info = results.get("sky_segmentation_info")
+    if info is None:
+        return None
+    variants = {variant: dict(info[variant]) for variant in _SKY_SEGMENTATION_VARIANTS}
+    if explicit_skip_reason is not None and not variants["explicit"]["available"]:
+        variants["explicit"]["reason"] = explicit_skip_reason
+    rest = {k: v for k, v in info.items() if k not in _SKY_SEGMENTATION_VARIANTS}
+    return {**variants, "gt_source": f"gt.{gt_key}", **rest}
+
+
+def _sky_iou_summary_line(ds_name: str, results: dict) -> str | None:
+    """Return the one-line pooled sky IoU summary of a prediction dataset."""
+    info = results.get("sky_segmentation_info")
+    if info is None:
+        return None
+
+    def _fmt(value) -> str:
+        return f"{value:.4f}" if value is not None and math.isfinite(value) else "n/a"
+
+    parts = []
+    for variant in _SKY_SEGMENTATION_VARIANTS:
+        pooled = (results.get(_SKY_SEGMENTATION_CATEGORY) or {}).get(variant)
+        if pooled is None:
+            continue
+        pooled = pooled["pixel_pool"]
+        label = (
+            f"implicit (depth >= {info['threshold_m']:g} m)"
+            if variant == "implicit"
+            else variant
+        )
+        parts.append(
+            f"{label} {_fmt(pooled['iou'])} (precision {_fmt(pooled['precision'])}, "
+            f"recall {_fmt(pooled['recall'])})"
+        )
+    return f"Sky IoU, pixel_pool, '{ds_name}': " + (
+        "; ".join(parts) if parts else "no variant computed"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Evaluate depth, sparse depth, RGB, rays, and points_3d datasets using euler_loading"
@@ -1243,6 +1394,16 @@ def main():
             "Cap GT and predicted depths at this finite positive value after "
             "conversion/alignment; fill predicted sky_mask pixels with it "
             "(default: disabled)"
+        ),
+    )
+    parser.add_argument(
+        "--sky-iou",
+        action="store_true",
+        help=(
+            "Score predicted sky against GT segmentation sky (IoU, precision, "
+            "recall): explicit from datasets[].sky_mask, implicit from depth "
+            ">= --sky-depth for metric predictions. Requires gt.segmentation; "
+            "depth metrics are unchanged"
         ),
     )
     parser.add_argument(
@@ -1378,6 +1539,33 @@ def main():
             args.mask_sky = False
         else:
             print(f"Sky masking enabled ({segmentation_key})")
+    if args.sky_iou:
+        # Unlike --mask-sky, never disable silently: the user asked for a metric.
+        if segmentation_entry is None:
+            print(
+                "Error: --sky-iou requires gt.segmentation (or its alias "
+                "gt.semantic_segmentation) in config.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        implicit_text = (
+            f", implicit at depth >= {args.sky_depth:g} m"
+            if args.sky_depth is not None
+            else ""
+        )
+        print(
+            f"Sky IoU enabled (GT: {segmentation_key}; explicit from "
+            f"sky_mask{implicit_text})"
+        )
+    segmentation_selector = None
+    if segmentation_entry is not None and (args.mask_sky or args.sky_iou):
+        try:
+            segmentation_selector = resolve_gt_segmentation_path(
+                segmentation_entry["path"], config_key=segmentation_key
+            )
+        except ValueError as e:
+            print(f"Error loading config: {e}", file=sys.stderr)
+            sys.exit(1)
     print("-" * 60)
 
     # Initialize sanity checker if not disabled
@@ -1414,11 +1602,7 @@ def main():
     intrinsics_path = gt.get("intrinsics", {}).get("path")
     camera_extrinsics_path = gt.get("camera_extrinsics", {}).get("path")
     lidar_extrinsics_path = gt.get("lidar_extrinsics", {}).get("path")
-    segmentation_path = (
-        segmentation_entry.get("path")
-        if args.mask_sky and segmentation_entry is not None
-        else None
-    )
+    segmentation_path = segmentation_selector if args.mask_sky else None
     gt_depth_split = gt.get("depth", {}).get("split")
     gt_sparse_depth_split = gt.get("sparse_depth", {}).get("split")
     gt_rgb_split = gt.get("rgb", {}).get("split")
@@ -1429,9 +1613,13 @@ def main():
     camera_extrinsics_split = gt.get("camera_extrinsics", {}).get("split")
     lidar_extrinsics_split = gt.get("lidar_extrinsics", {}).get("split")
     segmentation_split = (
-        segmentation_entry.get("split")
-        if args.mask_sky and segmentation_entry is not None
-        else None
+        segmentation_entry.get("split") if segmentation_path is not None else None
+    )
+    # Depth and sparse depth also read GT segmentation for --sky-iou; it is
+    # used only for sky masking when --mask-sky is set as well.
+    depth_segmentation_path = segmentation_selector
+    depth_segmentation_split = (
+        segmentation_entry.get("split") if segmentation_selector is not None else None
     )
 
     # Evaluate each prediction dataset
@@ -1440,10 +1628,16 @@ def main():
         pred_depth_key, pred_depth_config = _prediction_depth_entry(dataset_config)
         has_depth = pred_depth_config is not None
         pred_sky_mask_config = (
-            dataset_config.get("sky_mask", {}) if args.sky_depth is not None else {}
+            dataset_config.get("sky_mask", {})
+            if args.sky_depth is not None or args.sky_iou
+            else {}
         )
         pred_sky_mask_path = pred_sky_mask_config.get("path")
         pred_sky_mask_split = pred_sky_mask_config.get("split")
+        # The depth fill stays gated on --sky-depth; --sky-iou only reads.
+        sky_mask_for_iou_only = (
+            args.sky_depth is None and pred_sky_mask_path is not None
+        )
         has_rgb = "rgb" in dataset_config and "path" in dataset_config["rgb"]
         has_rays = "rays" in dataset_config and "path" in dataset_config["rays"]
         has_points_3d = (
@@ -1485,21 +1679,26 @@ def main():
             if pred_depth_key != "depth":
                 print(f"  Pred depth entry: {pred_depth_key}")
 
-            depth_dataset = build_depth_eval_dataset(
-                gt_depth_path=gt_depth_path,
-                pred_depth_path=pred_depth_path,
-                pred_sky_mask_path=pred_sky_mask_path,
-                pred_sky_mask_split=pred_sky_mask_split,
-                calibration_path=calibration_path,
-                segmentation_path=segmentation_path,
-                pred_depth_metadata_scope=(
-                    pred_depth_key if pred_depth_key != "depth" else None
+            depth_dataset, sky_mask_skip_reason = _build_keeping_depth_pairs(
+                build_depth_eval_dataset,
+                dict(
+                    gt_depth_path=gt_depth_path,
+                    pred_depth_path=pred_depth_path,
+                    pred_sky_mask_path=pred_sky_mask_path,
+                    pred_sky_mask_split=pred_sky_mask_split,
+                    calibration_path=calibration_path,
+                    segmentation_path=depth_segmentation_path,
+                    pred_depth_metadata_scope=(
+                        pred_depth_key if pred_depth_key != "depth" else None
+                    ),
+                    segmentation_modality_key=segmentation_key or "segmentation",
+                    gt_depth_split=gt_depth_split,
+                    pred_depth_split=pred_depth_split,
+                    calibration_split=calibration_split,
+                    segmentation_split=depth_segmentation_split,
                 ),
-                segmentation_modality_key=segmentation_key or "segmentation",
-                gt_depth_split=gt_depth_split,
-                pred_depth_split=pred_depth_split,
-                calibration_split=calibration_split,
-                segmentation_split=segmentation_split,
+                sky_mask_for_iou_only=sky_mask_for_iou_only,
+                ds_name=ds_name,
             )
             et_eval_datasets["depth"] = depth_dataset
 
@@ -1520,6 +1719,7 @@ def main():
                 sanity_checker=sanity_checker,
                 sky_mask_enabled=args.mask_sky,
                 sky_depth=args.sky_depth,
+                sky_iou=args.sky_iou,
                 alignment_mode=args.depth_alignment,
                 benchmark_depth_range=(
                     tuple(args.benchmark_depth_range)
@@ -1540,16 +1740,24 @@ def main():
             depth_dataset_info = depth_results.get("dataset_info", {})
 
             depth_spatial = depth_results.get("spatial_info", {})
+            depth_axes = _depth_eval_axes(
+                benchmark=has_benchmark, distributions=distribution_config is not None
+            )
+            depth_descriptions = _distribution_descriptions(
+                _DEPTH_EVAL_DESCRIPTIONS, distribution_config, "rmse"
+            )
+            sky_tree = _sky_segmentation_tree(depth_results)
+            if sky_tree:
+                depth_axes = _with_sky_segmentation_axes(depth_axes)
+                depth_descriptions = {
+                    **depth_descriptions, **_SKY_SEGMENTATION_EVAL_DESCRIPTIONS
+                }
             depth_ns = _EvalNamespace(
                 producer="euler-eval",
                 producer_version=_get_version(),
                 modalities=("depth",),
-                axes=_depth_eval_axes(
-                    benchmark=has_benchmark, distributions=distribution_config is not None
-                ),
-                descriptions=_distribution_descriptions(
-                    _DEPTH_EVAL_DESCRIPTIONS, distribution_config, "rmse"
-                ),
+                axes=depth_axes,
+                descriptions=depth_descriptions,
             )
             depth_save = {
                 "metricSet": depth_ns.metric_set_envelope(
@@ -1585,7 +1793,12 @@ def main():
                         "split": pred_depth_split,
                         "entry": pred_depth_key,
                         "dimensions": depth_spatial.get("pred_dimensions"),
-                        "sky_mask": pred_sky_mask_config or None,
+                        # A mask dropped for --sky-iou coverage was never read.
+                        "sky_mask": (
+                            None
+                            if sky_mask_skip_reason is not None
+                            else pred_sky_mask_config or None
+                        ),
                     },
                     "spatial_alignment": {
                         "method": depth_spatial.get("method", "none"),
@@ -1594,10 +1807,14 @@ def main():
                         ),
                     },
                     "modality_params": depth_meta,
+                    "sky_segmentation": _sky_segmentation_meta(
+                        depth_results, segmentation_key, sky_mask_skip_reason
+                    ),
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "depth_alignment_mode": args.depth_alignment,
                         "sky_depth": args.sky_depth,
+                        "sky_iou": True if args.sky_iou else None,
                         "batch_size": args.batch_size,
                         "num_workers": args.num_workers,
                         "benchmark_depth_range": (
@@ -1616,6 +1833,8 @@ def main():
                 branch = depth_results.get(result_key)
                 if branch is not None:
                     depth_save["depth"]["eval"][space_name] = _clean_metric_tree(branch)
+            if sky_tree:
+                depth_save["depth"]["eval"][_SKY_SEGMENTATION_CATEGORY] = sky_tree
 
             # Inject benchmark bin metrics under the existing category
             # keys so that the bin axis decomposes correctly:
@@ -1646,7 +1865,13 @@ def main():
                     "depth_range": depth_benchmark["boundaries"]["range"],
                     "boundaries": depth_benchmark["boundaries"],
                 }
-            for depth_key in ("depth", "depth_native", "depth_metric", "depth_benchmark"):
+            for depth_key in (
+                "depth",
+                "depth_native",
+                "depth_metric",
+                "depth_benchmark",
+                _SKY_SEGMENTATION_CATEGORY,
+            ):
                 if depth_key in depth_results and depth_results[depth_key] is not None:
                     all_results[depth_key] = depth_results[depth_key]
             depth_pfm = depth_results.get("per_file_metrics", {})
@@ -1671,6 +1896,9 @@ def main():
                  if k not in ("per_file_metrics", "spatial_info")},
                 f"DEPTH: {ds_name}",
             )
+            sky_iou_line = _sky_iou_summary_line(ds_name, depth_results)
+            if sky_iou_line is not None:
+                print(sky_iou_line)
 
         # -- Sparse pointcloud depth evaluation --
         sparse_depth_dataset = None
@@ -1687,25 +1915,30 @@ def main():
             if lidar_extrinsics_path:
                 print(f"  Lidar extrinsics:     {lidar_extrinsics_path}")
 
-            sparse_depth_dataset = build_sparse_depth_eval_dataset(
-                gt_sparse_depth_path=gt_sparse_depth_path,
-                pred_depth_path=pred_depth_path,
-                pred_sky_mask_path=pred_sky_mask_path,
-                pred_sky_mask_split=pred_sky_mask_split,
-                intrinsics_path=intrinsics_path,
-                camera_extrinsics_path=camera_extrinsics_path,
-                lidar_extrinsics_path=lidar_extrinsics_path,
-                segmentation_path=segmentation_path,
-                pred_depth_metadata_scope=(
-                    pred_depth_key if pred_depth_key != "depth" else None
+            sparse_depth_dataset, sky_mask_skip_reason = _build_keeping_depth_pairs(
+                build_sparse_depth_eval_dataset,
+                dict(
+                    gt_sparse_depth_path=gt_sparse_depth_path,
+                    pred_depth_path=pred_depth_path,
+                    pred_sky_mask_path=pred_sky_mask_path,
+                    pred_sky_mask_split=pred_sky_mask_split,
+                    intrinsics_path=intrinsics_path,
+                    camera_extrinsics_path=camera_extrinsics_path,
+                    lidar_extrinsics_path=lidar_extrinsics_path,
+                    segmentation_path=depth_segmentation_path,
+                    pred_depth_metadata_scope=(
+                        pred_depth_key if pred_depth_key != "depth" else None
+                    ),
+                    segmentation_modality_key=segmentation_key or "segmentation",
+                    gt_sparse_depth_split=gt_sparse_depth_split,
+                    pred_depth_split=pred_depth_split,
+                    intrinsics_split=intrinsics_split,
+                    camera_extrinsics_split=camera_extrinsics_split,
+                    lidar_extrinsics_split=lidar_extrinsics_split,
+                    segmentation_split=depth_segmentation_split,
                 ),
-                segmentation_modality_key=segmentation_key or "segmentation",
-                gt_sparse_depth_split=gt_sparse_depth_split,
-                pred_depth_split=pred_depth_split,
-                intrinsics_split=intrinsics_split,
-                camera_extrinsics_split=camera_extrinsics_split,
-                lidar_extrinsics_split=lidar_extrinsics_split,
-                segmentation_split=segmentation_split,
+                sky_mask_for_iou_only=sky_mask_for_iou_only,
+                ds_name=ds_name,
             )
             et_eval_datasets["sparse_depth"] = sparse_depth_dataset
 
@@ -1724,6 +1957,7 @@ def main():
                 sanity_checker=sanity_checker,
                 sky_mask_enabled=args.mask_sky,
                 sky_depth=args.sky_depth,
+                sky_iou=args.sky_iou,
                 alignment_mode=args.depth_alignment,
                 benchmark_depth_range=(
                     tuple(args.benchmark_depth_range)
@@ -1739,16 +1973,24 @@ def main():
             space_info = sparse_depth_results.get("space_info", {})
             sparse_depth_dataset_info = sparse_depth_results.get("dataset_info", {})
             sparse_depth_spatial = sparse_depth_results.get("spatial_info", {})
+            sparse_depth_axes = _sparse_depth_eval_axes(
+                benchmark=has_benchmark, distributions=distribution_config is not None
+            )
+            sparse_depth_descriptions = _distribution_descriptions(
+                _SPARSE_DEPTH_EVAL_DESCRIPTIONS, distribution_config, "rmse"
+            )
+            sky_tree = _sky_segmentation_tree(sparse_depth_results)
+            if sky_tree:
+                sparse_depth_axes = _with_sky_segmentation_axes(sparse_depth_axes)
+                sparse_depth_descriptions = {
+                    **sparse_depth_descriptions, **_SKY_SEGMENTATION_EVAL_DESCRIPTIONS
+                }
             sparse_depth_ns = _EvalNamespace(
                 producer="euler-eval",
                 producer_version=_get_version(),
                 modalities=("sparse_depth",),
-                axes=_sparse_depth_eval_axes(
-                    benchmark=has_benchmark, distributions=distribution_config is not None
-                ),
-                descriptions=_distribution_descriptions(
-                    _SPARSE_DEPTH_EVAL_DESCRIPTIONS, distribution_config, "rmse"
-                ),
+                axes=sparse_depth_axes,
+                descriptions=sparse_depth_descriptions,
             )
             depth_save = {
                 "metricSet": _sparse_depth_metric_set_envelope(
@@ -1784,7 +2026,12 @@ def main():
                         "split": pred_depth_split,
                         "entry": pred_depth_key,
                         "dimensions": sparse_depth_spatial.get("pred_dimensions"),
-                        "sky_mask": pred_sky_mask_config or None,
+                        # A mask dropped for --sky-iou coverage was never read.
+                        "sky_mask": (
+                            None
+                            if sky_mask_skip_reason is not None
+                            else pred_sky_mask_config or None
+                        ),
                     },
                     "calibration": {
                         "intrinsics_path": intrinsics_path,
@@ -1803,10 +2050,14 @@ def main():
                         ),
                     },
                     "modality_params": sparse_depth_meta,
+                    "sky_segmentation": _sky_segmentation_meta(
+                        sparse_depth_results, segmentation_key, sky_mask_skip_reason
+                    ),
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "depth_alignment_mode": args.depth_alignment,
                         "sky_depth": args.sky_depth,
+                        "sky_iou": True if args.sky_iou else None,
                         "num_workers": args.num_workers,
                         "benchmark_depth_range": (
                             list(args.benchmark_depth_range)
@@ -1826,6 +2077,10 @@ def main():
                     depth_save[_SPARSE_DEPTH_METRIC_ROOT]["eval"][space_name] = (
                         _clean_metric_tree(branch)
                     )
+            if sky_tree:
+                depth_save[_SPARSE_DEPTH_METRIC_ROOT]["eval"][
+                    _SKY_SEGMENTATION_CATEGORY
+                ] = sky_tree
 
             sparse_depth_benchmark = sparse_depth_results.get("sparse_depth_benchmark")
             if sparse_depth_benchmark is not None:
@@ -1858,6 +2113,7 @@ def main():
                 "sparse_depth_native",
                 "sparse_depth_metric",
                 "sparse_depth_benchmark",
+                _SKY_SEGMENTATION_CATEGORY,
             ):
                 if (
                     depth_key in sparse_depth_results
@@ -1889,6 +2145,9 @@ def main():
                 },
                 f"SPARSE_DEPTH: {ds_name}",
             )
+            sky_iou_line = _sky_iou_summary_line(ds_name, sparse_depth_results)
+            if sky_iou_line is not None:
+                print(sky_iou_line)
 
         # -- RGB evaluation --
         rgb_dataset = None

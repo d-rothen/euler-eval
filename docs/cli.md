@@ -24,6 +24,7 @@ validation exits with status `1` before any dataset is opened.
 | `--skip-points-3d` | flag | off | Skip points_3d (per-pixel 3D point map) evaluation |
 | `--mask-sky` | flag | off | Mask sky regions from metrics using GT segmentation |
 | `--sky-depth` | `float` | none | Cap GT and predicted depths in meters and fill predicted `sky_mask` pixels with this value; must be finite and positive |
+| `--sky-iou` | flag | off | Score predicted sky against GT segmentation sky: IoU, precision and recall for the `explicit` (`datasets[].sky_mask`) and `implicit` (`depth >= --sky-depth`, metric predictions only) variants. Requires `gt.segmentation`; depth metrics are unchanged ([details](metrics.md#sky-segmentation)) |
 | `--no-sanity-check` | flag | off | Disable sanity checking of metric configurations |
 | `--metrics-config` | `str` | auto-detect | Path to `metrics_config.json` for sanity checking |
 | `--depth-alignment` | `{none,auto_affine,affine}` | `auto_affine` | Depth calibration mode ([details](alignment.md#depth-alignment)) |
@@ -56,6 +57,10 @@ euler-eval config.json --mask-sky -v
 
 # Cap depth at 100 m and fill predicted sky at 100 m (optional datasets[].sky_mask)
 euler-eval config.json --sky-depth 100
+
+# Sky IoU: explicit from datasets[].sky_mask, implicit at depth >= 100 m
+# (requires gt.segmentation; the threshold is also the depth cap)
+euler-eval config.json --sky-iou --sky-depth 100
 
 # Only depth evaluation
 euler-eval config.json --skip-rgb --skip-rays --skip-points-3d
@@ -108,6 +113,13 @@ followed by one block
 per prediction dataset and modality with the GT and prediction paths, the
 resolved modality metadata (such as `radial_depth`), and the number of matched
 pairs.
+
+With `--sky-iou`, each depth block ends with one line holding the pooled
+(`pixel_pool`) sky IoU, precision and recall of every computed variant, for
+example `Sky IoU, pixel_pool, 'model': explicit 0.9120 (precision 0.9500,
+recall 0.9580); implicit (depth >= 100 m) 0.4410 (precision 0.9800, recall
+0.4450)`. Skipped variants, GT segmentation without sky and an empty implicit
+sky are reported as warnings above it.
 
 A matched-pair count that is much lower than expected is the first sign that GT
 and predictions are not indexed consistently — see

@@ -47,7 +47,7 @@ dependencies = [
     "lpips>=0.1.4",
     "torchmetrics>=1.0",
     "tqdm>=4.62.0",
-    "euler-loading>=2.15",
+    "euler-loading>=2.29",
     "ds-crawler>=2.10",
     "euler-metric-naming>=0.2",
 ]
