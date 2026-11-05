@@ -32,7 +32,8 @@ map `d_aligned = s · d_pred + t` by least squares over valid pixels.
 
 The fit uses pixels where GT and prediction are finite and GT > 0. With
 `--mask-sky`, sky pixels are excluded and the fit is trimmed to `gt ≤ P95(gt)`
-so residual sky outliers do not dominate.
+so residual sky outliers do not dominate. Pixels in a prediction's `sky_mask`
+are excluded from the fit with `--sky-depth` or `--mask-sky-prediction`.
 
 Declaring the prediction with the `relative_depth` or `affine_depth` config key
 (instead of `depth`) tells the evaluator the model is not metric, so

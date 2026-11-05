@@ -23,6 +23,7 @@ validation exits with status `1` before any dataset is opened.
 | `--skip-rays` | flag | off | Skip rays (spherical direction map) evaluation |
 | `--skip-points-3d` | flag | off | Skip points_3d (per-pixel 3D point map) evaluation |
 | `--mask-sky` | flag | off | Mask sky regions from metrics using GT segmentation |
+| `--mask-sky-prediction` | flag | off | Exclude pixels in a prediction's `datasets[].sky_mask` from dense and sparse depth metrics and the alignment fit; predictions without a `sky_mask` are scored in full ([details](configuration.md#masking-predicted-sky)) |
 | `--sky-depth` | `float` | none | Cap GT and predicted depths in meters and fill predicted `sky_mask` pixels with this value; must be finite and positive |
 | `--sky-iou` | flag | off | Score predicted sky against GT segmentation sky: IoU, precision and recall for the `explicit` (`datasets[].sky_mask`) and `implicit` (`depth >= --sky-depth`, metric predictions only) variants. Requires `gt.segmentation`; depth metrics are unchanged ([details](metrics.md#sky-segmentation)) |
 | `--no-sanity-check` | flag | off | Disable sanity checking of metric configurations |
@@ -54,6 +55,9 @@ euler-eval config.json --batch-size 32
 
 # Sky masking (requires gt.segmentation)
 euler-eval config.json --mask-sky -v
+
+# Exclude each prediction's own sky (datasets[].sky_mask) from depth metrics
+euler-eval config.json --mask-sky-prediction
 
 # Cap depth at 100 m and fill predicted sky at 100 m (optional datasets[].sky_mask)
 euler-eval config.json --sky-depth 100

@@ -30,6 +30,13 @@ the git history for those.
 
 ### Added
 
+- `--mask-sky-prediction` excludes the pixels of a prediction's
+  `datasets[].sky_mask` from dense and sparse depth metrics, benchmark bins,
+  histograms and the scale/shift fit, as `--mask-sky` does for GT sky; lidar
+  points projecting into predicted sky are not scored. Predictions without a
+  `sky_mask` are scored in full, with a warning. Because the excluded pixels
+  depend on the model, `meta.pred_sky_masking` records the share of evaluable
+  GT pixels each prediction excluded.
 - Opt-in `--sky-iou` scores predicted sky against GT segmentation sky for
   dense and sparse depth: IoU, precision and recall under
   `{depth,sparsedepth}.eval.sky_segmentation.{explicit,implicit}.{pixel_pool,image_mean,image_median}`,

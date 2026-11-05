@@ -126,7 +126,7 @@ metric is written under, is in [Metrics](docs/metrics.md).
 | **Metadata-driven decoding** | Radial vs planar depth, value ranges, point-cloud column layout and loader choice all come from the dataset index — no per-dataset flags. |
 | **Honest spaces** | Relative models are scored `native` *and* `metric` (after scale/shift or a similarity gauge), so a scale failure never reads as a geometry failure. |
 | **Benchmark depth bins** | `--benchmark-depth-range MIN MAX` adds near/mid/far bins in square-root depth space, additive to the regular metrics. |
-| **Sky masking** | `--mask-sky` drops sky pixels using GT segmentation — from the metrics *and* from the alignment fit. |
+| **Sky masking** | `--mask-sky` drops sky pixels using GT segmentation — from the metrics *and* from the alignment fit. `--mask-sky-prediction` does the same with each prediction's own `sky_mask`. |
 | **Sky IoU** | `--sky-iou` scores predicted sky — a `sky_mask`, or depth reaching a fixed cap — against GT segmentation, without changing any depth metric. |
 | **Per-file + aggregate** | Dataset-level numbers plus per-image metrics in dataset-hierarchy order, in the same file. |
 | **Sanity checks** | Results are validated against configurable thresholds; implausible ranges, degenerate inputs and scale mismatches are reported instead of quietly scored. |
