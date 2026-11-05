@@ -357,13 +357,13 @@ def test_sky_mask_that_lacks_frames_is_not_loaded_for_iou_alone(
     capsys.readouterr()
     scored = _run(monkeypatch, config_path, "--sky-iou", output_dir=paths["pred"])
 
-    assert "the sky_mask of 'sky_prediction' lacks 1 depth pairs" in (
+    assert "the sky_mask of 'sky_prediction' lacks 1 evaluated pairs" in (
         capsys.readouterr().out
     )
     assert scored["dataset_info"]["num_pairs"] == 2
     assert scored["depth"]["eval"] == baseline["depth"]["eval"]
     assert scored["meta"]["sky_segmentation"]["explicit"] == {
-        "available": False, "reason": "sky_mask does not cover every depth pair",
+        "available": False, "reason": "sky_mask does not cover every evaluated pair",
     }
     assert "sky_mask" not in scored["meta"]["pred"]
 

@@ -535,32 +535,15 @@ class _LPIPSBatcher:
 # ---------------------------------------------------------------------------
 
 
-def _get_sky_mask(sample: dict) -> Optional[np.ndarray]:
-    """Extract inverted sky mask from sample (True = valid, non-sky pixel)."""
-    seg = sample.get("segmentation")
-    if seg is None:
-        return None
-    # segmentation is a dict from hierarchical modality: {file_id: loaded_mask}
-    if isinstance(seg, dict):
-        if not seg:
-            return None
-        # Use the deepest (most specific) entry
-        mask_data = next(iter(seg.values()))
-    else:
-        mask_data = seg
-    sky = to_numpy_mask(mask_data)
-    return ~sky  # invert: True = non-sky = valid
-
-
 def _get_gt_sky_mask(sample: dict) -> Optional[np.ndarray]:
     """Extract the sample's own GT segmentation sky (True = sky), if any.
 
-    Unlike :func:`_get_sky_mask` this does not invert. Hierarchical
-    segmentation arrives as ``{file_id: mask}`` with every file at or above
-    the sample's hierarchy level, so a per-frame segmentation in the sample's
-    folder lists all of that folder's frames. Use the entry with the sample's
-    own ID, else the only entry; with several entries and none of them the
-    sample's, the frame is ambiguous and ``None`` is returned.
+    The dataset builders pair segmentation with each frame by ID, so
+    ``sample["segmentation"]`` is that frame's mask. A ``{file_id: mask}``
+    dict, as a hierarchical modality or a caller may supply, can list other
+    frames' masks too: use the entry with the sample's own ID, else the only
+    entry. With several entries and none of them the sample's, the frame is
+    ambiguous and ``None`` is returned rather than another frame's sky.
     """
     seg = sample.get("segmentation")
     if seg is None:
@@ -578,6 +561,12 @@ def _get_gt_sky_mask(sample: dict) -> Optional[np.ndarray]:
     return to_numpy_mask(mask_data)
 
 
+def _get_sky_mask(sample: dict) -> Optional[np.ndarray]:
+    """Extract inverted sky mask from sample (True = valid, non-sky pixel)."""
+    sky = _get_gt_sky_mask(sample)
+    return None if sky is None else ~sky  # invert: True = non-sky = valid
+
+
 class _SkyMaskCoverage:
     """Count the samples whose GT sky mask removed any pixel.
 
@@ -589,14 +578,23 @@ class _SkyMaskCoverage:
     def __init__(self) -> None:
         self.samples = 0
         self.with_sky = 0
+        self.missing = 0
 
     def add(self, sky_valid: Optional[np.ndarray]) -> None:
         """Record one sample's :func:`_get_sky_mask` result."""
         self.samples += 1
-        if sky_valid is not None and not np.all(sky_valid):
+        if sky_valid is None:
+            self.missing += 1
+        elif not np.all(sky_valid):
             self.with_sky += 1
 
     def warn_if_empty(self, modality: str) -> None:
+        if self.missing:
+            print(
+                f"Warning: --mask-sky found no GT segmentation of their own frame "
+                f"for {self.missing} of the {self.samples} {modality} samples, so "
+                "their sky was not masked."
+            )
         if self.samples and not self.with_sky:
             print(
                 f"Warning: --mask-sky found no sky in any of the {self.samples} "

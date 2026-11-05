@@ -755,6 +755,28 @@ def _modality(
     )
 
 
+def _gt_segmentation_modality(
+    path: str,
+    *,
+    modality_key: str = "segmentation",
+    split: Optional[str] = None,
+) -> Modality:
+    """Return GT segmentation as an ID-paired modality whose loader yields sky.
+
+    Segmentation is per frame, so it is a regular modality, paired with the
+    evaluated frames by hierarchy path and file ID like depth. As a
+    hierarchical modality each sample would receive every mask of its folder,
+    and a frame could be masked with another frame's sky. Being ID-paired, a
+    frame without its own segmentation is not evaluated.
+    """
+    return _modality(
+        path=path,
+        modality_key=modality_key,
+        loader=_resolve_sky_mask_loader(path, modality_key=modality_key),
+        split=split,
+    )
+
+
 def build_depth_eval_dataset(
     gt_depth_path: str,
     pred_depth_path: str,
@@ -772,8 +794,9 @@ def build_depth_eval_dataset(
     """Build a MultiModalDataset for depth evaluation.
 
     The returned dataset yields samples with keys ``"gt"``, ``"pred"``,
-    and optionally ``"calibration"``, ``"segmentation"`` (GT), and
-    ``"pred_sky_mask"`` (prediction, True = sky).
+    and optionally ``"calibration"``, ``"segmentation"`` (GT sky, True = sky,
+    ID-paired like ``"pred_sky_mask"``), and ``"pred_sky_mask"`` (prediction,
+    True = sky).
 
     Loaders are resolved automatically from each dataset directory's
     ds-crawler index metadata.
@@ -827,14 +850,9 @@ def build_depth_eval_dataset(
             split=calibration_split,
         )
     if segmentation_path is not None:
-        sky_fn = _resolve_sky_mask_loader(
+        modalities["segmentation"] = _gt_segmentation_modality(
             segmentation_path,
             modality_key=segmentation_modality_key,
-        )
-        hierarchical["segmentation"] = _modality(
-            path=segmentation_path,
-            modality_key=segmentation_modality_key,
-            loader=sky_fn,
             split=segmentation_split,
         )
 
@@ -874,8 +892,8 @@ def build_sparse_depth_eval_dataset(
     source-to-camera transform, such as MUSES ``lidar2rgb``.
     ``pred_depth_metadata_scope`` can select a depth-like prediction scope
     such as ``relative_depth`` or ``affine_depth`` while still loading it
-    as a dense depth map. Segmentation remains optional for sparse depth and is
-    only loaded by callers that request sky masking.
+    as a dense depth map. Segmentation remains optional for sparse depth; when
+    given it is ID-paired with the frames (True = sky).
     ``pred_sky_mask_path`` optionally adds an ID-paired ``"pred_sky_mask"``
     prediction (True = sky), with its own ``pred_sky_mask_split`` selector.
     """
@@ -901,16 +919,19 @@ def build_sparse_depth_eval_dataset(
             split=pred_sky_mask_split,
         )
 
+    if segmentation_path is not None:
+        modalities["segmentation"] = _gt_segmentation_modality(
+            segmentation_path,
+            modality_key=segmentation_modality_key,
+            split=segmentation_split,
+        )
     hierarchical = _sparse_projection_hierarchical(
         intrinsics_path=intrinsics_path,
         camera_extrinsics_path=camera_extrinsics_path,
         lidar_extrinsics_path=lidar_extrinsics_path,
-        segmentation_path=segmentation_path,
         intrinsics_split=intrinsics_split,
         camera_extrinsics_split=camera_extrinsics_split,
         lidar_extrinsics_split=lidar_extrinsics_split,
-        segmentation_split=segmentation_split,
-        segmentation_modality_key=segmentation_modality_key,
     )
 
     return MultiModalDataset(
@@ -923,19 +944,16 @@ def _sparse_projection_hierarchical(
     intrinsics_path: str,
     camera_extrinsics_path: str,
     lidar_extrinsics_path: Optional[str] = None,
-    segmentation_path: Optional[str] = None,
     intrinsics_split: Optional[str] = None,
     camera_extrinsics_split: Optional[str] = None,
     lidar_extrinsics_split: Optional[str] = None,
-    segmentation_split: Optional[str] = None,
-    segmentation_modality_key: str = "segmentation",
 ) -> dict:
     """Build the hierarchical calibration modalities shared by sparse-GT evals.
 
     Both the sparse-depth and sparse ``points_3d`` datasets project a LiDAR
     cloud into the prediction plane, so they need identical ``intrinsics`` /
-    ``camera_extrinsics`` (optionally ``lidar_extrinsics`` / ``segmentation``)
-    hierarchical modalities.
+    ``camera_extrinsics`` (optionally ``lidar_extrinsics``) hierarchical
+    modalities. GT segmentation is ID-paired and added by the builders.
     """
     hierarchical = {
         "intrinsics": _modality(
@@ -963,17 +981,6 @@ def _sparse_projection_hierarchical(
             metadata_scope=lidar_scope,
             split=lidar_extrinsics_split,
         )
-    if segmentation_path is not None:
-        sky_fn = _resolve_sky_mask_loader(
-            segmentation_path,
-            modality_key=segmentation_modality_key,
-        )
-        hierarchical["segmentation"] = _modality(
-            path=segmentation_path,
-            modality_key=segmentation_modality_key,
-            loader=sky_fn,
-            split=segmentation_split,
-        )
     return hierarchical
 
 
@@ -998,8 +1005,8 @@ def build_points_3d_sparse_eval_dataset(
     ``"pred"`` is a per-pixel ``(H, W, 3)`` point map (``points_3d``) that is
     scored *directly* against the sparse GT cloud (no depth unprojection). The
     sparse GT and hierarchical ``intrinsics`` / ``camera_extrinsics`` (plus
-    optional ``lidar_extrinsics`` / ``segmentation``) are configured exactly as
-    for the sparse-depth path.
+    optional ``lidar_extrinsics``, and the ID-paired ``segmentation``) are
+    configured exactly as for the sparse-depth path.
     """
     modalities = {
         "gt": _modality(
@@ -1014,16 +1021,19 @@ def build_points_3d_sparse_eval_dataset(
             split=pred_points_3d_split,
         ),
     }
+    if segmentation_path is not None:
+        modalities["segmentation"] = _gt_segmentation_modality(
+            segmentation_path,
+            modality_key=segmentation_modality_key,
+            split=segmentation_split,
+        )
     hierarchical = _sparse_projection_hierarchical(
         intrinsics_path=intrinsics_path,
         camera_extrinsics_path=camera_extrinsics_path,
         lidar_extrinsics_path=lidar_extrinsics_path,
-        segmentation_path=segmentation_path,
         intrinsics_split=intrinsics_split,
         camera_extrinsics_split=camera_extrinsics_split,
         lidar_extrinsics_split=lidar_extrinsics_split,
-        segmentation_split=segmentation_split,
-        segmentation_modality_key=segmentation_modality_key,
     )
     return MultiModalDataset(
         modalities=modalities,
@@ -1095,14 +1105,9 @@ def build_rgb_eval_dataset(
             split=calibration_split,
         )
     if segmentation_path is not None:
-        sky_fn = _resolve_sky_mask_loader(
+        modalities["segmentation"] = _gt_segmentation_modality(
             segmentation_path,
             modality_key=segmentation_modality_key,
-        )
-        hierarchical["segmentation"] = _modality(
-            path=segmentation_path,
-            modality_key=segmentation_modality_key,
-            loader=sky_fn,
             split=segmentation_split,
         )
 
@@ -1112,22 +1117,30 @@ def build_rgb_eval_dataset(
     )
 
 
-def count_ids_dropped_by(dataset: Any, modality: str) -> Optional[int]:
+def count_ids_dropped_by(
+    dataset: Any, modality: str, *, optional: tuple[str, ...] = ()
+) -> Optional[int]:
     """Count the sample IDs that *modality* removes from a dataset's pairing.
 
     Regular modalities are intersected by ID, so an incomplete optional
-    modality (such as ``pred_sky_mask``) silently shrinks the evaluated set.
-    Returns how many IDs every other regular modality shares but *modality*
-    lacks, or ``None`` when the dataset does not expose its per-modality
-    lookups or has no such modality.
+    modality (such as ``segmentation`` or ``pred_sky_mask``) shrinks the
+    evaluated set, which euler-loading only logs. Returns how many IDs the
+    required modalities share but *modality* lacks. The other *optional*
+    modalities are left out of that intersection, so two inputs missing the
+    same frame both count it. ``None`` when the dataset does not expose its
+    per-modality lookups or has no such modality.
     """
     lookups = getattr(dataset, "_lookups", None)
     if not isinstance(lookups, Mapping) or modality not in lookups:
         return None
-    others = [set(ids) for name, ids in lookups.items() if name != modality]
-    if not others:
+    required = [
+        set(ids)
+        for name, ids in lookups.items()
+        if name != modality and name not in optional
+    ]
+    if not required:
         return 0
-    return len(set.intersection(*others) - set(lookups[modality]))
+    return len(set.intersection(*required) - set(lookups[modality]))
 
 
 def get_depth_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
@@ -1505,14 +1518,9 @@ def build_points_3d_eval_dataset(
             split=calibration_split,
         )
     if segmentation_path is not None:
-        sky_fn = _resolve_sky_mask_loader(
+        modalities["segmentation"] = _gt_segmentation_modality(
             segmentation_path,
             modality_key=segmentation_modality_key,
-        )
-        hierarchical["segmentation"] = _modality(
-            path=segmentation_path,
-            modality_key=segmentation_modality_key,
-            loader=sky_fn,
             split=segmentation_split,
         )
 
