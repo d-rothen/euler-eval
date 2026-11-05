@@ -2,7 +2,9 @@
 
 import json
 import zipfile
+from pathlib import Path
 
+import numpy as np
 import pytest
 
 from euler_eval.cli import (
@@ -11,6 +13,8 @@ from euler_eval.cli import (
     validate_dataset_entry,
     validate_gt_config,
 )
+from euler_eval.config_paths import resolve_gt_segmentation_path
+from tests.test_sky_iou_cli import _write_index
 
 # ---------------------------------------------------------------------------
 # validate_gt_config
@@ -134,6 +138,40 @@ class TestValidateGtConfig:
         }
         with pytest.raises(ValueError, match="does not exist"):
             validate_gt_config(gt)
+
+    def test_semantic_segmentation_alias_is_accepted(self, tmp_path):
+        for name in ("depth", "labels"):
+            (tmp_path / name).mkdir()
+        gt = {
+            "depth": {"path": str(tmp_path / "depth")},
+            "semantic_segmentation": {"path": str(tmp_path / "labels")},
+        }
+        validate_gt_config(gt)
+        key, entry = _gt_segmentation_entry(gt)
+        assert key == "semantic_segmentation"
+        assert entry == gt["semantic_segmentation"]
+
+    def test_semantic_segmentation_alias_path_must_exist(self, tmp_path):
+        (tmp_path / "depth").mkdir()
+        gt = {
+            "depth": {"path": str(tmp_path / "depth")},
+            "semantic_segmentation": {"path": str(tmp_path / "missing")},
+        }
+        with pytest.raises(ValueError, match="gt.semantic_segmentation.path"):
+            validate_gt_config(gt)
+
+    def test_segmentation_and_its_alias_together_are_an_error(self, tmp_path):
+        for name in ("depth", "seg"):
+            (tmp_path / name).mkdir()
+        gt = {
+            "depth": {"path": str(tmp_path / "depth")},
+            "segmentation": {"path": str(tmp_path / "seg")},
+            "semantic_segmentation": {"path": str(tmp_path / "seg")},
+        }
+        with pytest.raises(ValueError, match="configure only one"):
+            validate_gt_config(gt)
+        with pytest.raises(ValueError, match="aliases"):
+            _gt_segmentation_entry(gt)
 
 
 # ---------------------------------------------------------------------------
@@ -368,3 +406,113 @@ class TestLoadConfig:
         assert len(result["datasets"]) == 2
         assert result["datasets"][0]["name"] == "model_a"
         assert result["datasets"][1]["name"] == "model_b"
+
+
+# ---------------------------------------------------------------------------
+# resolve_gt_segmentation_path (multi-scope archives)
+# ---------------------------------------------------------------------------
+
+
+def _scoped_archive(root: Path, scopes: dict[str, str]) -> Path:
+    """Write one metadata scope per ``{scope: head modality key}``."""
+    root.mkdir()
+    np.save(root / "a.npy", np.zeros((2, 2), dtype=np.uint8))
+    for scope, key in scopes.items():
+        _write_index(
+            root, scope=scope, key=key, loader="generic", function="map_2d",
+            meta={}, files=[{"path": "a.npy", "id": "a"}],
+        )
+    return root
+
+
+def _zip(root: Path) -> Path:
+    archive = root.with_suffix(".zip")
+    with zipfile.ZipFile(archive, "w") as zf:
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                zf.write(path, path.relative_to(root).as_posix())
+    return archive
+
+
+class TestResolveGtSegmentationPath:
+    @pytest.mark.parametrize("as_zip", [False, True])
+    def test_canonical_key_finds_the_semantic_segmentation_scope(
+        self, tmp_path, as_zip
+    ):
+        root = _scoped_archive(
+            tmp_path / "muses",
+            {"semantic_segmentation": "semantic_segmentation", "depth": "depth"},
+        )
+        path = str(_zip(root) if as_zip else root)
+        assert (
+            resolve_gt_segmentation_path(path, config_key="segmentation")
+            == f"{path}#scope=semantic_segmentation"
+        )
+        # A scope named after the config key keeps today's behaviour.
+        assert (
+            resolve_gt_segmentation_path(path, config_key="semantic_segmentation")
+            == path
+        )
+
+    def test_alias_finds_a_segmentation_scope(self, tmp_path):
+        root = _scoped_archive(
+            tmp_path / "ds", {"segmentation": "segmentation", "rgb": "rgb"}
+        )
+        assert resolve_gt_segmentation_path(
+            str(root), config_key="semantic_segmentation"
+        ) == f"{root}#scope=segmentation"
+
+    def test_scope_is_matched_by_its_head_modality_key(self, tmp_path):
+        root = _scoped_archive(
+            tmp_path / "ds", {"labels": "semantic_segmentation", "depth": "depth"}
+        )
+        assert resolve_gt_segmentation_path(
+            str(root), config_key="segmentation"
+        ) == f"{root}#scope=labels"
+
+    def test_single_scope_is_selected(self, tmp_path):
+        root = _scoped_archive(tmp_path / "ds", {"labels": "labels"})
+        assert resolve_gt_segmentation_path(
+            f"{root}:val", config_key="segmentation"
+        ) == f"{root}:val#scope=labels"
+
+    def test_ambiguous_scopes_are_an_error(self, tmp_path):
+        root = _scoped_archive(
+            tmp_path / "ds",
+            {
+                "segmentation_coarse": "segmentation",
+                "segmentation_fine": "semantic_segmentation",
+                "depth": "depth",
+            },
+        )
+        with pytest.raises(ValueError, match="#scope="):
+            resolve_gt_segmentation_path(str(root), config_key="segmentation")
+
+    def test_unrelated_scopes_are_an_error(self, tmp_path):
+        root = _scoped_archive(tmp_path / "ds", {"rgb": "rgb", "depth": "depth"})
+        with pytest.raises(ValueError, match="rgb"):
+            resolve_gt_segmentation_path(str(root), config_key="segmentation")
+
+    def test_root_level_metadata_is_left_to_the_legacy_fallback(self, tmp_path):
+        root = _scoped_archive(tmp_path / "ds", {"depth": "depth"})
+        _write_index(
+            root, scope=None, key="segmentation", loader="generic",
+            function="map_2d", meta={}, files=[{"path": "a.npy", "id": "a"}],
+        )
+        assert resolve_gt_segmentation_path(
+            str(root), config_key="segmentation"
+        ) == str(root)
+
+    def test_explicit_scope_and_unscoped_layouts_are_unchanged(self, tmp_path):
+        root = _scoped_archive(
+            tmp_path / "ds", {"semantic_segmentation": "semantic_segmentation"}
+        )
+        inline = f"{root}#scope=semantic_segmentation"
+        assert resolve_gt_segmentation_path(inline, config_key="segmentation") == (
+            inline
+        )
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        assert resolve_gt_segmentation_path(str(plain), config_key="segmentation") == (
+            str(plain)
+        )

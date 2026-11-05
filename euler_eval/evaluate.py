@@ -65,6 +65,7 @@ from .metrics import (
     aggregate_high_freq_metrics,
     aggregate_rgb_edge_f1,
     aggregate_rho_a,
+    append_sky_iou_store,
     append_standard_depth_metrics,
     classify_fov_domain,
     compute_absrel,
@@ -98,8 +99,12 @@ from .metrics import (
     # Benchmark utilities
     get_benchmark_depth_bins,
     get_threshold_for_domain,
+    implicit_sky_from_depth,
+    init_sky_iou_store,
     init_standard_depth_store,
     points3d_threshold_key,
+    sky_iou_counts,
+    summarize_sky_iou_store,
     summarize_standard_depth_store,
 )
 from .sanity_checker import SanityChecker
@@ -547,6 +552,32 @@ def _get_sky_mask(sample: dict) -> Optional[np.ndarray]:
     return ~sky  # invert: True = non-sky = valid
 
 
+def _get_gt_sky_mask(sample: dict) -> Optional[np.ndarray]:
+    """Extract the sample's own GT segmentation sky (True = sky), if any.
+
+    Unlike :func:`_get_sky_mask` this does not invert. Hierarchical
+    segmentation arrives as ``{file_id: mask}`` with every file at or above
+    the sample's hierarchy level, so a per-frame segmentation in the sample's
+    folder lists all of that folder's frames. Use the entry with the sample's
+    own ID, else the only entry; with several entries and none of them the
+    sample's, the frame is ambiguous and ``None`` is returned.
+    """
+    seg = sample.get("segmentation")
+    if seg is None:
+        return None
+    if isinstance(seg, dict):
+        sample_id = sample.get("id")
+        if sample_id in seg:
+            mask_data = seg[sample_id]
+        elif len(seg) == 1:
+            mask_data = next(iter(seg.values()))
+        else:
+            return None
+    else:
+        mask_data = seg
+    return to_numpy_mask(mask_data)
+
+
 class _SkyMaskCoverage:
     """Count the samples whose GT sky mask removed any pixel.
 
@@ -584,6 +615,155 @@ def _get_prediction_sky_mask(
     if mask_data is None:
         return None
     return align_to_prediction(to_numpy_mask(mask_data), depth_pred)
+
+
+_SKY_IOU_VARIANTS = ("explicit", "implicit")
+
+
+class _SkyIoU:
+    """Accumulate the ``--sky-iou`` scores of one depth evaluation.
+
+    GT sky ``G`` is the raw segmentation sky resized to the prediction grid.
+    The explicit variant compares ``sample["pred_sky_mask"]`` with ``G``. The
+    implicit variant compares ``depth >= sky_depth`` on the prediction after
+    :func:`process_depth` and before calibration and capping; it runs only for
+    metric predictions. Both are scored on the full prediction grid.
+
+    Everything here reads arrays and never writes them, so enabling sky IoU
+    cannot change a depth value, a validity mask or an alignment fit.
+    """
+
+    def __init__(self, sky_depth: Optional[float]) -> None:
+        self.threshold = sky_depth
+        self.stores = {variant: init_sky_iou_store() for variant in _SKY_IOU_VARIANTS}
+        self.samples = 0
+        self.samples_without_gt = 0
+        self.explicit_seen = False
+        self.gt_sky_pixels = 0
+        self.gt_pixels = 0
+        self.implicit_reason: Optional[str] = (
+            "--sky-depth is not set" if sky_depth is None else None
+        )
+
+    def set_input_space(self, normalized_predictions: bool, input_space: str) -> None:
+        """Disable the implicit variant for predictions that are not metric."""
+        if self.implicit_reason is None and normalized_predictions:
+            self.implicit_reason = f"prediction is not metric ({input_space})"
+
+    @property
+    def implicit_enabled(self) -> bool:
+        return self.implicit_reason is None
+
+    def add(
+        self, sample: dict, depth_pred: np.ndarray, implicit_depth: Optional[np.ndarray]
+    ) -> Optional[dict]:
+        """Score one sample and return its per-image values by variant.
+
+        ``depth_pred`` defines the prediction grid; ``implicit_depth`` is the
+        converted, uncalibrated, uncapped prediction (``None`` skips implicit).
+        """
+        self.samples += 1
+        pred_sky = _get_prediction_sky_mask(sample, depth_pred)
+        self.explicit_seen |= pred_sky is not None
+        gt_sky = _get_gt_sky_mask(sample)
+        if gt_sky is None:
+            self.samples_without_gt += 1
+            return None
+        gt_sky = align_to_prediction(gt_sky, depth_pred)
+        self.gt_sky_pixels += int(np.count_nonzero(gt_sky))
+        self.gt_pixels += int(gt_sky.size)
+
+        predictions = {"explicit": pred_sky}
+        if self.implicit_enabled and implicit_depth is not None:
+            predictions["implicit"] = implicit_sky_from_depth(
+                implicit_depth, self.threshold
+            )
+        values = {
+            variant: append_sky_iou_store(
+                self.stores[variant], sky_iou_counts(mask, gt_sky)
+            )
+            for variant, mask in predictions.items()
+            if mask is not None
+        }
+        return values or None
+
+    def _skip_reason(self, variant: str) -> Optional[str]:
+        if self.stores[variant]["samples"]:
+            return None
+        if variant == "explicit" and not self.explicit_seen:
+            return "no sky_mask for this prediction"
+        if variant == "implicit" and not self.implicit_enabled:
+            return self.implicit_reason
+        return "no sample has GT segmentation"
+
+    def summary(self) -> dict:
+        """Return ``{variant: {reduction: {iou, precision, recall}}}``."""
+        return {
+            variant: summarize_sky_iou_store(store)
+            for variant, store in self.stores.items()
+            if store["samples"]
+        }
+
+    def info(self) -> dict:
+        """Return provenance for ``meta.sky_segmentation`` in ``eval.json``."""
+        info = {}
+        for variant, store in self.stores.items():
+            reason = self._skip_reason(variant)
+            if reason is not None:
+                info[variant] = {"available": False, "reason": reason}
+                continue
+            pool = store["pool"]
+            info[variant] = {
+                "available": True,
+                "source": "pred.sky_mask" if variant == "explicit" else "pred.depth",
+                "samples": store["samples"],
+                "samples_undefined_iou": store["samples_undefined_iou"],
+                "pred_sky_fraction": pool["pred_sky"] / pool["pixels"],
+            }
+            if variant == "implicit":
+                info[variant]["rule"] = "depth >= threshold_m"
+        implicit = info["implicit"]["available"]
+        return {
+            **info,
+            "threshold_m": float(self.threshold) if implicit else None,
+            "domain": "prediction_grid",
+            "samples": self.samples,
+            "samples_without_gt": self.samples_without_gt,
+            "gt_sky_fraction": (
+                self.gt_sky_pixels / self.gt_pixels if self.gt_pixels else None
+            ),
+        }
+
+    def warn(self, modality: str) -> None:
+        """Print the dataset-level warnings, in the style of _SkyMaskCoverage."""
+        prefix = "Warning: --sky-iou"
+        with_gt = self.samples - self.samples_without_gt
+        if self.samples_without_gt:
+            print(
+                f"{prefix}: {self.samples_without_gt} of {self.samples} {modality} "
+                "samples have no GT segmentation of their own frame (none, or "
+                "several files without the sample's ID) and are left out of the "
+                "sky IoU."
+            )
+        if with_gt and not self.gt_sky_pixels:
+            print(
+                f"{prefix}: GT segmentation has no sky in any of the {with_gt} "
+                f"{modality} samples, so recall is undefined and IoU is 0 wherever "
+                "sky is predicted. Check that the GT segmentation matches these "
+                "samples and that its dataset head declares the right 'skyclass' "
+                "(`euler-loading <segmentation path>` reports the sky it decodes)."
+            )
+        implicit = self.stores["implicit"]
+        if implicit["samples"] and not implicit["pool"]["pred_sky"]:
+            print(
+                f"{prefix}: no {modality} prediction reaches --sky-depth "
+                f"{self.threshold:g} m, so the implicit predicted sky is empty and "
+                "implicit IoU is 0 by construction."
+            )
+        for variant in _SKY_IOU_VARIANTS:
+            reason = self._skip_reason(variant)
+            if reason is not None:
+                print(f"{prefix}: {variant} variant skipped for {modality}: {reason}.")
 
 
 def _apply_sky_depth(
@@ -698,6 +878,7 @@ def evaluate_depth_samples(
     input_space_hint: Optional[str] = None,
     sky_depth: Optional[float] = None,
     distribution_config: Optional[DistributionConfig] = None,
+    sky_iou: bool = False,
 ) -> dict:
     """Evaluate all depth metrics from a MultiModalDataset.
 
@@ -732,12 +913,18 @@ def evaluate_depth_samples(
             bins, per sample and pooled over valid pixels. Disabled by default.
             With a benchmark range, use its inclusive GT selection after
             sky-depth capping, matching the benchmark ``all`` population.
+        sky_iou: Score predicted sky against ``sample["segmentation"]`` (GT
+            sky). The explicit variant uses ``sample["pred_sky_mask"]``; the
+            implicit variant uses ``depth >= sky_depth`` on metric predictions
+            before calibration and capping. Read-only: no depth metric
+            changes. Adds ``sky_segmentation`` (summaries and per-file values)
+            and ``sky_segmentation_info`` (provenance) to the result.
 
     Returns:
         Dictionary containing depth aggregate/per-file metrics with:
         optional ``depth_native`` and/or ``depth_metric`` semantic branches,
         backward-compatible canonical ``depth``, and optionally
-        per-space ``depth_benchmark`` summaries.
+        per-space ``depth_benchmark`` summaries and ``sky_segmentation``.
     """
     validate_sky_depth(sky_depth)
     valid_alignment_modes = {"none", "auto_affine", "affine"}
@@ -1164,6 +1351,7 @@ def evaluate_depth_samples(
             print("Computing per-image depth metrics...")
             depth_iter = _prefetched_iter(dataset, num_workers)
             sky_coverage = _SkyMaskCoverage()
+            sky_iou_scores = _SkyIoU(sky_depth) if sky_iou else None
             for i, sample in tqdm(
                 depth_iter,
                 total=num_samples,
@@ -1251,6 +1439,17 @@ def evaluate_depth_samples(
                     if sky_depth is not None
                     else None
                 )
+                # Sky IoU reads the converted prediction before calibration
+                # and capping; it never modifies depth or masks.
+                sky_iou_values = None
+                if sky_iou_scores is not None:
+                    if i == 0:
+                        sky_iou_scores.set_input_space(
+                            normalized_predictions, input_space_detected
+                        )
+                    sky_iou_values = sky_iou_scores.add(
+                        sample, depth_pred, depth_pred_raw
+                    )
 
                 if alignment_mode == "none":
                     depth_pred_aligned = depth_pred_raw
@@ -1362,6 +1561,8 @@ def evaluate_depth_samples(
                     file_metrics["depth_native"] = raw_value
                 if emit_metric:
                     file_metrics["depth_metric"] = metric_value
+                if sky_iou_values is not None:
+                    file_metrics["sky_segmentation"] = sky_iou_values
                 set_value(
                     per_file_metrics,
                     hierarchy,
@@ -1632,6 +1833,8 @@ def evaluate_depth_samples(
                     )
 
             sky_coverage.warn_if_empty("depth")
+            if sky_iou_scores is not None:
+                sky_iou_scores.warn("depth")
 
             if depth_metrics_batcher is not None:
                 print("Computing batched GPU depth metrics (tail flush)...")
@@ -1733,6 +1936,9 @@ def evaluate_depth_samples(
                     else None,
                 },
             }
+            if sky_iou_scores is not None:
+                result["sky_segmentation"] = sky_iou_scores.summary()
+                result["sky_segmentation_info"] = sky_iou_scores.info()
             return _finalize_depth_distributions(
                 result, distribution_config, "depth", benchmark_depth_range, sky_depth
             )
@@ -1765,6 +1971,7 @@ def evaluate_sparse_depth_samples(
     input_space_hint: Optional[str] = None,
     sky_depth: Optional[float] = None,
     distribution_config: Optional[DistributionConfig] = None,
+    sky_iou: bool = False,
 ) -> dict:
     """Evaluate dense depth predictions against sparse pointcloud GT.
 
@@ -1777,6 +1984,9 @@ def evaluate_sparse_depth_samples(
     ``distribution_config`` enables per-sample and pooled RMSE histograms of
     the evaluated projected pixels, using the same bins in every space and
     restricting GT to the benchmark range after sky-depth capping, if enabled.
+    ``sky_iou`` scores predicted sky against GT segmentation on the dense
+    prediction grid, exactly as in :func:`evaluate_depth_samples`; sparse GT
+    depth plays no part in it.
     """
     validate_sky_depth(sky_depth)
     valid_alignment_modes = {"none", "auto_affine", "affine"}
@@ -1980,6 +2190,7 @@ def evaluate_sparse_depth_samples(
             print("Computing sparse pointcloud depth metrics...")
             depth_iter = _prefetched_iter(dataset, num_workers)
             sky_coverage = _SkyMaskCoverage()
+            sky_iou_scores = _SkyIoU(sky_depth) if sky_iou else None
             for i, sample in tqdm(
                 depth_iter,
                 total=num_samples,
@@ -2059,6 +2270,15 @@ def evaluate_sparse_depth_samples(
                     if sky_depth is not None
                     else None
                 )
+                sky_iou_values = None
+                if sky_iou_scores is not None:
+                    if i == 0:
+                        sky_iou_scores.set_input_space(
+                            normalized_predictions, input_space_detected
+                        )
+                    sky_iou_values = sky_iou_scores.add(
+                        sample, depth_pred, depth_pred_raw
+                    )
 
                 if alignment_mode == "none":
                     depth_pred_aligned = depth_pred_raw
@@ -2161,6 +2381,8 @@ def evaluate_sparse_depth_samples(
                     file_metrics["sparse_depth_native"] = raw_value
                 if emit_metric:
                     file_metrics["sparse_depth_metric"] = metric_value
+                if sky_iou_values is not None:
+                    file_metrics["sky_segmentation"] = sky_iou_values
                 set_value(
                     per_file_metrics,
                     hierarchy,
@@ -2236,6 +2458,8 @@ def evaluate_sparse_depth_samples(
                         sanity_checker.validate_depth_silog(sv, entry_id)
 
             sky_coverage.warn_if_empty("sparse depth")
+            if sky_iou_scores is not None:
+                sky_iou_scores.warn("sparse depth")
 
             print("Aggregating sparse depth results...")
 
@@ -2328,6 +2552,9 @@ def evaluate_sparse_depth_samples(
                     else None,
                 },
             }
+            if sky_iou_scores is not None:
+                result["sky_segmentation"] = sky_iou_scores.summary()
+                result["sky_segmentation_info"] = sky_iou_scores.info()
             return _finalize_depth_distributions(
                 result, distribution_config, "sparse_depth",
                 benchmark_depth_range, sky_depth,

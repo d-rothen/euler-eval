@@ -78,6 +78,44 @@ GT/prediction resolution mismatch was resolved — `none` when they already matc
 `vae_crop` for the multiple-of-8 crop that latent models produce, `resize`
 otherwise, and `pointcloud_projection` when GT was a sparse cloud.
 
+### Sky segmentation provenance
+
+With `--sky-iou`, dense and sparse depth results record
+`meta.eval_params.sky_iou: true` and a `meta.sky_segmentation` block. Without
+the flag, neither field exists. Values below are illustrative:
+
+```json
+"sky_segmentation": {
+  "explicit": {
+    "available": true, "source": "pred.sky_mask", "samples": 500,
+    "samples_undefined_iou": 3, "pred_sky_fraction": 0.19
+  },
+  "implicit": { "available": false, "reason": "prediction is not metric (relative)" },
+  "gt_source": "gt.segmentation",
+  "domain": "prediction_grid",
+  "samples": 500,
+  "samples_without_gt": 0,
+  "gt_sky_fraction": 0.21
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `explicit`, `implicit` | Whether each variant was computed. A computed variant gives its `source`, how many `samples` it scored, how many had an undefined IoU (no sky in prediction or GT), and its pooled predicted sky fraction; the implicit one adds `rule: "depth >= threshold_m"`. A skipped variant gives the `reason` instead |
+| `gt_source` | The config key the GT segmentation came from |
+| `threshold_m` | The `--sky-depth` threshold of the implicit variant; present only when that variant was computed |
+| `domain` | Pixels scored: `prediction_grid`, the full prediction grid |
+| `samples` | Depth pairs evaluated |
+| `samples_without_gt` | Pairs left out because no GT segmentation of their own frame was found |
+| `gt_sky_fraction` | Pooled GT sky fraction over the scored samples |
+
+When sky keys are written, the metric-set axes also declare them:
+`sky_segmentation` joins the `category` values, an optional `variant` axis
+(`explicit`, `implicit`) follows `category`, and `space` becomes optional
+because these keys have no depth space. `metricDescriptions` gains `iou`,
+`precision` and `recall` (higher is better, bounds `[0, 1]`). Every other key
+decomposes exactly as before.
+
 ## Spaces and canonical aliases
 
 Depth-like and points-3d results are nested by space:

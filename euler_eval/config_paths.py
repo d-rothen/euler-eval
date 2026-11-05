@@ -6,9 +6,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import parse_qsl
 
-from ds_crawler import validate_metadata_scope
-from ds_crawler.zip_utils import validate_split_name
+from ds_crawler import list_metadata_scopes, validate_metadata_scope
+from ds_crawler.config import CONFIG_FILENAME
+from ds_crawler.zip_utils import (
+    DATASET_HEAD_FILENAME,
+    OUTPUT_FILENAME,
+    read_metadata_json,
+    validate_split_name,
+)
 from euler_loading import Modality
+
+#: Config keys that name the GT segmentation; ``segmentation`` is canonical.
+GT_SEGMENTATION_KEYS = ("segmentation", "semantic_segmentation")
 
 
 @dataclass(frozen=True)
@@ -125,3 +134,70 @@ def build_modality(
         metadata_scope=parsed.metadata_scope or modality_key,
         split=parsed.split,
     )
+
+
+def _read_metadata_safe(root: Path, filename: str, scope: str | None = None):
+    try:
+        return read_metadata_json(root, filename, metadata_scope=scope)
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+
+
+def _scope_modality_key(root: Path, scope: str) -> str | None:
+    head = _read_metadata_safe(root, DATASET_HEAD_FILENAME, scope)
+    modality = head.get("modality") if isinstance(head, dict) else None
+    key = modality.get("key") if isinstance(modality, dict) else None
+    return key if isinstance(key, str) and key else None
+
+
+def resolve_gt_segmentation_path(path: str | Path, *, config_key: str) -> str:
+    """Select the metadata scope of a GT segmentation path for its config key.
+
+    Dataset builders use the config key as the metadata scope unless the path
+    selects one with ``#scope=``. That misses archives whose segmentation
+    scope carries the other segmentation name, e.g. a MUSES scope
+    ``semantic_segmentation`` configured as ``gt.segmentation``. When the path
+    has no ``#scope=``, no root-level metadata and no scope named
+    *config_key*, this picks the one scope whose name or dataset-head
+    modality key is a segmentation key (both names are candidates), or the
+    only scope, and appends it as ``#scope=``. Any path that resolves without
+    this help is returned unchanged.
+
+    Raises:
+        ValueError: When several scopes match, or none does among several.
+    """
+    raw = str(path)
+    parsed = parse_modality_path(raw)
+    if parsed.metadata_scope is not None:
+        return raw
+    root = Path(parsed.path)
+    try:
+        scopes = sorted(list_metadata_scopes(root))
+    except (FileNotFoundError, OSError, ValueError):
+        return raw
+    if not scopes or config_key in scopes:
+        return raw
+    if any(
+        _read_metadata_safe(root, filename) is not None
+        for filename in (OUTPUT_FILENAME, CONFIG_FILENAME, DATASET_HEAD_FILENAME)
+    ):
+        return raw
+
+    candidates = {config_key, *GT_SEGMENTATION_KEYS}
+    matches = [
+        scope
+        for scope in scopes
+        if scope in candidates or _scope_modality_key(root, scope) in candidates
+    ]
+    if len(matches) == 1:
+        scope = matches[0]
+    elif not matches and len(scopes) == 1:
+        scope = scopes[0]
+    else:
+        listed = ", ".join(matches or scopes)
+        raise ValueError(
+            f"gt.{config_key}.path {raw!r} has several metadata scopes and none "
+            f"is unambiguously the segmentation ({listed}). Append "
+            "'#scope=<metadata_scope>' to the path."
+        )
+    return f"{raw}#scope={scope}"

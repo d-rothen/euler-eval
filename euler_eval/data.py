@@ -1112,6 +1112,24 @@ def build_rgb_eval_dataset(
     )
 
 
+def count_ids_dropped_by(dataset: Any, modality: str) -> Optional[int]:
+    """Count the sample IDs that *modality* removes from a dataset's pairing.
+
+    Regular modalities are intersected by ID, so an incomplete optional
+    modality (such as ``pred_sky_mask``) silently shrinks the evaluated set.
+    Returns how many IDs every other regular modality shares but *modality*
+    lacks, or ``None`` when the dataset does not expose its per-modality
+    lookups or has no such modality.
+    """
+    lookups = getattr(dataset, "_lookups", None)
+    if not isinstance(lookups, Mapping) or modality not in lookups:
+        return None
+    others = [set(ids) for name, ids in lookups.items() if name != modality]
+    if not others:
+        return 0
+    return len(set.intersection(*others) - set(lookups[modality]))
+
+
 def get_depth_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
     """Extract depth modality metadata from a dataset.
 

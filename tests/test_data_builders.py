@@ -269,7 +269,7 @@ def test_sky_mask_loader_resolution_uses_segmentation_scope(monkeypatch):
     def fake_index_dataset_from_path(path, **kwargs):
         calls.append((path, kwargs))
         return {
-            "contract": {"kind": "dataset_head"},
+            "contract": {"kind": "dataset_head", "version": "1.0"},
             "dataset": {"id": "vkitti2", "name": "VKITTI2"},
             "modality": {"key": "segmentation", "meta": {"skyclass": [0, 0, 0]}},
             "addons": {
@@ -303,7 +303,7 @@ def test_sky_mask_loader_resolution_strips_inline_split(monkeypatch):
     def fake_index_dataset_from_path(path, **kwargs):
         calls.append((path, kwargs))
         return {
-            "contract": {"kind": "dataset_head"},
+            "contract": {"kind": "dataset_head", "version": "1.0"},
             "dataset": {"id": "vkitti2", "name": "VKITTI2"},
             "modality": {"key": "segmentation", "meta": {"skyclass": [0, 0, 0]}},
             "addons": {
@@ -337,7 +337,7 @@ def test_sky_mask_loader_resolution_accepts_custom_scope(monkeypatch):
     def fake_index_dataset_from_path(path, **kwargs):
         calls.append((path, kwargs))
         return {
-            "contract": {"kind": "dataset_head"},
+            "contract": {"kind": "dataset_head", "version": "1.0"},
             "dataset": {"id": "muses", "name": "MUSES"},
             "modality": {"key": "segmentation", "meta": {"skyclass": [0, 0, 0]}},
             "addons": {

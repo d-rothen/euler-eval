@@ -7,6 +7,7 @@ Depth metrics:
 - Image quality: PSNR, SSIM, LPIPS, FID, KID
 - Depth-specific: AbsRel, RMSE, Scale-Invariant Log Error
 - Geometric: Normal Consistency, Depth-Edge F1
+- Sky segmentation (opt-in): IoU, precision and recall of predicted sky
 
 RGB metrics:
 - Image quality: PSNR, SSIM, LPIPS
@@ -99,6 +100,15 @@ from .scale_invariant_log import (
     compute_scale_invariant_log_error,
     compute_silog_per_pixel,
 )
+from .sky_iou import (
+    SKY_IOU_METRIC_KEYS,
+    append_sky_iou_store,
+    implicit_sky_from_depth,
+    init_sky_iou_store,
+    sky_iou_counts,
+    sky_iou_from_counts,
+    summarize_sky_iou_store,
+)
 from .ssim import compute_ssim
 from .tail_errors import compute_tail_errors
 from .utils import (
@@ -133,6 +143,14 @@ __all__ = [
     "init_standard_depth_store",
     "append_standard_depth_metrics",
     "summarize_standard_depth_store",
+    # Depth sky segmentation (--sky-iou)
+    "SKY_IOU_METRIC_KEYS",
+    "sky_iou_counts",
+    "sky_iou_from_counts",
+    "implicit_sky_from_depth",
+    "init_sky_iou_store",
+    "append_sky_iou_store",
+    "summarize_sky_iou_store",
     # RGB image quality metrics
     "compute_rgb_psnr",
     "compute_rgb_ssim",

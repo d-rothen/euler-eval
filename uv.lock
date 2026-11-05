@@ -609,19 +609,19 @@ nvtx = [
 
 [[package]]
 name = "ds-crawler"
-version = "2.10.0"
-source = { git = "https://github.com/d-rothen/ds-crawler#8e44064e70ed0f9fbbc226086d941f6392e253b9" }
+version = "2.13.0"
+source = { git = "https://github.com/d-rothen/ds-crawler#7227aed88b1e31ef46427c77cd0e54f3df61ad95" }
 dependencies = [
     { name = "euler-dataset-contract" },
 ]
 
 [[package]]
 name = "euler-dataset-contract"
-version = "0.2.0"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/6f/96/4b16e00aa26d8fd7ef8e0032d970a1f0d5f414f66fa68ddb8f9e08a05de2/euler_dataset_contract-0.2.0.tar.gz", hash = "sha256:532d86b5ff0947094771fb5949b67dff98b9eeb2b77e0747da66213590b55697", size = 8131, upload-time = "2026-03-30T16:24:55.117Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/70/9f/2e52fe48615298aaadc78c8185282d91d3bf18f2e480acaa11c257e693aa/euler_dataset_contract-0.9.0.tar.gz", hash = "sha256:ec0f2ca8d2317086dc126aed24768c7de1a87319edb7151677d3d0d874d89da6", size = 196414, upload-time = "2026-10-23T11:57:15.838Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/81/6b1b1d2eae7349f30403fdef473e4e1bea986494034f8db8057d8b41bdda/euler_dataset_contract-0.2.0-py3-none-any.whl", hash = "sha256:e6026e43536df58df547039896fc66cfe9ea98a92cb6d2a6ad007e278d1aa986", size = 9693, upload-time = "2026-03-30T16:24:54.101Z" },
+    { url = "https://files.pythonhosted.org/packages/16/58/5145a8f406e5bd1c2d73b3f5fc272f7957f7f828e232eef959ced03dd46d/euler_dataset_contract-0.9.0-py3-none-any.whl", hash = "sha256:a243723e8feb8b05a24b567c6963e2e744a100507b5c9c3a524b454d52dac276", size = 159571, upload-time = "2026-10-23T11:57:14.649Z" },
 ]
 
 [[package]]
@@ -697,8 +697,8 @@ provides-extras = ["logging", "fid", "dev"]
 
 [[package]]
 name = "euler-loading"
-version = "2.15.0"
-source = { git = "https://github.com/d-rothen/euler-loading#b5d410331ed34fcd23d786ce2012a270db88f6f3" }
+version = "2.30.0"
+source = { git = "https://github.com/d-rothen/euler-loading#f42574c50b97a568dfe9a0d7fef334596eec470c" }
 dependencies = [
     { name = "ds-crawler" },
     { name = "euler-dataset-contract" },

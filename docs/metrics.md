@@ -76,6 +76,83 @@ the 45° sanity threshold.
 > plane read as nearly fronto-parallel and the focal length was unused. Values
 > are not comparable with earlier releases.
 
+### Sky segmentation
+
+`--sky-iou` scores how well each prediction's sky matches the GT segmentation
+sky. It is opt-in and read-only: no depth value, mask or alignment fit changes,
+so every other key keeps its value. It requires `gt.segmentation` (or its alias
+`gt.semantic_segmentation`); the sky label comes from that dataset head's
+`skyclass`, as for `--mask-sky`.
+
+There are two variants. They answer different questions, so they are reported
+under separate keys and never merged:
+
+| Variant | Predicted sky `P` | Computed when |
+|---|---|---|
+| `explicit` | The prediction's `datasets[].sky_mask` (True = sky) | The prediction has a `sky_mask` |
+| `implicit` | `depth >= --sky-depth` | `--sky-depth` is set and the prediction is metric |
+
+The implicit test reads the prediction after planar-to-radial conversion and
+before calibration and capping. `+inf` counts as sky; NaN and values `<= 0` do
+not. It is not computed for `relative_depth`, `affine_depth` or predictions
+detected as normalized, since their values are not in meters. When both sources
+exist, both variants are reported side by side; neither replaces the other. A
+dataset with neither prints a warning and writes no sky keys.
+
+| Metric | Key |
+|---|---|
+| Sky IoU / precision / recall | `depth.eval.sky_segmentation.{explicit,implicit}.{pixel_pool,image_mean,image_median}.{iou,precision,recall}` |
+| Sparse-depth runs | `sparsedepth.eval.sky_segmentation.{explicit,implicit}.{pixel_pool,image_mean,image_median}.{iou,precision,recall}` |
+| Per file | `{depth,sparsedepth}.eval.sky_segmentation.{explicit,implicit}.{iou,precision,recall}` |
+
+`sky_segmentation` sits beside `native` and `metric`, not under them, because
+the IoU does not depend on the evaluated depth space. Sparse-depth runs score
+the dense prediction grid against the GT segmentation exactly like dense runs;
+the sparse GT depth plays no part. Provenance, including the threshold and the
+GT and predicted sky fractions, is recorded under
+[`meta.sky_segmentation`](output.md#sky-segmentation-provenance).
+
+**Definitions.** GT sky `G` is the segmentation of the sample's own frame,
+resized to the prediction grid with the same rule as GT depth (crop for the
+VAE multiple-of-8 pattern, nearest neighbour otherwise). An explicit mask is
+resized the same way. The domain `D` is the full prediction grid. Per sample:
+
+```text
+I = |P ∩ G ∩ D|   U = |(P ∪ G) ∩ D|   T_p = |P ∩ D|   T_g = |G ∩ D|
+iou = I / U       precision = I / T_p   recall = I / T_g
+```
+
+Each value is undefined when its denominator is 0. `image_mean` and
+`image_median` reduce the defined per-image values. `pixel_pool` is
+`ΣI / ΣU`, `ΣI / ΣT_p` and `ΣI / ΣT_g` over all samples, so a sample with an
+undefined IoU (no sky in `P` or `G`) is left out of the image reducers but
+still adds its zero counts to the pooled sums. Undefined dataset values are
+omitted from `eval.json`.
+
+**Interpreting the numbers.**
+
+- **Explicit IoU** measures agreement between a dedicated sky prediction and GT
+  sky. It does not depend on depth quality.
+- **Implicit IoU** measures whether the depth output reaches `--sky-depth` on
+  GT sky pixels. It does not measure whether the regressor recognizes sky. A
+  regressor that outputs about 95 m over the sky, as UniDepth V2 does in fog,
+  never reaches a 250 m cap; its implicit IoU is close to zero by construction,
+  even if it places the sky correctly relative to everything else. The same
+  model at `--sky-depth 80` can score high. Implicit IoU therefore depends on
+  both the model's saturation behaviour and the cap.
+
+Consequences:
+
+- Never present implicit and explicit IoU as the same quantity, and always
+  state the threshold with an implicit value (`meta.sky_segmentation.threshold_m`).
+- Do not choose `--sky-depth` on the benchmark to maximize implicit IoU. That
+  is the same leakage as choosing the fill constant on the test set. Fix the
+  threshold beforehand, or report several runs at fixed thresholds.
+- Pooled IoU weights images by their sky area, so a few large-sky images can
+  dominate it. `image_median` shows typical behaviour.
+- Precision and recall separate the two failure modes. Low recall with high
+  precision usually means the regressor does not saturate at the cap.
+
 ## Sparse depth
 
 With a sparse pointcloud GT, only metrics that stay meaningful at isolated
@@ -86,6 +163,7 @@ skipped. Results serialize under the `sparsedepth.eval` root:
 |---|---|
 | Standard | `sparsedepth.eval.{native,metric}.standard.{image_mean,image_median,pixel_pool}.*` |
 | AbsRel / RMSE / SILog | `sparsedepth.eval.{native,metric}.depth_metrics.*` |
+| Sky segmentation (`--sky-iou`) | `sparsedepth.eval.sky_segmentation.*` ([details](#sky-segmentation)) |
 
 ## RGB
 

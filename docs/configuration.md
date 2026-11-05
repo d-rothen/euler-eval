@@ -71,7 +71,8 @@ required.
 | `gt.sparse_depth.path` | no\* | Sparse pointcloud GT, `(N,C)` points whose first columns are `x,y,z` in metres |
 | `gt.rays.path` | no\* | GT ray direction map dataset |
 | `gt.points_3d.path` | no\* | GT per-pixel 3D point map `(H,W,3)` in camera-frame metres |
-| `gt.segmentation.path` | no | GT segmentation (needed for `--mask-sky`) |
+| `gt.segmentation.path` | no | GT segmentation (needed for `--mask-sky` and `--sky-iou`); see [GT segmentation](#gt-segmentation) |
+| `gt.semantic_segmentation.path` | no | Alias of `gt.segmentation`; configure only one of the two |
 | `gt.calibration.path` | no | Calibration data (camera intrinsics); enables true camera-frame [surface normals](metrics.md#surface-normals-and-calibration) |
 | `gt.intrinsics.path` | with `gt.sparse_depth` | Camera intrinsics for pointcloud projection |
 | `gt.camera_extrinsics.path` | with `gt.sparse_depth` | Source-to-camera extrinsics (e.g. MUSES `lidar2rgb`) |
@@ -79,6 +80,25 @@ required.
 | `gt.name` | no | Display name for ground truth (default `"GT"`) |
 
 \* At least one of the five modality entries must be present.
+
+### GT segmentation
+
+`gt.segmentation` is the canonical key. `gt.semantic_segmentation` is accepted
+as an alias, for archives whose segmentation scope carries that name (MUSES,
+for example); configuring both keys is an error. The segmentation is read only
+when `--mask-sky` or `--sky-iou` needs it. `--mask-sky` without it warns and
+disables itself, while `--sky-iou` without it exits with an error.
+
+The dataset head's loader module must expose a `sky_mask` function, and the
+head must declare the sky label as `skyclass` (euler-loading 2.29 or later).
+euler-eval contains no label IDs.
+
+The config key is also the default metadata scope. If the path has no
+`#scope=` selector, no root-level metadata, and no scope of that name, the
+scope is chosen among the archive's scopes: the one whose name or
+`dataset-head.json` modality key is `segmentation` or `semantic_segmentation`
+(both names are candidates under either key), or the only scope. If several
+scopes match, or none among several, the run stops and asks for `#scope=`.
 
 ## `datasets` section
 
@@ -94,7 +114,7 @@ would be ambiguous.
 | `depth.path` | no\* | Predicted dense metric depth; also used against sparse pointcloud GT |
 | `relative_depth.path` | no\* | Predicted dense relative depth (scale/shift alignment supported) |
 | `affine_depth.path` | no\* | Predicted dense affine depth (scale/shift alignment supported) |
-| `sky_mask.path` | no | Auxiliary predicted sky mask for a dense depth entry; used with `--sky-depth` |
+| `sky_mask.path` | no | Auxiliary predicted sky mask for a dense depth entry; used with `--sky-depth` and `--sky-iou` |
 | `rays.path` | no\* | Predicted ray direction map dataset |
 | `points_3d.path` | no\* | Predicted per-pixel 3D point map `(H,W,3)` |
 | `output_file` | no | Custom results path (default: `eval.json` in the first modality path) |
@@ -123,8 +143,8 @@ The sky mask is paired with GT and predicted depth by sample ID and hierarchy.
 It supports the same archive, split, and `#scope=` selectors as depth, defaulting
 to the `sky_mask` metadata scope. Its loader must return a boolean mask with
 **True meaning sky**. For example, `generic_dense_depth.sky_mask` uses the RGB
-sky color in the mask dataset's `meta.sky_mask` (`[R, G, B]`) and returns a
-`(1, H, W)` tensor. Masks at another resolution follow the depth grid's crop
+sky color in the mask dataset's `meta.skyclass` (`[R, G, B]`; the older
+`meta.sky_mask` key is deprecated) and returns a `(1, H, W)` tensor. Masks at another resolution follow the depth grid's crop
 rule or use nearest-neighbor resizing.
 
 `--sky-depth` applies to dense and sparse depth evaluation. GT and both native
@@ -139,9 +159,17 @@ contributes only at projected points. Predicted sky stays in the scores where
 GT is valid; `--mask-sky` separately excludes pixels using GT segmentation and
 can be combined with `--sky-depth`.
 
-Without `--sky-depth`, the predicted mask is not loaded and depth evaluation
-uses the usual uncapped values. The effective cap and mask source are recorded
-in `eval.json` under `meta.eval_params.sky_depth` and `meta.pred.sky_mask`.
+Without `--sky-depth` or `--sky-iou`, the predicted mask is not loaded and
+depth evaluation uses the usual uncapped values. `--sky-iou` loads the mask
+even without `--sky-depth`, but only to score it against GT sky
+([Sky segmentation](metrics.md#sky-segmentation)); the depth fill and the
+affine-fit exclusion stay tied to `--sky-depth`, so depth values do not change.
+Because the mask is paired by sample ID, a mask that lacks some depth frames
+would also drop them from the depth metrics. When the mask is loaded only for
+`--sky-iou`, such a mask is therefore not loaded at all: the run warns, keeps
+every depth pair and skips the explicit variant. The effective cap and mask
+source are recorded in `eval.json` under `meta.eval_params.sky_depth` and
+`meta.pred.sky_mask`.
 
 ## Sparse depth (pointcloud GT)
 
@@ -162,8 +190,9 @@ depth and `points_3d`, each prediction modality gets its own `eval.json` at its
 own path.
 
 Sparse depth does not require segmentation GT. `gt.segmentation` is loaded only
-when `--mask-sky` is set, and then excludes sky pixels from projected-point
-metrics and from scale/shift fitting.
+when `--mask-sky` or `--sky-iou` is set. `--mask-sky` excludes sky pixels from
+projected-point metrics and from scale/shift fitting; `--sky-iou` scores the
+dense prediction's sky against it without changing any depth metric.
 
 ```json
 {
@@ -239,6 +268,8 @@ The scope defaults to the configuration key name, so the common case is compact:
 
 Use `#scope=<scope>` when an artifact scope is not named exactly like the config
 key, e.g. `"sparse_depth": { "path": "/data/capture.zip:test#scope=lidar" }`.
+GT segmentation is the exception: under either of its keys it also finds a
+scope named after the other key, as described in [GT segmentation](#gt-segmentation).
 
 Regular modalities (`rgb`, `depth`, `rays`, `points_3d`, `sparse_depth`)
 participate in file-ID intersection; calibration and pose data (`intrinsics`,
