@@ -109,6 +109,27 @@ the flag, neither field exists. Values below are illustrative:
 | `samples_without_gt` | Pairs left out because no GT segmentation of their own frame was found |
 | `gt_sky_fraction` | Pooled GT sky fraction over the scored samples |
 
+### Predicted-sky masking
+
+With `--mask-sky-prediction`, dense and sparse depth results record
+`meta.eval_params.mask_sky_prediction: true` and how much the prediction's own
+sky removed, since that differs from model to model:
+
+```json
+"pred_sky_masking": {
+  "source": "pred.sky_mask",
+  "samples": 500,
+  "samples_with_sky_mask": 500,
+  "gt_valid_pixels": 1048576000,
+  "excluded_gt_pixels": 220200960,
+  "excluded_gt_fraction": 0.21
+}
+```
+
+`gt_valid_pixels` counts the GT pixels (projected lidar points for sparse
+depth) that would be scored without the flag, after `--mask-sky` if set;
+`excluded_gt_pixels` is how many of them fell in predicted sky.
+
 When sky keys are written, the metric-set axes also declare them:
 `sky_segmentation` joins the `category` values, an optional `variant` axis
 (`explicit`, `implicit`) follows `category`, and `space` becomes optional

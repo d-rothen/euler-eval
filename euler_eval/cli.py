@@ -1411,6 +1411,15 @@ def main():
         help="Mask sky regions from metrics using GT segmentation",
     )
     parser.add_argument(
+        "--mask-sky-prediction",
+        action="store_true",
+        help=(
+            "Exclude pixels in a prediction's datasets[].sky_mask from dense and "
+            "sparse depth metrics and the alignment fit; predictions without a "
+            "sky_mask are scored in full"
+        ),
+    )
+    parser.add_argument(
         "--sky-depth",
         type=float,
         default=None,
@@ -1564,6 +1573,8 @@ def main():
             args.mask_sky = False
         else:
             print(f"Sky masking enabled ({segmentation_key})")
+    if args.mask_sky_prediction:
+        print("Predicted sky masking enabled (datasets[].sky_mask)")
     if args.sky_iou:
         # Unlike --mask-sky, never disable silently: the user asked for a metric.
         if segmentation_entry is None:
@@ -1654,18 +1665,22 @@ def main():
         has_depth = pred_depth_config is not None
         pred_sky_mask_config = (
             dataset_config.get("sky_mask", {})
-            if args.sky_depth is not None or args.sky_iou
+            if args.sky_depth is not None or args.sky_iou or args.mask_sky_prediction
             else {}
         )
         pred_sky_mask_path = pred_sky_mask_config.get("path")
         pred_sky_mask_split = pred_sky_mask_config.get("split")
         # ID-paired inputs that only --sky-iou reads must not drop depth pairs.
-        # The depth fill stays gated on --sky-depth and masking on --mask-sky.
+        # The sky_mask fill stays gated on --sky-depth, and masking on
+        # --mask-sky (GT) and --mask-sky-prediction (sky_mask).
+        sky_mask_scores_depth = (
+            args.sky_depth is not None or args.mask_sky_prediction
+        )
         iou_only_inputs = tuple(
             name
             for name, iou_only in (
                 ("segmentation", depth_segmentation_path and not args.mask_sky),
-                ("pred_sky_mask", pred_sky_mask_path and args.sky_depth is None),
+                ("pred_sky_mask", pred_sky_mask_path and not sky_mask_scores_depth),
             )
             if iou_only
         )
@@ -1751,6 +1766,7 @@ def main():
                 sky_mask_enabled=args.mask_sky,
                 sky_depth=args.sky_depth,
                 sky_iou=args.sky_iou,
+                pred_sky_mask_enabled=args.mask_sky_prediction,
                 alignment_mode=args.depth_alignment,
                 benchmark_depth_range=(
                     tuple(args.benchmark_depth_range)
@@ -1841,11 +1857,15 @@ def main():
                     "sky_segmentation": _sky_segmentation_meta(
                         depth_results, segmentation_key, skipped_inputs
                     ),
+                    "pred_sky_masking": depth_results.get("pred_sky_masking"),
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "depth_alignment_mode": args.depth_alignment,
                         "sky_depth": args.sky_depth,
                         "sky_iou": True if args.sky_iou else None,
+                        "mask_sky_prediction": (
+                            True if args.mask_sky_prediction else None
+                        ),
                         "batch_size": args.batch_size,
                         "num_workers": args.num_workers,
                         "benchmark_depth_range": (
@@ -1989,6 +2009,7 @@ def main():
                 sky_mask_enabled=args.mask_sky,
                 sky_depth=args.sky_depth,
                 sky_iou=args.sky_iou,
+                pred_sky_mask_enabled=args.mask_sky_prediction,
                 alignment_mode=args.depth_alignment,
                 benchmark_depth_range=(
                     tuple(args.benchmark_depth_range)
@@ -2084,11 +2105,17 @@ def main():
                     "sky_segmentation": _sky_segmentation_meta(
                         sparse_depth_results, segmentation_key, skipped_inputs
                     ),
+                    "pred_sky_masking": sparse_depth_results.get(
+                        "pred_sky_masking"
+                    ),
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "depth_alignment_mode": args.depth_alignment,
                         "sky_depth": args.sky_depth,
                         "sky_iou": True if args.sky_iou else None,
+                        "mask_sky_prediction": (
+                            True if args.mask_sky_prediction else None
+                        ),
                         "num_workers": args.num_workers,
                         "benchmark_depth_range": (
                             list(args.benchmark_depth_range)

@@ -124,7 +124,7 @@ would be ambiguous.
 | `depth.path` | no\* | Predicted dense metric depth; also used against sparse pointcloud GT |
 | `relative_depth.path` | no\* | Predicted dense relative depth (scale/shift alignment supported) |
 | `affine_depth.path` | no\* | Predicted dense affine depth (scale/shift alignment supported) |
-| `sky_mask.path` | no | Auxiliary predicted sky mask for a dense depth entry; used with `--sky-depth` and `--sky-iou` |
+| `sky_mask.path` | no | Auxiliary predicted sky mask for a dense depth entry; used with `--sky-depth`, `--mask-sky-prediction` and `--sky-iou` |
 | `rays.path` | no\* | Predicted ray direction map dataset |
 | `points_3d.path` | no\* | Predicted per-pixel 3D point map `(H,W,3)` |
 | `output_file` | no | Custom results path (default: `eval.json` in the first modality path) |
@@ -169,17 +169,37 @@ contributes only at projected points. Predicted sky stays in the scores where
 GT is valid; `--mask-sky` separately excludes pixels using GT segmentation and
 can be combined with `--sky-depth`.
 
-Without `--sky-depth` or `--sky-iou`, the predicted mask is not loaded and
-depth evaluation uses the usual uncapped values. `--sky-iou` loads the mask
+Without `--sky-depth`, `--mask-sky-prediction` or `--sky-iou`, the predicted
+mask is not loaded and depth evaluation uses the usual uncapped values.
+`--sky-iou` loads the mask
 even without `--sky-depth`, but only to score it against GT sky
 ([Sky segmentation](metrics.md#sky-segmentation)); the depth fill and the
-affine-fit exclusion stay tied to `--sky-depth`, so depth values do not change.
+affine-fit exclusion stay tied to `--sky-depth` (and `--mask-sky-prediction`),
+so depth values do not change.
 Because the mask is paired by sample ID, a mask that lacks some depth frames
 also drops them from the depth metrics; the run prints how many. When the mask
 is loaded only for `--sky-iou`, such a mask is not loaded at all: the run
 warns, keeps every depth pair and skips the explicit variant. The effective cap and mask
 source are recorded in `eval.json` under `meta.eval_params.sky_depth` and
 `meta.pred.sky_mask`.
+
+### Masking predicted sky
+
+`--mask-sky-prediction` excludes the pixels of a prediction's `sky_mask` from
+dense and sparse depth evaluation, as `--mask-sky` does for GT sky: from every
+metric, benchmark bin and histogram, and from the scale/shift fit. For sparse
+depth, lidar points that project into predicted sky are not scored. A dataset
+without a `sky_mask` is scored in full and the run warns. The flag loads the
+mask without `--sky-depth`, combines with `--mask-sky` (the union of both skies
+is excluded) and with `--sky-depth` (the cap still applies to the remaining
+pixels). It does not change `--sky-iou`, which scores the masks themselves.
+
+The excluded pixels come from the evaluated model, so two models are scored on
+different pixel sets, and a model can lower its error by calling hard pixels
+sky. Each result records how much it excluded under `meta.pred_sky_masking`
+([Results & output](output.md#predicted-sky-masking)); compare models with
+this flag only alongside that fraction, or prefer `--mask-sky`, whose GT sky is
+the same for every model.
 
 ## Sparse depth (pointcloud GT)
 
