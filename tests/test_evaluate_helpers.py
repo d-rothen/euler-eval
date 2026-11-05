@@ -67,14 +67,19 @@ class TestGetSkyMask:
         result = _get_sky_mask(sample)
         assert result.all()
 
-    def test_uses_first_dict_entry(self):
-        """When multiple entries, picks the first (iter order)."""
+    def test_uses_the_entry_of_the_sample_id(self):
+        """With several entries, the sample's own frame is used, not the first."""
         sky_a = np.array([[True, False]], dtype=bool)
         sky_b = np.array([[False, True]], dtype=bool)
-        sample = {"segmentation": {"a": sky_a, "b": sky_b}}
-        result = _get_sky_mask(sample)
-        # Should use sky_a (first in dict)
-        np.testing.assert_array_equal(result, ~sky_a)
+        sample = {"id": "b", "segmentation": {"a": sky_a, "b": sky_b}}
+        np.testing.assert_array_equal(_get_sky_mask(sample), ~sky_b)
+
+    def test_ambiguous_entries_mask_nothing(self):
+        """Several entries without the sample's ID: no other frame's sky."""
+        sky_a = np.array([[True, False]], dtype=bool)
+        sky_b = np.array([[False, True]], dtype=bool)
+        sample = {"id": "c", "segmentation": {"a": sky_a, "b": sky_b}}
+        assert _get_sky_mask(sample) is None
 
 
 # ---------------------------------------------------------------------------
@@ -98,6 +103,15 @@ class TestSkyMaskCoverage:
         coverage.add(np.array([[False, True], [True, True]]))
         coverage.warn_if_empty("depth")
         assert capsys.readouterr().out == ""
+
+    def test_reports_samples_without_their_own_segmentation(self, capsys):
+        coverage = _SkyMaskCoverage()
+        coverage.add(np.array([[False, True], [True, True]]))
+        coverage.add(None)
+        coverage.warn_if_empty("depth")
+        out = capsys.readouterr().out
+        assert "no GT segmentation of their own frame for 1 of the 2 depth" in out
+        assert "found no sky" not in out
 
     def test_silent_when_sky_masking_never_ran(self, capsys):
         _SkyMaskCoverage().warn_if_empty("depth")

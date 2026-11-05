@@ -7,6 +7,19 @@ the git history for those.
 
 ### Fixed
 
+- **Moves `--mask-sky` metric values.** GT segmentation is now paired with each
+  frame by hierarchy path and file ID, like depth, in every evaluation that
+  uses it (dense and sparse depth, RGB, dense and sparse points-3D). It was a
+  hierarchical modality, which gives each sample every mask in its folder, and
+  `--mask-sky` used the first one: with per-frame segmentation in one folder,
+  every frame was masked with that folder's first frame's sky, so the other
+  frames' real sky stayed in the metrics and the scale/shift fit, unreported.
+  Results with `--mask-sky` on such layouts change and are not comparable with
+  earlier releases. A frame without its own segmentation file is now not
+  evaluated, and the run prints how many pairs the segmentation (or a
+  `sky_mask`) dropped; segmentation whose IDs match no frame stops the run.
+  Each sample also decodes only its own mask instead of caching its folder's.
+  `--mask-sky` warns about samples without segmentation of their own frame.
 - Default dataset and per-file depth distributions now honor the benchmark GT
   range after sky-depth capping, matching the named benchmark `all` histogram
   and metrics. The selected population is recorded in metric-set metadata.

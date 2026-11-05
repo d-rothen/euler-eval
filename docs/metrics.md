@@ -112,6 +112,10 @@ the sparse GT depth plays no part. Provenance, including the threshold and the
 GT and predicted sky fractions, is recorded under
 [`meta.sky_segmentation`](output.md#sky-segmentation-provenance).
 
+If the GT segmentation lacks frames and `--mask-sky` is off, it is not loaded
+and no sky IoU is computed, so that the depth pairs stay the same; see
+[GT segmentation](configuration.md#gt-segmentation).
+
 **Definitions.** GT sky `G` is the segmentation of the sample's own frame,
 resized to the prediction grid with the same rule as GT depth (crop for the
 VAE multiple-of-8 pattern, nearest neighbour otherwise). An explicit mask is

@@ -1237,34 +1237,52 @@ def print_results(results: dict, title: str) -> None:
     print_dict(results)
 
 
-def _build_keeping_depth_pairs(
-    build, kwargs: dict, *, sky_mask_for_iou_only: bool, ds_name: str
+# ID-paired optional inputs: dataset modality -> (builder kwargs, label).
+_PAIRED_OPTIONAL_INPUTS = {
+    "segmentation": (("segmentation_path", "segmentation_split"), "GT segmentation"),
+    "pred_sky_mask": (("pred_sky_mask_path", "pred_sky_mask_split"), "sky_mask"),
+}
+
+
+def _build_eval_dataset(
+    build, kwargs: dict, *, ds_name: str, iou_only: tuple[str, ...] = ()
 ) -> tuple:
-    """Build a depth eval dataset whose IoU-only ``sky_mask`` keeps every pair.
+    """Build an eval dataset and account for the frames its optional inputs drop.
 
-    ``sky_mask`` is ID-paired with the depth prediction, so a mask that lacks
-    some frames removes them from every metric. Without ``--sky-depth`` it is
-    read only for ``--sky-iou``, which must not change the evaluated pairs: in
-    that case rebuild without it, which skips the explicit variant.
+    GT segmentation and a predicted ``sky_mask`` are paired with the evaluated
+    frames by ID, so a frame without one is not evaluated; euler-loading only
+    logs that, so it is reported here. An input named in *iou_only* is read
+    only for ``--sky-iou``, which must not change the evaluated pairs: if it
+    lacks any, the dataset is rebuilt without it.
 
-    Returns ``(dataset, explicit_skip_reason)``.
+    Returns ``(dataset, skipped)`` with ``{input: reason}`` for every
+    *iou_only* input that was left out.
     """
+    optional = tuple(_PAIRED_OPTIONAL_INPUTS)
     dataset = build(**kwargs)
-    if not sky_mask_for_iou_only:
-        return dataset, None
-    dropped = count_ids_dropped_by(dataset, "pred_sky_mask")
-    if not dropped:
-        return dataset, None
-    print(
-        f"Warning: --sky-iou: the sky_mask of '{ds_name}' lacks {dropped} depth "
-        "pairs. Without --sky-depth it is read only for the sky IoU, which must "
-        "not change the evaluated pairs, so it is not loaded and the explicit "
-        "variant is skipped."
-    )
-    dataset = build(
-        **{**kwargs, "pred_sky_mask_path": None, "pred_sky_mask_split": None}
-    )
-    return dataset, "sky_mask does not cover every depth pair"
+    skipped = {}
+    for name in iou_only:
+        dropped = count_ids_dropped_by(dataset, name, optional=optional)
+        if not dropped:
+            continue
+        keys, label = _PAIRED_OPTIONAL_INPUTS[name]
+        print(
+            f"Warning: --sky-iou: the {label} of '{ds_name}' lacks {dropped} "
+            "evaluated pairs. It is read only for the sky IoU, which must not "
+            "change the evaluated pairs, so it is not loaded."
+        )
+        kwargs = {**kwargs, **dict.fromkeys(keys)}
+        skipped[name] = f"{label} does not cover every evaluated pair"
+    if skipped:
+        dataset = build(**kwargs)
+    for name, (_, label) in _PAIRED_OPTIONAL_INPUTS.items():
+        dropped = count_ids_dropped_by(dataset, name, optional=optional)
+        if dropped:
+            print(
+                f"Warning: the {label} of '{ds_name}' lacks {dropped} pairs that "
+                "the other inputs share; those pairs are not evaluated."
+            )
+    return dataset, skipped
 
 
 def _sky_segmentation_tree(results: dict) -> dict:
@@ -1273,15 +1291,22 @@ def _sky_segmentation_tree(results: dict) -> dict:
 
 
 def _sky_segmentation_meta(
-    results: dict, gt_key: str | None, explicit_skip_reason: str | None
+    results: dict, gt_key: str | None, skipped_inputs: dict
 ) -> dict | None:
-    """Return ``meta.sky_segmentation`` provenance, or ``None`` without --sky-iou."""
+    """Return ``meta.sky_segmentation`` provenance, or ``None`` without --sky-iou.
+
+    *skipped_inputs* names inputs left out by :func:`_build_eval_dataset`;
+    they explain the variants that could not run.
+    """
     info = results.get("sky_segmentation_info")
     if info is None:
         return None
     variants = {variant: dict(info[variant]) for variant in _SKY_SEGMENTATION_VARIANTS}
-    if explicit_skip_reason is not None and not variants["explicit"]["available"]:
-        variants["explicit"]["reason"] = explicit_skip_reason
+    for name, reason in skipped_inputs.items():
+        affected = ("explicit",) if name == "pred_sky_mask" else variants
+        for variant in affected:
+            if not variants[variant]["available"]:
+                variants[variant]["reason"] = reason
     rest = {k: v for k, v in info.items() if k not in _SKY_SEGMENTATION_VARIANTS}
     return {**variants, "gt_source": f"gt.{gt_key}", **rest}
 
@@ -1634,9 +1659,15 @@ def main():
         )
         pred_sky_mask_path = pred_sky_mask_config.get("path")
         pred_sky_mask_split = pred_sky_mask_config.get("split")
-        # The depth fill stays gated on --sky-depth; --sky-iou only reads.
-        sky_mask_for_iou_only = (
-            args.sky_depth is None and pred_sky_mask_path is not None
+        # ID-paired inputs that only --sky-iou reads must not drop depth pairs.
+        # The depth fill stays gated on --sky-depth and masking on --mask-sky.
+        iou_only_inputs = tuple(
+            name
+            for name, iou_only in (
+                ("segmentation", depth_segmentation_path and not args.mask_sky),
+                ("pred_sky_mask", pred_sky_mask_path and args.sky_depth is None),
+            )
+            if iou_only
         )
         has_rgb = "rgb" in dataset_config and "path" in dataset_config["rgb"]
         has_rays = "rays" in dataset_config and "path" in dataset_config["rays"]
@@ -1679,7 +1710,7 @@ def main():
             if pred_depth_key != "depth":
                 print(f"  Pred depth entry: {pred_depth_key}")
 
-            depth_dataset, sky_mask_skip_reason = _build_keeping_depth_pairs(
+            depth_dataset, skipped_inputs = _build_eval_dataset(
                 build_depth_eval_dataset,
                 dict(
                     gt_depth_path=gt_depth_path,
@@ -1697,8 +1728,8 @@ def main():
                     calibration_split=calibration_split,
                     segmentation_split=depth_segmentation_split,
                 ),
-                sky_mask_for_iou_only=sky_mask_for_iou_only,
                 ds_name=ds_name,
+                iou_only=iou_only_inputs,
             )
             et_eval_datasets["depth"] = depth_dataset
 
@@ -1796,7 +1827,7 @@ def main():
                         # A mask dropped for --sky-iou coverage was never read.
                         "sky_mask": (
                             None
-                            if sky_mask_skip_reason is not None
+                            if "pred_sky_mask" in skipped_inputs
                             else pred_sky_mask_config or None
                         ),
                     },
@@ -1808,7 +1839,7 @@ def main():
                     },
                     "modality_params": depth_meta,
                     "sky_segmentation": _sky_segmentation_meta(
-                        depth_results, segmentation_key, sky_mask_skip_reason
+                        depth_results, segmentation_key, skipped_inputs
                     ),
                     "eval_params": {
                         "sky_masking": args.mask_sky,
@@ -1915,7 +1946,7 @@ def main():
             if lidar_extrinsics_path:
                 print(f"  Lidar extrinsics:     {lidar_extrinsics_path}")
 
-            sparse_depth_dataset, sky_mask_skip_reason = _build_keeping_depth_pairs(
+            sparse_depth_dataset, skipped_inputs = _build_eval_dataset(
                 build_sparse_depth_eval_dataset,
                 dict(
                     gt_sparse_depth_path=gt_sparse_depth_path,
@@ -1937,8 +1968,8 @@ def main():
                     lidar_extrinsics_split=lidar_extrinsics_split,
                     segmentation_split=depth_segmentation_split,
                 ),
-                sky_mask_for_iou_only=sky_mask_for_iou_only,
                 ds_name=ds_name,
+                iou_only=iou_only_inputs,
             )
             et_eval_datasets["sparse_depth"] = sparse_depth_dataset
 
@@ -2029,7 +2060,7 @@ def main():
                         # A mask dropped for --sky-iou coverage was never read.
                         "sky_mask": (
                             None
-                            if sky_mask_skip_reason is not None
+                            if "pred_sky_mask" in skipped_inputs
                             else pred_sky_mask_config or None
                         ),
                     },
@@ -2051,7 +2082,7 @@ def main():
                     },
                     "modality_params": sparse_depth_meta,
                     "sky_segmentation": _sky_segmentation_meta(
-                        sparse_depth_results, segmentation_key, sky_mask_skip_reason
+                        sparse_depth_results, segmentation_key, skipped_inputs
                     ),
                     "eval_params": {
                         "sky_masking": args.mask_sky,
@@ -2158,18 +2189,22 @@ def main():
             print(f"  GT:   {gt_rgb_path}")
             print(f"  Pred: {pred_rgb_path}")
 
-            rgb_dataset = build_rgb_eval_dataset(
-                gt_rgb_path=gt_rgb_path,
-                pred_rgb_path=pred_rgb_path,
-                gt_depth_path=gt_depth_path,
-                calibration_path=calibration_path,
-                segmentation_path=segmentation_path,
-                gt_rgb_split=gt_rgb_split,
-                pred_rgb_split=pred_rgb_split,
-                gt_depth_split=gt_depth_split,
-                calibration_split=calibration_split,
-                segmentation_split=segmentation_split,
-                segmentation_modality_key=segmentation_key or "segmentation",
+            rgb_dataset, _ = _build_eval_dataset(
+                build_rgb_eval_dataset,
+                dict(
+                    gt_rgb_path=gt_rgb_path,
+                    pred_rgb_path=pred_rgb_path,
+                    gt_depth_path=gt_depth_path,
+                    calibration_path=calibration_path,
+                    segmentation_path=segmentation_path,
+                    gt_rgb_split=gt_rgb_split,
+                    pred_rgb_split=pred_rgb_split,
+                    gt_depth_split=gt_depth_split,
+                    calibration_split=calibration_split,
+                    segmentation_split=segmentation_split,
+                    segmentation_modality_key=segmentation_key or "segmentation",
+                ),
+                ds_name=ds_name,
             )
             et_eval_datasets["rgb"] = rgb_dataset
 
@@ -2444,20 +2479,24 @@ def main():
                 print(f"  GT:   {gt_points_3d_path}")
             print(f"  Pred: {pred_points_3d_path}")
 
-            points_3d_dataset = build_points_3d_eval_dataset(
-                pred_points_3d_path=pred_points_3d_path,
-                gt_points_3d_path=gt_points_3d_path,
-                gt_depth_path=gt_depth_path if p3d_gt_is_depth else None,
-                intrinsics_path=p3d_intrinsics_path,
-                calibration_path=calibration_path,
-                segmentation_path=segmentation_path,
-                pred_points_3d_split=pred_points_3d_split,
-                gt_points_3d_split=gt_points_3d_split,
-                gt_depth_split=gt_depth_split,
-                intrinsics_split=p3d_intrinsics_split,
-                calibration_split=calibration_split,
-                segmentation_split=segmentation_split,
-                segmentation_modality_key=segmentation_key or "segmentation",
+            points_3d_dataset, _ = _build_eval_dataset(
+                build_points_3d_eval_dataset,
+                dict(
+                    pred_points_3d_path=pred_points_3d_path,
+                    gt_points_3d_path=gt_points_3d_path,
+                    gt_depth_path=gt_depth_path if p3d_gt_is_depth else None,
+                    intrinsics_path=p3d_intrinsics_path,
+                    calibration_path=calibration_path,
+                    segmentation_path=segmentation_path,
+                    pred_points_3d_split=pred_points_3d_split,
+                    gt_points_3d_split=gt_points_3d_split,
+                    gt_depth_split=gt_depth_split,
+                    intrinsics_split=p3d_intrinsics_split,
+                    calibration_split=calibration_split,
+                    segmentation_split=segmentation_split,
+                    segmentation_modality_key=segmentation_key or "segmentation",
+                ),
+                ds_name=ds_name,
             )
             et_eval_datasets["points_3d"] = points_3d_dataset
 
@@ -2620,20 +2659,24 @@ def main():
             p3s_pred_path = dataset_config["points_3d"]["path"]
             p3s_pred_split = dataset_config["points_3d"].get("split")
             print(f"  Pred point map:       {p3s_pred_path}")
-            points_3d_sparse_dataset = build_points_3d_sparse_eval_dataset(
-                gt_sparse_depth_path=gt_sparse_depth_path,
-                pred_points_3d_path=p3s_pred_path,
-                intrinsics_path=intrinsics_path,
-                camera_extrinsics_path=camera_extrinsics_path,
-                lidar_extrinsics_path=lidar_extrinsics_path,
-                segmentation_path=segmentation_path,
-                segmentation_modality_key=segmentation_key or "segmentation",
-                gt_sparse_depth_split=gt_sparse_depth_split,
-                pred_points_3d_split=p3s_pred_split,
-                intrinsics_split=intrinsics_split,
-                camera_extrinsics_split=camera_extrinsics_split,
-                lidar_extrinsics_split=lidar_extrinsics_split,
-                segmentation_split=segmentation_split,
+            points_3d_sparse_dataset, _ = _build_eval_dataset(
+                build_points_3d_sparse_eval_dataset,
+                dict(
+                    gt_sparse_depth_path=gt_sparse_depth_path,
+                    pred_points_3d_path=p3s_pred_path,
+                    intrinsics_path=intrinsics_path,
+                    camera_extrinsics_path=camera_extrinsics_path,
+                    lidar_extrinsics_path=lidar_extrinsics_path,
+                    segmentation_path=segmentation_path,
+                    segmentation_modality_key=segmentation_key or "segmentation",
+                    gt_sparse_depth_split=gt_sparse_depth_split,
+                    pred_points_3d_split=p3s_pred_split,
+                    intrinsics_split=intrinsics_split,
+                    camera_extrinsics_split=camera_extrinsics_split,
+                    lidar_extrinsics_split=lidar_extrinsics_split,
+                    segmentation_split=segmentation_split,
+                ),
+                ds_name=ds_name,
             )
             p3ds_meta = get_points_3d_metadata(points_3d_sparse_dataset)
             p3s_alignment_mode = args.points_3d_alignment

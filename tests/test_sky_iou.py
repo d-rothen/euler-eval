@@ -194,8 +194,9 @@ def test_gt_sky_is_not_inverted_and_is_paired_by_sample_id():
     sample = {"id": "second", "segmentation": {"first": first, "second": second}}
 
     np.testing.assert_array_equal(eval_mod._get_gt_sky_mask(sample), second)
-    # --mask-sky keeps its historical first-entry behaviour, inverted.
-    np.testing.assert_array_equal(eval_mod._get_sky_mask(sample), ~first)
+    # --mask-sky uses the same frame, inverted (True = valid, non-sky).
+    np.testing.assert_array_equal(eval_mod._get_sky_mask(sample), ~second)
+    assert not np.array_equal(first, second)
 
 
 def test_gt_sky_uses_a_single_shared_entry_and_rejects_ambiguous_ones():

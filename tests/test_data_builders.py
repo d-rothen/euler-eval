@@ -63,8 +63,11 @@ def test_depth_builder_sets_modality_scopes(monkeypatch):
         key="calibration",
         split="calib",
     )
+    # Per-frame segmentation is ID-paired like depth, so each sample gets
+    # only its own mask.
+    assert "segmentation" not in dataset.hierarchical_modalities
     _assert_modality(
-        dataset.hierarchical_modalities["segmentation"],
+        dataset.modalities["segmentation"],
         key="segmentation",
         split="seg",
         loader=sky_loader,
@@ -103,6 +106,7 @@ def test_sparse_depth_builder_sets_projection_modality_scopes(monkeypatch):
         split="pose",
     )
     assert "segmentation" not in dataset.hierarchical_modalities
+    assert "segmentation" not in dataset.modalities
 
 
 def test_sparse_depth_builder_adds_optional_lidar_extrinsics(monkeypatch):
@@ -208,8 +212,9 @@ def test_sparse_depth_builder_uses_custom_segmentation_scope(monkeypatch):
     )
 
     assert calls == [("/datasets/shared", "sky_segmentation")]
+    assert "segmentation" not in dataset.hierarchical_modalities
     _assert_modality(
-        dataset.hierarchical_modalities["segmentation"],
+        dataset.modalities["segmentation"],
         key="sky_segmentation",
         loader=sky_loader,
     )

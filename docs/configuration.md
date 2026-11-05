@@ -93,6 +93,16 @@ The dataset head's loader module must expose a `sky_mask` function, and the
 head must declare the sky label as `skyclass` (euler-loading 2.29 or later).
 euler-eval contains no label IDs.
 
+Segmentation is per frame, so it is paired with the evaluated frames by
+hierarchy path and file ID, like depth: its index must use the same folder
+structure and IDs as the frames it masks. A frame without its own segmentation
+file is not evaluated, and the run prints how many pairs the segmentation
+dropped. When segmentation is read only for `--sky-iou`, it must not change
+the evaluated pairs, so a segmentation that lacks frames is not loaded; the run
+warns and the sky IoU is skipped. A segmentation whose IDs match no frame
+stops the run with euler-loading's "No common IDs" error and per-modality file
+counts.
+
 The config key is also the default metadata scope. If the path has no
 `#scope=` selector, no root-level metadata, and no scope of that name, the
 scope is chosen among the archive's scopes: the one whose name or
@@ -165,9 +175,9 @@ even without `--sky-depth`, but only to score it against GT sky
 ([Sky segmentation](metrics.md#sky-segmentation)); the depth fill and the
 affine-fit exclusion stay tied to `--sky-depth`, so depth values do not change.
 Because the mask is paired by sample ID, a mask that lacks some depth frames
-would also drop them from the depth metrics. When the mask is loaded only for
-`--sky-iou`, such a mask is therefore not loaded at all: the run warns, keeps
-every depth pair and skips the explicit variant. The effective cap and mask
+also drops them from the depth metrics; the run prints how many. When the mask
+is loaded only for `--sky-iou`, such a mask is not loaded at all: the run
+warns, keeps every depth pair and skips the explicit variant. The effective cap and mask
 source are recorded in `eval.json` under `meta.eval_params.sky_depth` and
 `meta.pred.sky_mask`.
 
@@ -271,10 +281,12 @@ key, e.g. `"sparse_depth": { "path": "/data/capture.zip:test#scope=lidar" }`.
 GT segmentation is the exception: under either of its keys it also finds a
 scope named after the other key, as described in [GT segmentation](#gt-segmentation).
 
-Regular modalities (`rgb`, `depth`, `rays`, `points_3d`, `sparse_depth`)
-participate in file-ID intersection; calibration and pose data (`intrinsics`,
-`calibration`, `camera_extrinsics`, `lidar_extrinsics`, segmentation) are loaded
-hierarchically and do not.
+Regular modalities (`rgb`, `depth`, `rays`, `points_3d`, `sparse_depth`, GT
+segmentation and a predicted `sky_mask`) participate in file-ID intersection;
+calibration and pose data (`intrinsics`, `calibration`, `camera_extrinsics`,
+`lidar_extrinsics`) are loaded hierarchically and do not. A hierarchical file
+applies to every frame at or below its folder, which suits one calibration per
+scene but not per-frame data.
 
 ## `metrics_config.json`
 
