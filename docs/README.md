@@ -7,7 +7,7 @@
 | [Spaces & alignment](alignment.md) | Why `native` and `metric` exist, depth affine fitting, points-3d gauge alignment, benchmark depth bins |
 | [Metrics](metrics.md) | The full metric inventory per modality, with the key each one is written under |
 | [Error distributions](distributions.md) | Optional per-sample and pooled RMSE histograms, bin settings, axes and JSON layout |
-| [Results & output](output.md) | Where files land, the anatomy of `eval.json`, per-file metrics, the sanity-check report |
+| [Results & output](output.md) | Where files land, the anatomy of `eval.json`, comparing evaluations, per-file metrics, the sanity-check report |
 | [In-training validation](validation.md) | The programmatic API for scoring in-memory predictions during training |
 
 ## Proposed features

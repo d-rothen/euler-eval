@@ -81,6 +81,10 @@ every flag, every metric key, every config field — belongs in
 1. Bump `version` in `pyproject.toml` and refresh the lock (`uv lock`).
 2. Add a [`CHANGELOG.md`](CHANGELOG.md) entry. Call out anything that moves
    metric values explicitly — results are compared across runs and releases.
+   If the release changes metric values for identical inputs and settings,
+   also bump `METRICS_REVISION` in `euler_eval/protocol.py` and name the new
+   revision in that entry. A new value-changing setting instead gets its own
+   `protocol.parameters` key ([Comparing evaluations](docs/output.md#comparing-evaluations)).
 3. Tag the commit `v<version>` and push the tag.
 
 Pushing a `v*` tag runs

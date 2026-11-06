@@ -22,9 +22,8 @@ from ds_crawler.zip_utils import get_zip_root_prefix
 
 from .config_paths import (
     GT_SEGMENTATION_KEYS,
-    has_scoped_metadata,
     normalize_modality_path,
-    parse_modality_path,
+    resolve_dataset_location,
     resolve_gt_segmentation_path,
 )
 from .data import (
@@ -57,6 +56,7 @@ from .metric_sets import (
     resolve_metric_sets,
     selected_domain_categories,
 )
+from .protocol import build_protocol, evaluated_resolution, reference_identities
 from .sanity_checker import SanityChecker
 
 try:
@@ -1197,14 +1197,14 @@ def default_eval_path(
     metadata, otherwise ``.eval/`` itself, matching how euler-loading falls
     back to root-level metadata. A selected split adds ``split_<split>/``.
     """
-    parsed = parse_modality_path(modality_path, split=split)
-    root = Path(parsed.path)
-    scope = parsed.metadata_scope or modality_key
+    root, scope, split = resolve_dataset_location(
+        modality_path, modality_key=modality_key, split=split
+    )
     eval_dir = root / EVAL_DIR
-    if has_scoped_metadata(root, scope):
+    if scope is not None:
         eval_dir = eval_dir / scope
-    if parsed.split is not None:
-        eval_dir = eval_dir / f"split_{parsed.split}"
+    if split is not None:
+        eval_dir = eval_dir / f"split_{split}"
     return eval_dir / f"{eval_name}.json"
 
 
@@ -1724,6 +1724,10 @@ def main():
     print("-" * 60)
 
     gt = config["gt"]
+    protocol_identities = reference_identities(gt)
+    protocol_benchmark_range = (
+        list(args.benchmark_depth_range) if args.benchmark_depth_range else None
+    )
     gt_depth_path = gt.get("depth", {}).get("path")
     gt_sparse_depth_path = gt.get("sparse_depth", {}).get("path")
     gt_rgb_path = gt.get("rgb", {}).get("path")
@@ -1918,6 +1922,23 @@ def main():
                         ),
                         "emitted_spaces": space_info.get("emitted_spaces", []),
                         "canonical_space": space_info.get("canonical_space", "metric"),
+                    },
+                ),
+                "protocol": build_protocol(
+                    protocol_identities,
+                    gt="depth",
+                    inputs=("calibration", "segmentation"),
+                    population={
+                        "samples": depth_dataset_info.get("num_pairs"),
+                        "gt_sky_masking": bool(args.mask_sky),
+                        "pred_sky_masking": bool(args.mask_sky_prediction),
+                        "evaluated_resolution": evaluated_resolution(depth_spatial),
+                        "benchmark_depth_range_m": protocol_benchmark_range,
+                    },
+                    method={
+                        "depth_alignment": args.depth_alignment,
+                        "sky_depth_m": args.sky_depth,
+                        "spatial_alignment": depth_spatial.get("method", "none"),
                     },
                 ),
                 "dataset_info": depth_dataset_info,
@@ -2158,6 +2179,29 @@ def main():
                         "canonical_space": space_info.get("canonical_space", "metric"),
                     },
                 ),
+                "protocol": build_protocol(
+                    protocol_identities,
+                    gt="sparse_depth",
+                    inputs=(
+                        "intrinsics",
+                        "camera_extrinsics",
+                        "lidar_extrinsics",
+                        "segmentation",
+                    ),
+                    population={
+                        "samples": sparse_depth_dataset_info.get("num_pairs"),
+                        "gt_sky_masking": bool(args.mask_sky),
+                        "pred_sky_masking": bool(args.mask_sky_prediction),
+                        "evaluated_resolution": evaluated_resolution(
+                            sparse_depth_spatial
+                        ),
+                        "benchmark_depth_range_m": protocol_benchmark_range,
+                    },
+                    method={
+                        "depth_alignment": args.depth_alignment,
+                        "sky_depth_m": args.sky_depth,
+                    },
+                ),
                 "dataset_info": sparse_depth_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -2389,6 +2433,21 @@ def main():
                         ]
                     },
                 ),
+                "protocol": build_protocol(
+                    protocol_identities,
+                    gt="rgb",
+                    inputs=("depth", "calibration", "segmentation"),
+                    population={
+                        "samples": rgb_dataset_info.get("num_pairs"),
+                        "gt_sky_masking": bool(args.mask_sky),
+                        "evaluated_resolution": evaluated_resolution(rgb_spatial),
+                        "benchmark_depth_range_m": protocol_benchmark_range,
+                    },
+                    method={
+                        "fid_backend": args.rgb_fid_backend,
+                        "spatial_alignment": rgb_spatial.get("method", "none"),
+                    },
+                ),
                 "dataset_info": rgb_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -2520,6 +2579,18 @@ def main():
                     metadata={
                         "fov_domain": rays_dataset_info.get("fov_domain"),
                         "threshold_deg": rays_dataset_info.get("threshold_deg"),
+                    },
+                ),
+                "protocol": build_protocol(
+                    protocol_identities,
+                    gt="rays",
+                    inputs=("calibration",),
+                    population={
+                        "samples": rays_dataset_info.get("num_pairs"),
+                        "evaluated_resolution": evaluated_resolution(rays_spatial),
+                    },
+                    method={
+                        "spatial_alignment": rays_spatial.get("method", "none"),
                     },
                 ),
                 "dataset_info": rays_dataset_info,
@@ -2681,6 +2752,20 @@ def main():
                         ),
                         "fov_domain": p3_dataset_info.get("fov_domain"),
                         "threshold_deg": p3_dataset_info.get("threshold_deg"),
+                    },
+                ),
+                "protocol": build_protocol(
+                    protocol_identities,
+                    gt="depth" if p3d_gt_is_depth else "points_3d",
+                    inputs=("intrinsics", "calibration", "segmentation"),
+                    population={
+                        "samples": p3_dataset_info.get("num_pairs"),
+                        "gt_sky_masking": bool(args.mask_sky),
+                        "evaluated_resolution": evaluated_resolution(p3_spatial),
+                    },
+                    method={
+                        "points_3d_alignment": args.points_3d_alignment,
+                        "spatial_alignment": p3_spatial.get("method", "none"),
                     },
                 ),
                 "dataset_info": p3_dataset_info,
@@ -2860,6 +2945,24 @@ def main():
                         "gt_representation": "point_cloud",
                         "fov_domain": p3s_dataset_info.get("fov_domain"),
                         "threshold_deg": p3s_dataset_info.get("threshold_deg"),
+                    },
+                ),
+                "protocol": build_protocol(
+                    protocol_identities,
+                    gt="sparse_depth",
+                    inputs=(
+                        "intrinsics",
+                        "camera_extrinsics",
+                        "lidar_extrinsics",
+                        "segmentation",
+                    ),
+                    population={
+                        "samples": p3s_dataset_info.get("num_pairs"),
+                        "gt_sky_masking": bool(args.mask_sky),
+                        "evaluated_resolution": evaluated_resolution(p3s_spatial),
+                    },
+                    method={
+                        "points_3d_alignment": p3s_alignment_mode,
                     },
                 ),
                 "dataset_info": p3s_dataset_info,

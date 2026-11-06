@@ -73,6 +73,10 @@ set.
     "axes": { "space": { "…": "…" }, "category": { "…": "…" } },
     "metricDescriptions": { "absrel": { "…": "…" } }
   },
+  "protocol": {
+    "schemaVersion": "1.0",
+    "parameters": { "reference.gt.dataset": "muses", "method.depth_alignment": "auto_affine", "…": "…" }
+  },
   "dataset_info": { "num_pairs": 500, "gt_name": "GT", "pred_name": "model_a" },
   "meta": {
     "version": "2.25.0",
@@ -92,6 +96,7 @@ set.
 | Block | What it is for |
 |---|---|
 | `metricSet` | The euler-metric-naming envelope: producer, namespace, axis declarations and per-metric descriptions (unit, direction, bounds), plus how the spaces were resolved |
+| `protocol` | The comparison keys: every setting that changes metric values, as a flat map ([Comparing evaluations](#comparing-evaluations)) |
 | `dataset_info` | How many pairs were actually matched, and the display names of both sides |
 | `meta` | Full provenance: package version, device, both source paths and their resolved dimensions, modality metadata, and the effective evaluation flags |
 | *metric tree* | The metrics themselves, under the modality root (`depth`, `rgb`, `rays`, `sparsedepth`, `points3d`) |
@@ -172,6 +177,88 @@ When sky keys are written, the metric-set axes also declare them:
 because these keys have no depth space. `metricDescriptions` gains `iou`,
 `precision` and `recall` (higher is better, bounds `[0, 1]`). Every other key
 decomposes exactly as before.
+
+## Comparing evaluations
+
+`protocol.parameters` says how an evaluation was set up, as one flat map of
+dotted keys. Its keys are the comparison keys: two evaluations of the same
+modality were set up the same way when their maps are equal, and the keys whose
+values differ say where. Nothing else in the file needs to be compared for that;
+`meta` stays the full record of the run, paths and device included.
+
+```json
+"protocol": {
+  "schemaVersion": "1.0",
+  "parameters": {
+    "reference.gt.modality": "sparse_depth",
+    "reference.gt.dataset": "seeingthroughfog",
+    "reference.gt.scope": "sparse_depth",
+    "reference.gt.split": "test",
+    "reference.intrinsics.dataset": "seeingthroughfog",
+    "reference.intrinsics.scope": "intrinsics",
+    "reference.intrinsics.split": "test",
+    "reference.camera_extrinsics.dataset": "seeingthroughfog",
+    "reference.camera_extrinsics.scope": "camera_extrinsics",
+    "reference.camera_extrinsics.split": "test",
+    "reference.lidar_extrinsics.dataset": null,
+    "reference.lidar_extrinsics.scope": null,
+    "reference.lidar_extrinsics.split": null,
+    "reference.segmentation.dataset": null,
+    "reference.segmentation.scope": null,
+    "reference.segmentation.split": null,
+    "population.samples": 943,
+    "population.gt_sky_masking": false,
+    "population.pred_sky_masking": false,
+    "population.evaluated_resolution": [1024, 1920],
+    "population.benchmark_depth_range_m": [0.01, 80.0],
+    "method.metrics_revision": 1,
+    "method.depth_alignment": "auto_affine",
+    "method.sky_depth_m": null
+  }
+}
+```
+
+The first segment of a key is its section:
+
+| Section | Holds |
+|---|---|
+| `reference` | The GT the prediction is scored against (`gt`, with its config key as `modality`) and every other GT input the modality reads, each identified by `dataset` (the `dataset.id` of its `dataset-head.json`), metadata `scope` and `split` — not by file path, so the same data on another machine matches |
+| `population` | Which samples and pixels were scored: the matched `samples`, sky masking, the grid the metrics were computed on and benchmark depth bins |
+| `method` | How they were scored: alignment modes, the sky-depth cap, how GT and prediction resolutions were reconciled, the FID backend and `metrics_revision` |
+
+What is recorded, per modality:
+
+| Modality | `reference` inputs besides `gt` | `population` | `method` |
+|---|---|---|---|
+| `depth` | `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `pred_sky_masking`, `evaluated_resolution`, `benchmark_depth_range_m` | `depth_alignment`, `sky_depth_m`, `spatial_alignment` |
+| `sparsedepth` | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | as `depth` | `depth_alignment`, `sky_depth_m` |
+| `rgb` | `depth`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `evaluated_resolution`, `benchmark_depth_range_m` | `fid_backend`, `spatial_alignment` |
+| `rays` | `calibration` | `samples`, `evaluated_resolution` | `spatial_alignment` |
+| `points3d` (dense) | `intrinsics`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `evaluated_resolution` | `points_3d_alignment`, `spatial_alignment` |
+| `points3d` (sparse GT) | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | `samples`, `gt_sky_masking`, `evaluated_resolution` | `points_3d_alignment` |
+
+Every modality also has `method.metrics_revision`.
+
+Rules that keep comparisons a plain map comparison:
+
+- Only settings that change the value of a metric both files contain are
+  parameters. `--domain`, `--sky-iou` and histogram settings only add metrics
+  (histograms describe their bins in the distribution registry); device, batch
+  size, workers, paths and `--eval-name` do not change values.
+- Every key of a modality is always written, `null` or `false` when off, so a
+  key missing from one side means "not recorded", never "off". Compare the union
+  of both key sets.
+- Values are scalars or lists of scalars, never objects.
+- `method.metrics_revision` changes only when a release changes metric values
+  for identical inputs and settings, which the [changelog](../CHANGELOG.md)
+  then says. Different revisions are not comparable even when every other
+  key matches.
+- Settings are recorded, not what they caused. With `--mask-sky-prediction`,
+  `population.pred_sky_masking` is `true` for every prediction, while
+  `meta.pred_sky_masking` records how much each model's own sky removed;
+  `metricSet.metadata` records whether an alignment was actually applied.
+- Renaming or removing a key bumps the major `schemaVersion`; adding one bumps
+  the minor version.
 
 ## Spaces and canonical aliases
 

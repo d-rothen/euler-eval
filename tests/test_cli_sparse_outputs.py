@@ -6,6 +6,7 @@ import zipfile
 from unittest.mock import Mock
 
 from euler_eval import cli
+from tests.test_protocol import EXPECTED_KEYS
 
 
 def _sparse_depth_results():
@@ -142,6 +143,11 @@ def test_depth_modality_writes_only_sparse_depth_metrics(tmp_path, monkeypatch, 
         payload = json.loads(zf.read(".eval/eval.json"))
 
     assert payload["metricSet"]["metricNamespace"] == "sparsedepth.eval"
+    parameters = payload["protocol"]["parameters"]
+    assert set(parameters) == EXPECTED_KEYS["sparsedepth"]
+    assert parameters["reference.gt.modality"] == "sparse_depth"
+    assert parameters["population.samples"] == 1
+    assert parameters["method.depth_alignment"] == "auto_affine"
     assert "additionalMetricSets" not in payload["metricSet"]
     assert "sparsedepth" in payload
     assert "points3d" not in payload
@@ -224,6 +230,10 @@ def test_points_3d_modality_writes_only_points_3d_metrics(
         payload = json.loads(zf.read(".eval/eval.json"))
 
     assert payload["metricSet"]["metricNamespace"] == "points3d.eval"
+    parameters = payload["protocol"]["parameters"]
+    assert set(parameters) == EXPECTED_KEYS["points3d_sparse"]
+    assert parameters["reference.gt.modality"] == "sparse_depth"
+    assert parameters["method.points_3d_alignment"] == "auto"
     assert "additionalMetricSets" not in payload["metricSet"]
     assert "points3d" in payload
     assert "sparsedepth" not in payload

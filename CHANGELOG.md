@@ -43,6 +43,13 @@ the git history for those.
 
 ### Added
 
+- Every `eval.json` has a `protocol` block whose flat `parameters` map holds the
+  comparison keys: each setting that changes metric values, in `reference`
+  (GT inputs by dataset id, scope and split, not path), `population` and
+  `method` sections. Two evaluations of a modality were set up the same way
+  when their maps are equal. `method.metrics_revision` starts at 1 and is
+  bumped when a release changes values for identical inputs and settings. See
+  [Comparing evaluations](docs/output.md#comparing-evaluations).
 - `--eval-name NAME` names an evaluation: its results are written as
   `NAME.json` (default `eval`) in the `.eval/` layout, so e.g.
   `--mask-sky --eval-name no_sky` sits beside an earlier `eval.json` instead of

@@ -156,6 +156,48 @@ def has_scoped_metadata(root: Path, scope: str) -> bool:
     )
 
 
+def resolve_dataset_location(
+    path: str | Path, *, modality_key: str, split: str | None = None
+) -> tuple[Path, str | None, str | None]:
+    """Return ``(root, metadata scope, split)`` as euler-loading resolves them.
+
+    The scope is the path's ``#scope=`` selector, else *modality_key*, and
+    ``None`` when that scope holds no metadata of its own, because loading
+    then falls back to the root-level ``.ds_crawler/``.
+    """
+    parsed = parse_modality_path(path, split=split)
+    root = Path(parsed.path)
+    scope = parsed.metadata_scope or modality_key
+    return root, (scope if has_scoped_metadata(root, scope) else None), parsed.split
+
+
+def dataset_identity(
+    path: str | Path, *, modality_key: str, split: str | None = None
+) -> dict[str, str | None]:
+    """Identify a configured dataset independently of where it is stored.
+
+    Returns the ``dataset.id`` of its ``dataset-head.json`` (its name when
+    the head has no id, ``None`` without a head), the effective metadata
+    scope and the split.
+    """
+    root, scope, split = resolve_dataset_location(
+        path, modality_key=modality_key, split=split
+    )
+    head = _read_metadata_safe(root, DATASET_HEAD_FILENAME, scope)
+    dataset = head.get("dataset") if isinstance(head, dict) else None
+    dataset_id = None
+    if isinstance(dataset, dict):
+        dataset_id = next(
+            (
+                value
+                for value in (dataset.get("id"), dataset.get("name"))
+                if isinstance(value, str) and value
+            ),
+            None,
+        )
+    return {"dataset": dataset_id, "scope": scope, "split": split}
+
+
 def _scope_modality_key(root: Path, scope: str) -> str | None:
     head = _read_metadata_safe(root, DATASET_HEAD_FILENAME, scope)
     modality = head.get("modality") if isinstance(head, dict) else None
