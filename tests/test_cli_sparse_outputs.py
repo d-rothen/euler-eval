@@ -138,9 +138,8 @@ def test_depth_modality_writes_only_sparse_depth_metrics(tmp_path, monkeypatch, 
 
     with zipfile.ZipFile(pred_archive) as zf:
         names = zf.namelist()
-        assert names.count("eval.json") == 1
-        assert "points3d_eval.json" not in names
-        payload = json.loads(zf.read("eval.json"))
+        assert [n for n in names if n.endswith(".json")] == [".eval/eval.json"]
+        payload = json.loads(zf.read(".eval/eval.json"))
 
     assert payload["metricSet"]["metricNamespace"] == "sparsedepth.eval"
     assert "additionalMetricSets" not in payload["metricSet"]
@@ -151,7 +150,7 @@ def test_depth_modality_writes_only_sparse_depth_metrics(tmp_path, monkeypatch, 
     points_3d_evaluator.assert_not_called()
 
     output = capsys.readouterr().out
-    assert f"Sparse depth results saved to: {pred_archive}/eval.json" in output
+    assert f"Sparse depth results saved to: {pred_archive}/.eval/eval.json" in output
     assert "[POINTS_3D · SPARSE]" not in output
     assert "Points-3D (sparse GT) results saved" not in output
 
@@ -220,8 +219,9 @@ def test_points_3d_modality_writes_only_points_3d_metrics(
     cli.main()
 
     with zipfile.ZipFile(pred_archive) as zf:
-        assert zf.namelist().count("eval.json") == 1
-        payload = json.loads(zf.read("eval.json"))
+        names = zf.namelist()
+        assert [n for n in names if n.endswith(".json")] == [".eval/eval.json"]
+        payload = json.loads(zf.read(".eval/eval.json"))
 
     assert payload["metricSet"]["metricNamespace"] == "points3d.eval"
     assert "additionalMetricSets" not in payload["metricSet"]
@@ -234,4 +234,7 @@ def test_points_3d_modality_writes_only_points_3d_metrics(
     output = capsys.readouterr().out
     assert "[SPARSE_DEPTH]" not in output
     assert "[POINTS_3D · SPARSE] Evaluating" in output
-    assert f"Points-3D (sparse GT) results saved to: {pred_archive}/eval.json" in output
+    assert (
+        f"Points-3D (sparse GT) results saved to: {pred_archive}/.eval/eval.json"
+        in output
+    )

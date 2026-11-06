@@ -11,16 +11,20 @@ import importlib.metadata
 import json
 import math
 import platform
+import re
 import sys
 import zipfile
 from dataclasses import replace
 from pathlib import Path
 
 import torch
+from ds_crawler.zip_utils import get_zip_root_prefix
 
 from .config_paths import (
     GT_SEGMENTATION_KEYS,
+    has_scoped_metadata,
     normalize_modality_path,
+    parse_modality_path,
     resolve_gt_segmentation_path,
 )
 from .data import (
@@ -1151,10 +1155,82 @@ def _save_json_to_zip(zip_path: Path, internal_name: str, data: dict) -> None:
             zf.writestr(internal_name, json_bytes)
 
 
+EVAL_DIR = ".eval"
+DEFAULT_EVAL_NAME = "eval"
+_EVAL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def validate_eval_name(value: str) -> str:
+    """Validate an evaluation name and return it without a ``.json`` suffix.
+
+    The name becomes the results file name (``<name>.json``) below each
+    prediction dataset's ``.eval/`` folder, so it is one portable path
+    segment, like a ds-crawler split or scope name.
+
+    Raises:
+        ValueError: When *value* is not a plain name.
+    """
+    name = value.strip()
+    if name.endswith(".json"):
+        name = name[: -len(".json")]
+    if not _EVAL_NAME_PATTERN.match(name):
+        raise ValueError(
+            f"{value!r} is not a valid evaluation name: use letters, digits, "
+            "'.', '-' or '_', starting with a letter or digit (e.g. 'no_sky'); "
+            "'.json' is appended."
+        )
+    return name
+
+
+def default_eval_path(
+    modality_path: str | Path,
+    *,
+    modality_key: str,
+    split: str | None = None,
+    eval_name: str = DEFAULT_EVAL_NAME,
+) -> Path:
+    """Return where a prediction modality's results land by default.
+
+    Results go to a dataset-level ``.eval/`` folder beside ``.ds_crawler/``:
+    ``.eval/<scope>/`` when the modality's metadata scope (the ``#scope=``
+    selector, else the config key) has its own ``.ds_crawler/<scope>/``
+    metadata, otherwise ``.eval/`` itself, matching how euler-loading falls
+    back to root-level metadata. A selected split adds ``split_<split>/``.
+    """
+    parsed = parse_modality_path(modality_path, split=split)
+    root = Path(parsed.path)
+    scope = parsed.metadata_scope or modality_key
+    eval_dir = root / EVAL_DIR
+    if has_scoped_metadata(root, scope):
+        eval_dir = eval_dir / scope
+    if parsed.split is not None:
+        eval_dir = eval_dir / f"split_{parsed.split}"
+    return eval_dir / f"{eval_name}.json"
+
+
+def _zip_internal_name(zip_path: Path, internal_name: str) -> str:
+    """Place *internal_name* inside a zip's wrapper folder, if it has one.
+
+    ds-crawler treats a single top-level folder named after the archive
+    (``model.zip`` -> ``model/``) as the dataset root. Writing beside that
+    folder would end the single-root layout and hide ``.ds_crawler/``.
+    """
+    prefix = get_zip_root_prefix(zip_path)
+    if (
+        prefix
+        and prefix.rstrip("/") == zip_path.stem
+        and not internal_name.startswith(prefix)
+    ):
+        return prefix + internal_name
+    return internal_name
+
+
 def save_results(
     results: dict,
     dataset_config: dict,
     modality: str | None = None,
+    *,
+    eval_name: str = DEFAULT_EVAL_NAME,
 ) -> Path:
     """Save results to output file.
 
@@ -1168,6 +1244,10 @@ def save_results(
         modality: When set, save to this specific modality's path
             (e.g. ``"depth"`` or ``"rgb"``).  Falls back to the first
             available modality path when *None*.
+        eval_name: Evaluation name (``--eval-name``); results are written
+            as ``<eval_name>.json`` in the dataset's ``.eval/`` layout, see
+            :func:`default_eval_path`.  A dataset's explicit ``output_file``
+            takes precedence over the whole layout.
 
     Returns:
         Path where results were saved.
@@ -1177,38 +1257,38 @@ def save_results(
         selected_modality = modality
         if selected_modality == "depth" and "depth" not in dataset_config:
             selected_modality, _ = _prediction_depth_entry(dataset_config)
-        if (
+        if not (
             selected_modality is not None
             and selected_modality in dataset_config
             and "path" in dataset_config[selected_modality]
         ):
-            output_file = (
-                normalize_modality_path(
-                    dataset_config[selected_modality]["path"],
-                    split=dataset_config[selected_modality].get("split"),
-                )
-                / "eval.json"
+            # Default: save alongside first available modality path
+            selected_modality = next(
+                (
+                    mod
+                    for mod in (*_PRED_DEPTH_KEYS, "rgb", "rays")
+                    if mod in dataset_config and "path" in dataset_config[mod]
+                ),
+                None,
+            )
+        if selected_modality is not None:
+            entry = dataset_config[selected_modality]
+            output_file = default_eval_path(
+                entry["path"],
+                modality_key=selected_modality,
+                split=entry.get("split"),
+                eval_name=eval_name,
             )
         else:
-            # Default: save alongside first available modality path
-            for mod in (*_PRED_DEPTH_KEYS, "rgb", "rays"):
-                if mod in dataset_config and "path" in dataset_config[mod]:
-                    output_file = (
-                        normalize_modality_path(
-                            dataset_config[mod]["path"],
-                            split=dataset_config[mod].get("split"),
-                        )
-                        / "eval.json"
-                    )
-                    break
-        if output_file is None:
-            output_file = Path("eval.json")
+            output_file = Path(f"{eval_name}.json")
     else:
         output_file = Path(output_file)
 
     zip_path, internal_name = _find_zip_ancestor(output_file)
     if zip_path is not None and internal_name:
-        _save_json_to_zip(zip_path, internal_name, results)
+        _save_json_to_zip(
+            zip_path, _zip_internal_name(zip_path, internal_name), results
+        )
     else:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, "w") as f:
@@ -1513,12 +1593,27 @@ def main():
         "--distribution-range", type=float, nargs=2, default=None, metavar=("MIN", "MAX"),
         help="Finite histogram range in evaluated space units (default: 0.001 100); tails are included",
     )
+    parser.add_argument(
+        "--eval-name",
+        default=DEFAULT_EVAL_NAME,
+        metavar="NAME",
+        help=(
+            "Name this evaluation: results are written as NAME.json in each "
+            "prediction dataset's .eval/ folder, so differently named runs "
+            "sit side by side (default: %(default)s). A dataset's "
+            "output_file still takes precedence."
+        ),
+    )
 
     args = parser.parse_args()
     try:
         validate_sky_depth(args.sky_depth)
     except ValueError as e:
         parser.error(f"--sky-depth: {e}")
+    try:
+        args.eval_name = validate_eval_name(args.eval_name)
+    except ValueError as e:
+        parser.error(f"--eval-name: {e}")
 
     selected_metric_sets = resolve_metric_sets(args.domains)
 
@@ -2845,6 +2940,7 @@ def main():
                 depth_save,
                 dataset_config,
                 modality=pred_depth_key or "depth",
+                eval_name=args.eval_name,
             )
             depth_label = (
                 "Sparse depth"
@@ -2853,14 +2949,27 @@ def main():
             )
             print(f"\n  {depth_label} results saved to: {depth_out}")
         if rgb_save:
-            rgb_out = save_results(rgb_save, dataset_config, modality="rgb")
+            rgb_out = save_results(
+                rgb_save,
+                dataset_config,
+                modality="rgb",
+                eval_name=args.eval_name,
+            )
             print(f"\n  RGB results saved to: {rgb_out}")
         if rays_save:
-            rays_out = save_results(rays_save, dataset_config, modality="rays")
+            rays_out = save_results(
+                rays_save,
+                dataset_config,
+                modality="rays",
+                eval_name=args.eval_name,
+            )
             print(f"\n  Rays results saved to: {rays_out}")
         if points_3d_save:
             points_3d_out = save_results(
-                points_3d_save, dataset_config, modality="points_3d"
+                points_3d_save,
+                dataset_config,
+                modality="points_3d",
+                eval_name=args.eval_name,
             )
             print(f"\n  Points-3D results saved to: {points_3d_out}")
         if points_3d_sparse_save:
@@ -2868,6 +2977,7 @@ def main():
                 points_3d_sparse_save,
                 dataset_config,
                 modality="points_3d",
+                eval_name=args.eval_name,
             )
             print(
                 f"\n  Points-3D (sparse GT) results saved to: {points_3d_sparse_out}"

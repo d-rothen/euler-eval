@@ -2,13 +2,13 @@
 
 import copy
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 import euler_eval.evaluate as eval_mod
 from euler_eval import cli
+from tests.eval_output import read_eval_json
 from tests.test_depth_alignment_output import _DummyDepthDataset, _patch_depth_metrics
 from tests.test_sky_iou import _canonical
 from tests.test_sky_iou_cli import write_gt_segmentation, write_sky_mask
@@ -187,7 +187,7 @@ def _run(monkeypatch, config_path, output_dir, *flags):
         "--no-sanity-check", "--depth-alignment", "none", *flags,
     ])
     cli.main()
-    return json.loads((Path(output_dir) / "eval.json").read_text())
+    return read_eval_json(output_dir)
 
 
 def test_cli_masks_predicted_sky_without_sky_depth(

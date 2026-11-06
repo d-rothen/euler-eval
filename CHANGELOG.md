@@ -5,6 +5,19 @@ the git history for those.
 
 ## Unreleased
 
+### Changed
+
+- **Moves results out of the dataset root (breaking for readers).** Results are
+  now written to a `.eval/` folder beside the prediction dataset's
+  `.ds_crawler/`: `.eval/<scope>/eval.json` when the prediction is loaded from
+  its own `.ds_crawler/<scope>/` metadata, `.eval/eval.json` for root-level
+  metadata, with `split_<split>/` added when a split is selected. Modalities and
+  splits that share one dataset root or archive no longer overwrite each
+  other's `eval.json`. Zips get `.eval/` inside the archive, within its
+  top-level folder when the archive wraps everything in one named after it.
+  Readers of the old `<dataset>/eval.json` must look in `.eval/` first; existing
+  root-level files are left untouched. `output_file` is unchanged.
+
 ### Fixed
 
 - **Moves `--mask-sky` metric values.** GT segmentation is now paired with each
@@ -30,6 +43,10 @@ the git history for those.
 
 ### Added
 
+- `--eval-name NAME` names an evaluation: its results are written as
+  `NAME.json` (default `eval`) in the `.eval/` layout, so e.g.
+  `--mask-sky --eval-name no_sky` sits beside an earlier `eval.json` instead of
+  replacing it. A dataset's `output_file` still takes precedence.
 - `--mask-sky-prediction` excludes the pixels of a prediction's
   `datasets[].sky_mask` from dense and sparse depth metrics, benchmark bins,
   histograms and the scale/shift fit, as `--mask-sky` does for GT sky; lidar

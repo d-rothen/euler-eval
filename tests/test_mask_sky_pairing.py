@@ -6,12 +6,12 @@ first mask.
 """
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 from euler_eval import cli, data
+from tests.eval_output import read_eval_json
 from tests.test_depth_alignment_output import _patch_depth_metrics
 from tests.test_sky_iou_cli import _write_index
 
@@ -87,7 +87,7 @@ def _run(monkeypatch, config_path, output_dir, *flags):
         "--no-sanity-check", "--depth-alignment", "none", *flags,
     ])
     cli.main()
-    return json.loads((Path(output_dir) / "eval.json").read_text())
+    return read_eval_json(output_dir)
 
 
 def _per_file_mae(saved):

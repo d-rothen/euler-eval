@@ -143,6 +143,19 @@ def _read_metadata_safe(root: Path, filename: str, scope: str | None = None):
         return None
 
 
+def has_scoped_metadata(root: Path, scope: str) -> bool:
+    """Return whether *root* has ds-crawler metadata under ``.ds_crawler/<scope>/``.
+
+    Mirrors euler-loading: a configured scope without its own metadata falls
+    back to the root-level ``.ds_crawler/``, so only a scope that holds an
+    index, crawler config or dataset head counts.
+    """
+    return any(
+        _read_metadata_safe(root, filename, scope) is not None
+        for filename in (OUTPUT_FILENAME, CONFIG_FILENAME, DATASET_HEAD_FILENAME)
+    )
+
+
 def _scope_modality_key(root: Path, scope: str) -> str | None:
     head = _read_metadata_safe(root, DATASET_HEAD_FILENAME, scope)
     modality = head.get("modality") if isinstance(head, dict) else None

@@ -127,7 +127,7 @@ would be ambiguous.
 | `sky_mask.path` | no | Auxiliary predicted sky mask for a dense depth entry; used with `--sky-depth`, `--mask-sky-prediction` and `--sky-iou` |
 | `rays.path` | no\* | Predicted ray direction map dataset |
 | `points_3d.path` | no\* | Predicted per-pixel 3D point map `(H,W,3)` |
-| `output_file` | no | Custom results path (default: `eval.json` in the first modality path) |
+| `output_file` | no | Custom results path for every modality of this entry, replacing the `.eval/` layout and `--eval-name` (default: `.eval/[<scope>/][split_<split>/]eval.json` in each prediction modality's dataset root; see [where results land](output.md#where-results-land)) |
 
 \* At least one prediction modality must be present.
 
@@ -214,10 +214,11 @@ and evaluated as `points_3d`.
 
 An explicit `datasets[].points_3d` prediction can be evaluated separately
 against the same sparse cloud. That evaluation uses the points-3D similarity
-gauge, writes an atomic `points3d.eval` metric set beside the point-map
-prediction, and is controlled by `--skip-points-3d`. If a dataset provides both
-depth and `points_3d`, each prediction modality gets its own `eval.json` at its
-own path.
+gauge, writes an atomic `points3d.eval` metric set to the point-map
+prediction's results file, and is controlled by `--skip-points-3d`. If a dataset
+provides both depth and `points_3d`, each prediction modality gets its own
+results file, also when both live in one archive under separate scopes (see
+[where results land](output.md#where-results-land)).
 
 Sparse depth does not require segmentation GT. `gt.segmentation` is loaded only
 when `--mask-sky` or `--sky-iou` is set. `--mask-sky` excludes sky pixels from

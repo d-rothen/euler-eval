@@ -2,20 +2,56 @@
 
 ## Where results land
 
-One `eval.json` is written **per modality, per prediction dataset**, next to the
-prediction it scores — `/data/model_a/depth/eval.json` for the depth results of
-the dataset whose depth path is `/data/model_a/depth`, and so on. If that path
-passes through a `.zip`, the JSON is written *into* the archive rather than
-beside it, so zip-backed datasets stay self-contained.
+Results are written **per modality, per prediction dataset**, into a `.eval/`
+folder at the prediction dataset's root, beside its `.ds_crawler/` metadata:
 
-`output_file` in a dataset entry overrides the destination. It applies to the
-dataset as a whole, so when several modalities are evaluated for the same
-dataset the per-modality default locations are usually what you want.
+```text
+/data/model_a/                     # a datasets[].<modality>.path
+  .ds_crawler/
+    depth/  rgb/                   # ds-crawler metadata scopes
+  .eval/
+    depth/
+      eval.json                    # depth results
+      no_sky.json                  # depth results of --eval-name no_sky
+      split_test/eval.json         # depth results for "/data/model_a:test"
+    rgb/
+      eval.json                    # rgb results
+```
+
+The folder below `.eval/` mirrors how the prediction was loaded:
+
+| Prediction | Results file |
+|---|---|
+| Metadata scope with its own `.ds_crawler/<scope>/` | `.eval/<scope>/<name>.json` |
+| Root-level `.ds_crawler/` metadata (no scope) | `.eval/<name>.json` |
+| A split is selected (`:test` or `split`) | `split_<split>/` is added before the file name |
+
+The scope is the path's `#scope=` selector, otherwise the config key (`depth`,
+`relative_depth`, `rgb`, `points_3d`, …). As in euler-loading, a scope without
+metadata of its own falls back to the root-level `.ds_crawler/`, and so do its
+results. This way modalities and splits that share one dataset root or archive
+each get their own file. If the root is a `.zip`, `.eval/` is written *into* the
+archive (inside its top-level folder when the archive wraps everything in one
+named after it), so zip-backed datasets stay self-contained.
+
+`<name>` is `eval` unless the run is named with `--eval-name`:
+`--mask-sky --eval-name no_sky` writes `no_sky.json` next to an earlier
+`eval.json` instead of replacing it. Names use letters, digits, `.`, `-` and
+`_`; `.json` is appended.
+
+`output_file` in a dataset entry overrides all of this. It is one path for the
+whole dataset entry: every modality evaluated for that entry is written to it,
+and the last one written replaces the others, so use it for single-modality
+entries.
+
+Earlier releases wrote `eval.json` directly at the dataset root (inside the
+archive for zips). Readers such as euler-view look in `.eval/<scope>/`, then
+`.eval/`, then fall back to that legacy location.
 
 Each `eval.json` is atomic and declares one metric namespace. With
 `gt.sparse_depth`, a depth-family prediction writes only `sparsedepth.eval`; an
-explicit `points_3d` prediction writes only `points3d.eval` beside the point
-map. A depth prediction does not implicitly produce a second points-3D metric
+explicit `points_3d` prediction writes only `points3d.eval` to the point
+map's own results file. A depth prediction does not implicitly produce a second points-3D metric
 set.
 
 ## Anatomy of `eval.json`

@@ -491,10 +491,10 @@ class TestSaveWiring:
             {"points3d": {"eval": {}}}, cfg, modality="points_3d"
         )
 
-        assert p3d_out == pred_dir / "eval.json"
+        assert p3d_out == pred_dir / ".eval" / "eval.json"
         assert p3d_out.exists()
-        assert not (pred_dir / "points3d_eval.json").exists()
-        assert not (pred_dir / "points_3d_eval.json").exists()
+        assert not (pred_dir / ".eval" / "points3d_eval.json").exists()
+        assert not (pred_dir / ".eval" / "points_3d_eval.json").exists()
 
     def test_points_3d_writes_eval_json_into_zip(self, tmp_path):
         from euler_eval.cli import save_results
@@ -502,17 +502,17 @@ class TestSaveWiring:
         archive = tmp_path / "predictions.zip"
         with zipfile.ZipFile(archive, "w") as zf:
             zf.writestr("points/frame_000.npy", b"points")
+            zf.writestr(".ds_crawler/points_3d/index.json", "{}")
 
         results = {"points3d": {"eval": {"native": {}}}}
         cfg = {"name": "m", "points_3d": {"path": str(archive)}}
         p3d_out = save_results(results, cfg, modality="points_3d")
 
-        assert p3d_out == archive / "eval.json"
+        assert p3d_out == archive / ".eval" / "points_3d" / "eval.json"
         with zipfile.ZipFile(archive) as zf:
-            assert "eval.json" in zf.namelist()
-            assert "points3d_eval.json" not in zf.namelist()
-            assert "points_3d_eval.json" not in zf.namelist()
-            assert json.loads(zf.read("eval.json")) == results
+            written = [n for n in zf.namelist() if n.startswith(".eval/")]
+            assert written == [".eval/points_3d/eval.json"]
+            assert json.loads(zf.read(".eval/points_3d/eval.json")) == results
 
 
 # ---------------------------------------------------------------------------

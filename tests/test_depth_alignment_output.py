@@ -8,6 +8,7 @@ import pytest
 
 import euler_eval.evaluate as eval_mod
 from euler_eval import cli
+from tests.eval_output import read_eval_json
 
 
 class _DummyDepthDataset:
@@ -578,7 +579,7 @@ def test_cli_uses_prediction_sky_mask_and_records_provenance(
     monkeypatch.setattr(cli.sys, "argv", argv)
     cli.main()
 
-    saved = json.loads((Path(paths["pred"]) / "eval.json").read_text())
+    saved = read_eval_json(paths["pred"])
     expected_mae = 5.0 if sky_depth is not None else 37.25
     assert saved["depth"]["eval"]["metric"]["standard"]["pixel_pool"]["mae"] == expected_mae
     assert saved["meta"]["eval_params"].get("sky_depth") == sky_depth

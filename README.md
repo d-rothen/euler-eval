@@ -83,8 +83,10 @@ euler-eval config.json --batch-size 32
 
 Ground truth and prediction files are matched by ID rather than by directory
 order, so an incomplete prediction set scores the frames it does have instead of
-silently comparing the wrong pairs. Results are written next to each prediction
-modality:
+silently comparing the wrong pairs. Results are written into each prediction
+dataset, under `.eval/` beside its `.ds_crawler/` metadata — e.g.
+`/data/model_a/depth/.eval/eval.json`, or `.eval/<scope>/eval.json` for a scoped
+dataset ([details](docs/output.md#where-results-land)):
 
 ```json
 {

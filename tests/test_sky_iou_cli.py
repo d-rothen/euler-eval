@@ -12,6 +12,7 @@ from euler_metric_naming import AxisDeclaration, decompose
 from PIL import Image
 
 from euler_eval import cli, data
+from tests.eval_output import read_eval_json
 from tests.test_depth_alignment_output import _patch_depth_metrics
 
 SKY_LABEL = 7
@@ -119,7 +120,7 @@ def _run(monkeypatch, config_path, *flags, output_dir):
     ]
     monkeypatch.setattr(cli.sys, "argv", argv)
     cli.main()
-    return json.loads((Path(output_dir) / "eval.json").read_text())
+    return read_eval_json(output_dir)
 
 
 def _flatten(tree, prefix=""):
@@ -473,7 +474,7 @@ def test_sparse_depth_writes_sky_iou_under_the_wire_safe_root(monkeypatch, tmp_p
     ])
     cli.main()
 
-    saved = json.loads((tmp_path / "pred" / "eval.json").read_text())
+    saved = read_eval_json(tmp_path / "pred")
     assert evaluate_kwargs["sky_iou"] is True
     assert evaluate_kwargs["sky_mask_enabled"] is False
     assert builder_kwargs["segmentation_path"] == str(tmp_path / "segmentation")

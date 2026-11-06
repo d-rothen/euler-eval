@@ -37,6 +37,7 @@ validation exits with status `1` before any dataset is opened.
 | `--distribution-bins` | `int` | `50` | Total histogram bins, including tails; minimum 3 |
 | `--distribution-scale` | `{log,linear}` | `log` | Spacing of finite histogram bins |
 | `--distribution-range` | `float float` | `0.001 100` | Finite error range `[MIN, MAX)` in evaluated space units; zero/small-error and overflow bins retain the tails |
+| `--eval-name` | `str` | `eval` | Name this evaluation: results are written as `<name>.json` in each prediction dataset's `.eval/` folder, so differently named runs sit side by side; a dataset's `output_file` still wins ([details](output.md#where-results-land)) |
 
 Histogram settings can also be specified in the config's `distributions`
 section. A bin, scale or range flag enables histograms and overrides that
@@ -68,6 +69,9 @@ euler-eval config.json --sky-iou --sky-depth 100
 
 # Only depth evaluation
 euler-eval config.json --skip-rgb --skip-rays --skip-points-3d
+
+# Keep a sky-masked run beside the default results: .eval/[<scope>/]no_sky.json
+euler-eval config.json --mask-sky --eval-name no_sky
 
 # Force affine scale+shift alignment on all depth predictions
 euler-eval config.json --depth-alignment affine
