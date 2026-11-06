@@ -273,24 +273,28 @@ def _points_3d_eval_axes(*, distributions: bool = False) -> dict[str, AxisDeclar
 
 _PRED_DEPTH_KEYS = ("depth", "relative_depth", "affine_depth")
 
-#: Names an experiment's ``modalities`` may list, and the GT and prediction
-#: config keys each one covers.
+#: Prediction modalities an experiment's ``modalities`` may list, and the
+#: ``datasets[]`` keys each one covers. GT inputs are not selected this way:
+#: they are used as configured, and flags such as ``--mask-sky`` decide
+#: which of them an evaluation reads.
 _EXPERIMENT_MODALITIES = {
     "depth": _PRED_DEPTH_KEYS,
-    "sparse_depth": ("sparse_depth",),
     "rgb": ("rgb",),
     "rays": ("rays",),
     "points_3d": ("points_3d",),
     "sky_mask": ("sky_mask",),
-    "segmentation": GT_SEGMENTATION_KEYS,
-    "calibration": ("calibration",),
-    "intrinsics": ("intrinsics",),
-    "camera_extrinsics": ("camera_extrinsics",),
-    "lidar_extrinsics": ("lidar_extrinsics",),
 }
 _MODALITY_OF_CONFIG_KEY = {
     key: name for name, keys in _EXPERIMENT_MODALITIES.items() for key in keys
 }
+_GT_ONLY_KEYS = (
+    "sparse_depth",
+    *GT_SEGMENTATION_KEYS,
+    "calibration",
+    "intrinsics",
+    "camera_extrinsics",
+    "lidar_extrinsics",
+)
 
 # Downstream eval consumers validate metricSet.metricNamespace with a stricter
 # first-segment rule than euler_metric_naming's modality validator. Keep the
@@ -1166,6 +1170,12 @@ def _validate_experiment_modalities(modalities, label: str) -> None:
             'e.g. ["depth", "sky_mask"]'
         )
     for name in modalities:
+        if name in _GT_ONLY_KEYS:
+            raise ValueError(
+                f"{label}.modalities: {name!r} is a GT input; 'modalities' selects "
+                "prediction modalities, and GT inputs are used as configured "
+                "(flags such as --mask-sky decide which ones are read)"
+            )
         if name not in _EXPERIMENT_MODALITIES:
             covered_by = _MODALITY_OF_CONFIG_KEY.get(name)
             hint = f" (use {covered_by!r}, which covers it)" if covered_by else ""
@@ -1185,21 +1195,21 @@ def _has_prediction(entry: dict) -> bool:
 
 
 def _configured_modalities(config: dict) -> set[str]:
-    sections = [config["gt"], *config["datasets"]]
     return {
         _MODALITY_OF_CONFIG_KEY[key]
-        for section in sections
-        for key in section
+        for entry in config["datasets"]
+        for key in entry
         if key in _MODALITY_OF_CONFIG_KEY
     }
 
 
 def _experiment_config(config: dict, modalities: list[str] | None) -> dict:
-    """Return *config* reduced to the modalities an experiment lists.
+    """Return *config* with only the prediction modalities an experiment lists.
 
-    Unlisted GT inputs and prediction entries are left out, as if they were
-    not configured. A dataset left without a prediction is not evaluated, and
-    a ``sky_mask`` is dropped with the depth prediction it belongs to.
+    Unlisted ``datasets[]`` entries are left out, as if they were not
+    configured; the ``gt`` section is unchanged. A dataset left without a
+    prediction is not evaluated, and a ``sky_mask`` is dropped with the depth
+    prediction it belongs to.
     """
     if modalities is None:
         return config
@@ -1220,7 +1230,7 @@ def _experiment_config(config: dict, modalities: list[str] | None) -> dict:
             entry.pop("sky_mask", None)
         if _has_prediction(entry):
             datasets.append(entry)
-    return {**config, "gt": reduced(config["gt"]), "datasets": datasets}
+    return {**config, "datasets": datasets}
 
 
 def load_config(config_path: str) -> dict:
@@ -1652,7 +1662,6 @@ def _experiment_runs(
         parser.raise_errors = True
         try:
             if modalities is not None:
-                validate_gt_config(run_config["gt"])
                 if not run_config["datasets"]:
                     raise ValueError(
                         "'modalities' leave no dataset with a prediction to evaluate"
@@ -1679,7 +1688,7 @@ def _experiment_runs(
             if run_args.sky_iou and _gt_segmentation_entry(run_config["gt"])[1] is None:
                 raise ValueError(
                     "--sky-iou requires gt.segmentation (or its alias "
-                    "gt.semantic_segmentation), which this experiment does not load"
+                    "gt.semantic_segmentation) in config"
                 )
             runs.append(
                 _prepare_run(run_args, run_config, name=name, extra_args=tuple(extra))

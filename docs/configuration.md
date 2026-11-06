@@ -272,7 +272,7 @@ command-line flags and under its own name:
 |---|---|---|
 | `name` | yes | Evaluation name: results are written as `<name>.json` in each prediction dataset's `.eval/` folder ([where results land](output.md#where-results-land)). Same rules as `--eval-name`; unique |
 | `args` | no | Command-line tokens this experiment adds, exactly as you would type them; numbers may be written as JSON numbers |
-| `modalities` | no | The configured modalities this experiment may load (default: all). Names: `depth` (also covers `relative_depth` and `affine_depth` predictions), `sparse_depth`, `rgb`, `rays`, `points_3d`, `sky_mask`, `segmentation` (also covers `semantic_segmentation`), `calibration`, `intrinsics`, `camera_extrinsics`, `lidar_extrinsics` |
+| `modalities` | no | The prediction modalities (`datasets[]` entries) this experiment may load (default: all): `depth` (also covers `relative_depth` and `affine_depth`), `rgb`, `rays`, `points_3d`, `sky_mask`. The `gt` section is always used as configured |
 
 - **The command line is the base.** Each experiment runs with the flags given on
   the command line followed by its own `args`, so for a flag that takes a
@@ -283,17 +283,20 @@ command-line flags and under its own name:
   validated before the first one runs. `--eval-name` and `--experiment` are not
   allowed in `args`, and `--eval-name` cannot be combined with an `experiments`
   section, because `name` names the results.
-- **Modalities.** An experiment with `modalities` runs as if the unlisted GT
-  inputs and prediction entries were not in the config; a name covers both
-  sides. A listed modality is still read only when the evaluation needs it,
-  e.g. `sky_mask` only with `--sky-depth`, `--mask-sky-prediction` or
-  `--sky-iou`. This is how to compare runs where a modality's presence changes
-  the output: above, `capped_no_mask` caps depth at 80 m without filling the
-  predicted sky. A dataset left without a prediction is not evaluated in that
-  experiment, and the reduced config must still be valid (e.g. `sparse_depth`
-  needs `intrinsics` and `camera_extrinsics`). Listing a modality the config
-  does not have only prints a warning, so one experiment list can serve several
-  generated configs.
+- **Modalities.** An experiment with `modalities` runs as if the unlisted
+  prediction entries were not in `datasets[]`; a `sky_mask` goes with its depth
+  prediction. GT inputs are not selected this way: they stay as configured,
+  and flags decide which ones an evaluation reads (`--mask-sky` the
+  segmentation, for example), so GT names such as `segmentation` or
+  `sparse_depth` are rejected. A listed modality is still read only when the
+  evaluation needs it, e.g. `sky_mask` only with `--sky-depth`,
+  `--mask-sky-prediction` or `--sky-iou`; with just `--mask-sky`, listing
+  `sky_mask` changes nothing. This is how to compare runs where a modality's
+  presence changes the output: above, `capped_no_mask` caps depth at 80 m
+  without filling the predicted sky. A dataset left without a prediction is
+  not evaluated in that experiment. Listing a modality no dataset has only
+  prints a warning, so one experiment list can serve several generated
+  configs.
 - **Selecting experiments.** By default all experiments run, in config order.
   `--experiment NAME` (repeatable) runs only the named ones, e.g. one per task
   of a job array.

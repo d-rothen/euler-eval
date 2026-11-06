@@ -7,6 +7,12 @@ the git history for those.
 
 ### Changed
 
+- **`experiments[].modalities` selects prediction modalities only** (`depth`,
+  `rgb`, `rays`, `points_3d`, `sky_mask`). It also filtered GT inputs in
+  2.33.0, so e.g. `["depth"]` removed a `gt.sparse_depth` (the run stopped
+  with "gt must have at least one of ...") and the `gt.segmentation` that
+  `--mask-sky` needs. GT inputs are now always used as configured; GT names in
+  `modalities` are rejected with an explanation.
 - **Moves results out of the dataset root (breaking for readers).** Results are
   now written to a `.eval/` folder beside the prediction dataset's
   `.ds_crawler/`: `.eval/<scope>/eval.json` when the prediction is loaded from

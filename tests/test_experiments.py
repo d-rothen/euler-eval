@@ -1,12 +1,14 @@
 """Config ``experiments``: several named argument sets in one invocation."""
 
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from euler_eval import cli
 from euler_eval.cli import default_eval_path, validate_experiments_config
+from tests.test_cli_sparse_outputs import _sparse_depth_results
 from tests.test_depth_alignment_output import _patch_depth_metrics
 from tests.test_sky_iou_cli import write_gt_segmentation
 
@@ -293,20 +295,20 @@ def test_modalities_decide_whether_the_sky_mask_is_used(
     assert capped["meta"]["pred"].get("sky_mask") is None
 
 
-def test_modalities_leave_out_gt_inputs(monkeypatch, tmp_path, indexed_sky_prediction):
+def test_modalities_keep_every_gt_input(monkeypatch, tmp_path, indexed_sky_prediction):
+    """'modalities' selects predictions; GT segmentation stays for --mask-sky."""
     _patch_depth_metrics(monkeypatch)
     pred = indexed_sky_prediction["pred"]
     seg = write_gt_segmentation(tmp_path / "segmentation")
     _main(monkeypatch, _sky_config(
         tmp_path, indexed_sky_prediction,
-        [{"name": "all"}, {"name": "no_seg", "modalities": ["depth", "sky_mask"]}],
+        [{"name": "eval", "modalities": ["depth"], "args": ["--mask-sky"]}],
         gt_extra={"segmentation": {"path": seg}},
     ))
 
-    full = _results(pred, "all")["protocol"]["parameters"]
-    reduced = _results(pred, "no_seg")["protocol"]["parameters"]
-    assert full["reference.segmentation.dataset"] == "sky_iou_test"
-    assert reduced["reference.segmentation.dataset"] is None
+    parameters = _results(pred, "eval")["protocol"]["parameters"]
+    assert parameters["population.gt_sky_masking"] is True
+    assert parameters["reference.segmentation.dataset"] == "sky_iou_test"
 
 
 def test_unconfigured_modalities_only_warn(
@@ -314,40 +316,46 @@ def test_unconfigured_modalities_only_warn(
 ):
     _patch_depth_metrics(monkeypatch)
     _main(monkeypatch, _sky_config(tmp_path, indexed_sky_prediction, [
-        {"name": "eval", "modalities": ["depth", "calibration"]},
+        {"name": "eval", "modalities": ["depth", "rays"]},
     ]))
 
-    assert "modalities ['calibration'] are not configured" in capsys.readouterr().err
+    assert "modalities ['rays'] are not configured" in capsys.readouterr().err
     assert _results(indexed_sky_prediction["pred"], "eval") is not None
 
 
 @pytest.mark.parametrize(
-    ("experiment", "message"),
+    ("experiment", "with_segmentation", "message"),
     [
         (
             {"name": "iou", "args": ["--sky-iou"], "modalities": ["depth"]},
+            False,
             "experiments[0] ('iou'): --sky-iou requires gt.segmentation",
         ),
         (
+            # A sky_mask is dropped with the depth prediction it belongs to.
             {"name": "masks", "modalities": ["sky_mask"]},
-            "experiments[0] ('masks'): gt must have at least one of",
+            True,
+            "experiments[0] ('masks'): 'modalities' leave no dataset with a prediction",
         ),
         (
             {"name": "rgb", "modalities": ["rgb"]},
+            True,
             "experiments[0] ('rgb'): 'modalities' leave no dataset with a prediction",
         ),
     ],
 )
 def test_modalities_are_checked_before_any_work(
-    monkeypatch, capsys, tmp_path, indexed_sky_prediction, experiment, message
+    monkeypatch, capsys, tmp_path, indexed_sky_prediction, experiment,
+    with_segmentation, message,
 ):
     monkeypatch.setattr(cli, "evaluate_depth_samples", pytest.fail)
-    gt_rgb = tmp_path / "gt_rgb"
-    gt_rgb.mkdir()
-    seg = write_gt_segmentation(tmp_path / "segmentation")
+    gt_extra = {}
+    if with_segmentation:
+        gt_extra["segmentation"] = {
+            "path": write_gt_segmentation(tmp_path / "segmentation")
+        }
     config_path = _sky_config(
-        tmp_path, indexed_sky_prediction, [experiment],
-        gt_extra={"rgb": {"path": str(gt_rgb)}, "segmentation": {"path": seg}},
+        tmp_path, indexed_sky_prediction, [experiment], gt_extra=gt_extra
     )
     with pytest.raises(SystemExit) as exc:
         _main(monkeypatch, config_path)
@@ -356,7 +364,76 @@ def test_modalities_are_checked_before_any_work(
     assert f"Error loading config: {message}" in capsys.readouterr().err
 
 
-def test_experiment_config_keeps_only_listed_modalities():
+def test_sparse_gt_config_with_prediction_modalities(monkeypatch, tmp_path):
+    """The reported MUSES config: experiments choose predictions, GT stays whole."""
+    paths = {}
+    for name in ("lidar", "camera", "semantic", "depth", "dehazed", "points_3d",
+                 "sky_mask"):
+        paths[name] = tmp_path / f"{name}.zip"
+        with zipfile.ZipFile(paths[name], "w") as zf:
+            zf.writestr("placeholder", b"data")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "experiments": [
+            {"name": "eval", "modalities": ["depth"], "args": ["--mask-sky"]},
+            {"name": "gt_sky_with_mask", "modalities": ["depth", "sky_mask"],
+             "args": ["--mask-sky"]},
+            {"name": "gt_and_pred_sky", "modalities": ["depth", "sky_mask"],
+             "args": ["--mask-sky", "--mask-sky-prediction"]},
+        ],
+        "gt": {
+            "sparse_depth": {"path": str(paths["lidar"])},
+            "rgb": {"path": f"{paths['camera']}:fog_day"},
+            "intrinsics": {"path": f"{paths['camera']}#scope=intrinsics"},
+            "camera_extrinsics": {"path": f"{paths['camera']}#scope=camera_extrinsics"},
+            "segmentation": {"path": str(paths["semantic"])},
+        },
+        "datasets": [{
+            "name": "SD 2.1. Mari",
+            "depth": {"path": str(paths["depth"])},
+            "rgb": {"path": str(paths["dehazed"])},
+            "points_3d": {"path": str(paths["points_3d"])},
+            "sky_mask": {"path": str(paths["sky_mask"])},
+        }],
+        "distributions": {"n_bins": 30, "scale": "log", "min_error": 0.001,
+                          "max_error": 240.0},
+    }))
+
+    built, evaluated = [], []
+    monkeypatch.setattr(
+        cli, "build_sparse_depth_eval_dataset",
+        lambda **kwargs: built.append(kwargs) or [object()],
+    )
+    monkeypatch.setattr(
+        cli, "get_sparse_depth_metadata", lambda _ds: {"pred_radial_depth": False}
+    )
+    monkeypatch.setattr(
+        cli, "evaluate_sparse_depth_samples",
+        lambda **kwargs: evaluated.append(kwargs) or _sparse_depth_results(),
+    )
+    for unused in ("evaluate_rgb_samples", "evaluate_points_3d_sparse_samples"):
+        monkeypatch.setattr(cli, unused, pytest.fail)
+    _main(monkeypatch, config_path)
+
+    gt_masking = [kwargs["sky_mask_enabled"] for kwargs in evaluated]
+    pred_masking = [kwargs["pred_sky_mask_enabled"] for kwargs in evaluated]
+    assert gt_masking == [True, True, True]
+    assert pred_masking == [False, False, True]
+    assert [kwargs["segmentation_path"] for kwargs in built] == [str(paths["semantic"])] * 3
+    # The sky_mask is only read by a flag that uses it (here --mask-sky-prediction).
+    assert [kwargs["pred_sky_mask_path"] for kwargs in built] == [
+        None, None, str(paths["sky_mask"]),
+    ]
+    with zipfile.ZipFile(paths["depth"]) as zf:
+        saved = {
+            name: json.loads(zf.read(f".eval/{name}.json"))
+            for name in ("eval", "gt_sky_with_mask", "gt_and_pred_sky")
+        }
+    assert [s["protocol"]["parameters"]["method.pred_sky_mask"]
+            for s in saved.values()] == [False, False, True]
+
+
+def test_experiment_config_keeps_only_listed_predictions():
     config = {
         "gt": {
             "name": "GT",
@@ -375,17 +452,17 @@ def test_experiment_config_keeps_only_listed_modalities():
         "distributions": True,
     }
 
-    reduced = cli._experiment_config(config, ["depth", "segmentation"])
+    reduced = cli._experiment_config(config, ["depth"])
 
-    assert reduced["gt"] == {
-        "name": "GT",
-        "depth": {"path": "/gt/depth"},
-        "semantic_segmentation": {"path": "/gt/seg"},
-    }
+    assert reduced["gt"] == config["gt"]
     assert reduced["datasets"] == [
         {"name": "a", "output_file": "/out/a.json", "relative_depth": {"path": "/a/depth"}},
     ]
     assert reduced["distributions"] is True
+    assert cli._experiment_config(config, ["depth", "sky_mask"])["datasets"] == [{
+        "name": "a", "output_file": "/out/a.json",
+        "relative_depth": {"path": "/a/depth"}, "sky_mask": {"path": "/a/sky"},
+    }]
     assert cli._experiment_config(config, ["rgb", "sky_mask"])["datasets"] == [
         {"name": "a", "output_file": "/out/a.json", "rgb": {"path": "/a/rgb"}},
         {"name": "b", "rgb": {"path": "/b/rgb"}},
@@ -399,7 +476,10 @@ def test_experiment_config_keeps_only_listed_modalities():
         ([], "non-empty array of modality names"),
         ("depth", "non-empty array of modality names"),
         (["relative_depth"], r"unknown modality 'relative_depth' \(use 'depth'"),
-        (["semantic_segmentation"], r"\(use 'segmentation', which covers it\)"),
+        (["segmentation"], "'segmentation' is a GT input"),
+        (["semantic_segmentation"], "'semantic_segmentation' is a GT input"),
+        (["sparse_depth"], "'sparse_depth' is a GT input"),
+        (["intrinsics"], "'intrinsics' is a GT input"),
         (["normals"], "unknown modality 'normals'"),
         (["depth", "depth"], r"lists \['depth'\] more than once"),
     ],
