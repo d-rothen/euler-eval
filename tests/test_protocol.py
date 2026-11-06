@@ -37,6 +37,7 @@ EXPECTED_KEYS = {
     "depth": _reference_keys("calibration", "segmentation") | {
         "population.samples",
         "population.gt_sky_masking",
+        "population.missing_segmentation",
         "population.pred_sky_masking",
         "population.evaluated_resolution",
         "population.benchmark_depth_range_m",
@@ -49,6 +50,7 @@ EXPECTED_KEYS = {
     "sparsedepth": _reference_keys(*SPARSE_INPUTS) | {
         "population.samples",
         "population.gt_sky_masking",
+        "population.missing_segmentation",
         "population.pred_sky_masking",
         "population.evaluated_resolution",
         "population.benchmark_depth_range_m",
@@ -60,6 +62,7 @@ EXPECTED_KEYS = {
     "rgb": _reference_keys("depth", "calibration", "segmentation") | {
         "population.samples",
         "population.gt_sky_masking",
+        "population.missing_segmentation",
         "population.evaluated_resolution",
         "population.benchmark_depth_range_m",
         "method.metrics_revision",
@@ -75,6 +78,7 @@ EXPECTED_KEYS = {
     "points3d": _reference_keys("intrinsics", "calibration", "segmentation") | {
         "population.samples",
         "population.gt_sky_masking",
+        "population.missing_segmentation",
         "population.evaluated_resolution",
         "method.metrics_revision",
         "method.points_3d_alignment",
@@ -83,6 +87,7 @@ EXPECTED_KEYS = {
     "points3d_sparse": _reference_keys(*SPARSE_INPUTS) | {
         "population.samples",
         "population.gt_sky_masking",
+        "population.missing_segmentation",
         "population.evaluated_resolution",
         "method.metrics_revision",
         "method.points_3d_alignment",
@@ -250,6 +255,7 @@ def test_depth_parameters(monkeypatch, tmp_path, depth_paths):
     assert parameters["reference.calibration.dataset"] is None
     assert parameters["population.samples"] == 2
     assert parameters["population.gt_sky_masking"] is False
+    assert parameters["population.missing_segmentation"] is None
     assert parameters["population.evaluated_resolution"] == [2, 2]
     assert parameters["population.benchmark_depth_range_m"] is None
     assert parameters["method.metrics_revision"] == METRICS_REVISION
@@ -267,7 +273,12 @@ def test_depth_parameters(monkeypatch, tmp_path, depth_paths):
         (("--depth-alignment", "affine"), {"method.depth_alignment"}),
         # The config has a sky_mask, which both settings then score with.
         (("--sky-depth", "50"), {"method.sky_depth_m", "method.pred_sky_mask"}),
-        (("--mask-sky",), {"population.gt_sky_masking"}),
+        (
+            ("--mask-sky",),
+            {"population.gt_sky_masking", "population.missing_segmentation"},
+        ),
+        # Without --mask-sky, what happens to unsegmented frames changes nothing.
+        (("--missing-segmentation", "unmasked"), set()),
         (
             ("--mask-sky-prediction",),
             {"population.pred_sky_masking", "method.pred_sky_mask"},

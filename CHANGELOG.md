@@ -49,6 +49,14 @@ the git history for those.
 
 ### Added
 
+- `--missing-segmentation {drop,unmasked}` decides what happens to frames
+  without their own GT segmentation, as in MUSES splits that lack some.
+  `drop` (the default) leaves them out as before; `unmasked` evaluates them
+  without GT sky masking and leaves them out of the sky IoU, which is then
+  computed on the covered frames instead of being skipped. With `--mask-sky`,
+  `meta.gt_sky_masking` records how many frames had no segmentation, and
+  `protocol` (schema 1.2) records the policy as
+  `population.missing_segmentation`.
 - An optional `experiments` config section runs the config several times in
   one invocation: each entry is a `name` (its results file, as with
   `--eval-name`) and the command-line `args` it adds to those on the command

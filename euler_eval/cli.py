@@ -29,6 +29,7 @@ from .config_paths import (
     resolve_gt_segmentation_path,
 )
 from .data import (
+    PartialInputDataset,
     build_depth_eval_dataset,
     build_points_3d_eval_dataset,
     build_points_3d_sparse_eval_dataset,
@@ -1478,7 +1479,12 @@ _PAIRED_OPTIONAL_INPUTS = {
 
 
 def _build_eval_dataset(
-    build, kwargs: dict, *, ds_name: str, iou_only: tuple[str, ...] = ()
+    build,
+    kwargs: dict,
+    *,
+    ds_name: str,
+    iou_only: tuple[str, ...] = (),
+    missing_segmentation: str = "drop",
 ) -> tuple:
     """Build an eval dataset and account for the frames its optional inputs drop.
 
@@ -1488,13 +1494,24 @@ def _build_eval_dataset(
     only for ``--sky-iou``, which must not change the evaluated pairs: if it
     lacks any, the dataset is rebuilt without it.
 
+    With *missing_segmentation* ``"unmasked"``, frames without their own GT
+    segmentation are kept instead: they are read without it, so ``--mask-sky``
+    leaves them unmasked and ``--sky-iou`` leaves them out of the IoU.
+
     Returns ``(dataset, skipped)`` with ``{input: reason}`` for every
     *iou_only* input that was left out.
     """
     optional = tuple(_PAIRED_OPTIONAL_INPUTS)
     dataset = build(**kwargs)
+    partial_segmentation = (
+        missing_segmentation == "unmasked"
+        and kwargs.get("segmentation_path") is not None
+        and bool(count_ids_dropped_by(dataset, "segmentation", optional=optional))
+    )
     skipped = {}
     for name in iou_only:
+        if name == "segmentation" and partial_segmentation:
+            continue
         dropped = count_ids_dropped_by(dataset, name, optional=optional)
         if not dropped:
             continue
@@ -1510,11 +1527,23 @@ def _build_eval_dataset(
         dataset = build(**kwargs)
     for name, (_, label) in _PAIRED_OPTIONAL_INPUTS.items():
         dropped = count_ids_dropped_by(dataset, name, optional=optional)
-        if dropped:
+        if not dropped:
+            continue
+        if name == "segmentation" and partial_segmentation:
+            print(
+                f"Note: the {label} of '{ds_name}' lacks {dropped} pairs that the "
+                "other inputs share; with --missing-segmentation unmasked they "
+                "are evaluated without GT sky masking and left out of the sky IoU."
+            )
+        else:
             print(
                 f"Warning: the {label} of '{ds_name}' lacks {dropped} pairs that "
                 "the other inputs share; those pairs are not evaluated."
             )
+    if partial_segmentation:
+        keys, _ = _PAIRED_OPTIONAL_INPUTS["segmentation"]
+        complete = build(**{**kwargs, **dict.fromkeys(keys)})
+        dataset = PartialInputDataset(complete, dataset)
     return dataset, skipped
 
 
@@ -1827,6 +1856,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--mask-sky",
         action="store_true",
         help="Mask sky regions from metrics using GT segmentation",
+    )
+    parser.add_argument(
+        "--missing-segmentation",
+        choices=["drop", "unmasked"],
+        default="drop",
+        help=(
+            "Frames without their own GT segmentation: 'drop' leaves them out "
+            "(default); 'unmasked' evaluates them without GT sky masking and "
+            "leaves them out of the sky IoU"
+        ),
     )
     parser.add_argument(
         "--mask-sky-prediction",
@@ -2172,6 +2211,7 @@ def _evaluate(
                 ),
                 ds_name=ds_name,
                 iou_only=iou_only_inputs,
+                missing_segmentation=args.missing_segmentation,
             )
             et_eval_datasets["depth"] = depth_dataset
 
@@ -2259,6 +2299,9 @@ def _evaluate(
                     population={
                         "samples": depth_dataset_info.get("num_pairs"),
                         "gt_sky_masking": bool(args.mask_sky),
+                        "missing_segmentation": (
+                            args.missing_segmentation if args.mask_sky else None
+                        ),
                         "pred_sky_masking": bool(args.mask_sky_prediction),
                         "evaluated_resolution": evaluated_resolution(depth_spatial),
                         "benchmark_depth_range_m": protocol_benchmark_range,
@@ -2302,6 +2345,7 @@ def _evaluate(
                         ),
                     },
                     "modality_params": depth_meta,
+                    "gt_sky_masking": depth_results.get("gt_sky_masking"),
                     "sky_segmentation": _sky_segmentation_meta(
                         depth_results, segmentation_key, skipped_inputs
                     ),
@@ -2438,6 +2482,7 @@ def _evaluate(
                 ),
                 ds_name=ds_name,
                 iou_only=iou_only_inputs,
+                missing_segmentation=args.missing_segmentation,
             )
             et_eval_datasets["sparse_depth"] = sparse_depth_dataset
 
@@ -2523,6 +2568,9 @@ def _evaluate(
                     population={
                         "samples": sparse_depth_dataset_info.get("num_pairs"),
                         "gt_sky_masking": bool(args.mask_sky),
+                        "missing_segmentation": (
+                            args.missing_segmentation if args.mask_sky else None
+                        ),
                         "pred_sky_masking": bool(args.mask_sky_prediction),
                         "evaluated_resolution": evaluated_resolution(
                             sparse_depth_spatial
@@ -2577,6 +2625,7 @@ def _evaluate(
                         ),
                     },
                     "modality_params": sparse_depth_meta,
+                    "gt_sky_masking": sparse_depth_results.get("gt_sky_masking"),
                     "sky_segmentation": _sky_segmentation_meta(
                         sparse_depth_results, segmentation_key, skipped_inputs
                     ),
@@ -2707,6 +2756,7 @@ def _evaluate(
                     segmentation_modality_key=segmentation_key or "segmentation",
                 ),
                 ds_name=ds_name,
+                missing_segmentation=args.missing_segmentation,
             )
             et_eval_datasets["rgb"] = rgb_dataset
 
@@ -2776,6 +2826,9 @@ def _evaluate(
                     population={
                         "samples": rgb_dataset_info.get("num_pairs"),
                         "gt_sky_masking": bool(args.mask_sky),
+                        "missing_segmentation": (
+                            args.missing_segmentation if args.mask_sky else None
+                        ),
                         "evaluated_resolution": evaluated_resolution(rgb_spatial),
                         "benchmark_depth_range_m": protocol_benchmark_range,
                     },
@@ -2807,6 +2860,7 @@ def _evaluate(
                         ),
                     },
                     "modality_params": rgb_meta,
+                    "gt_sky_masking": rgb_results.get("gt_sky_masking"),
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "fid_backend": args.rgb_fid_backend,
@@ -3028,6 +3082,7 @@ def _evaluate(
                     segmentation_modality_key=segmentation_key or "segmentation",
                 ),
                 ds_name=ds_name,
+                missing_segmentation=args.missing_segmentation,
             )
             et_eval_datasets["points_3d"] = points_3d_dataset
 
@@ -3099,6 +3154,9 @@ def _evaluate(
                     population={
                         "samples": p3_dataset_info.get("num_pairs"),
                         "gt_sky_masking": bool(args.mask_sky),
+                        "missing_segmentation": (
+                            args.missing_segmentation if args.mask_sky else None
+                        ),
                         "evaluated_resolution": evaluated_resolution(p3_spatial),
                     },
                     method={
@@ -3130,6 +3188,7 @@ def _evaluate(
                         ),
                     },
                     "modality_params": points_3d_meta,
+                    "gt_sky_masking": points_3d_results.get("gt_sky_masking"),
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "points_3d_alignment_mode": args.points_3d_alignment,
@@ -3223,6 +3282,7 @@ def _evaluate(
                     segmentation_split=segmentation_split,
                 ),
                 ds_name=ds_name,
+                missing_segmentation=args.missing_segmentation,
             )
             p3ds_meta = get_points_3d_metadata(points_3d_sparse_dataset)
             p3s_alignment_mode = args.points_3d_alignment
@@ -3298,6 +3358,9 @@ def _evaluate(
                     population={
                         "samples": p3s_dataset_info.get("num_pairs"),
                         "gt_sky_masking": bool(args.mask_sky),
+                        "missing_segmentation": (
+                            args.missing_segmentation if args.mask_sky else None
+                        ),
                         "evaluated_resolution": evaluated_resolution(p3s_spatial),
                     },
                     method={
@@ -3337,6 +3400,7 @@ def _evaluate(
                         ),
                     },
                     "modality_params": p3ds_meta,
+                    "gt_sky_masking": points_3d_sparse_results.get("gt_sky_masking"),
                     "eval_params": {
                         "sky_masking": args.mask_sky,
                         "alignment_mode": p3s_alignment_mode,

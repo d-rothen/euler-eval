@@ -74,7 +74,7 @@ set.
     "metricDescriptions": { "absrel": { "…": "…" } }
   },
   "protocol": {
-    "schemaVersion": "1.1",
+    "schemaVersion": "1.2",
     "parameters": { "reference.gt.dataset": "muses", "method.depth_alignment": "auto_affine", "…": "…" }
   },
   "dataset_info": { "num_pairs": 500, "gt_name": "GT", "pred_name": "model_a" },
@@ -171,6 +171,19 @@ sky removed, since that differs from model to model:
 depth) that would be scored without the flag, after `--mask-sky` if set;
 `excluded_gt_pixels` is how many of them fell in predicted sky.
 
+### GT sky masking coverage
+
+With `--mask-sky`, every modality it applies to records how many frames had
+their own GT segmentation:
+
+```json
+"gt_sky_masking": { "samples": 500, "samples_without_segmentation": 100, "samples_with_sky": 396 }
+```
+
+`samples_without_segmentation` is `0` unless `--missing-segmentation unmasked`
+kept frames without one; those frames were scored without sky masking.
+`samples_with_sky` counts the frames whose mask removed any pixel.
+
 When sky keys are written, the metric-set axes also declare them:
 `sky_segmentation` joins the `category` values, an optional `variant` axis
 (`explicit`, `implicit`) follows `category`, and `space` becomes optional
@@ -188,7 +201,7 @@ values differ say where. Nothing else in the file needs to be compared for that;
 
 ```json
 "protocol": {
-  "schemaVersion": "1.1",
+  "schemaVersion": "1.2",
   "parameters": {
     "reference.gt.modality": "sparse_depth",
     "reference.gt.dataset": "seeingthroughfog",
@@ -208,6 +221,7 @@ values differ say where. Nothing else in the file needs to be compared for that;
     "reference.segmentation.split": null,
     "population.samples": 943,
     "population.gt_sky_masking": false,
+    "population.missing_segmentation": null,
     "population.pred_sky_masking": false,
     "population.evaluated_resolution": [1024, 1920],
     "population.benchmark_depth_range_m": [0.01, 80.0],
@@ -231,12 +245,12 @@ What is recorded, per modality:
 
 | Modality | `reference` inputs besides `gt` | `population` | `method` |
 |---|---|---|---|
-| `depth` | `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `pred_sky_masking`, `evaluated_resolution`, `benchmark_depth_range_m` | `depth_alignment`, `sky_depth_m`, `pred_sky_mask`, `spatial_alignment` |
+| `depth` | `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `pred_sky_masking`, `evaluated_resolution`, `benchmark_depth_range_m` | `depth_alignment`, `sky_depth_m`, `pred_sky_mask`, `spatial_alignment` |
 | `sparsedepth` | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | as `depth` | `depth_alignment`, `sky_depth_m`, `pred_sky_mask` |
-| `rgb` | `depth`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `evaluated_resolution`, `benchmark_depth_range_m` | `fid_backend`, `spatial_alignment` |
+| `rgb` | `depth`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `evaluated_resolution`, `benchmark_depth_range_m` | `fid_backend`, `spatial_alignment` |
 | `rays` | `calibration` | `samples`, `evaluated_resolution` | `spatial_alignment` |
-| `points3d` (dense) | `intrinsics`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `evaluated_resolution` | `points_3d_alignment`, `spatial_alignment` |
-| `points3d` (sparse GT) | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | `samples`, `gt_sky_masking`, `evaluated_resolution` | `points_3d_alignment` |
+| `points3d` (dense) | `intrinsics`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `evaluated_resolution` | `points_3d_alignment`, `spatial_alignment` |
+| `points3d` (sparse GT) | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `evaluated_resolution` | `points_3d_alignment` |
 
 Every modality also has `method.metrics_revision`.
 

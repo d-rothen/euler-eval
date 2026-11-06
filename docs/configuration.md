@@ -103,6 +103,17 @@ warns and the sky IoU is skipped. A segmentation whose IDs match no frame
 stops the run with euler-loading's "No common IDs" error and per-modality file
 counts.
 
+When a split has segmentation for only some frames (MUSES lacks some), pass
+`--missing-segmentation unmasked` to keep the other frames: they are evaluated
+without GT sky masking and left out of the sky IoU, while frames with
+segmentation are scored exactly as before. The metrics then mix masked and
+unmasked frames, so `meta.gt_sky_masking` records how many frames had no
+segmentation, and `protocol.parameters` records the policy
+(`population.missing_segmentation`). Unmasked frames score their sky wherever
+the GT has valid depth there: little for a lidar GT, which has few returns in
+the sky, but possibly a lot for a dense GT with sky depth. The default,
+`drop`, leaves those frames out.
+
 The config key is also the default metadata scope. If the path has no
 `#scope=` selector, no root-level metadata, and no scope of that name, the
 scope is chosen among the archive's scopes: the one whose name or

@@ -195,3 +195,130 @@ def test_every_builder_pairs_segmentation_by_id(monkeypatch, build, kwargs):
     dataset = build(**kwargs, segmentation_path="/seg")
     assert dataset.modalities["segmentation"].loader == "sky"
     assert "segmentation" not in dataset.hierarchical_modalities
+
+
+# ---------------------------------------------------------------------------
+# --missing-segmentation unmasked
+# ---------------------------------------------------------------------------
+
+
+def test_missing_segmentation_unmasked_evaluates_those_frames_unmasked(
+    monkeypatch, capsys, flat_frames
+):
+    _patch_depth_metrics(monkeypatch)
+    config_path, paths = flat_frames(segmentation_frames=("f0", "f1"))
+
+    saved = _run(
+        monkeypatch, config_path, paths["pred"],
+        "--mask-sky", "--missing-segmentation", "unmasked",
+    )
+
+    assert saved["dataset_info"]["num_pairs"] == 3
+    # f0 and f1 are masked with their own sky; f2 keeps its sky row: 900 m
+    # error on 4 of 16 pixels.
+    assert _per_file_mae(saved) == {"f0": 0.0, "f1": 0.0, "f2": 225.0}
+    assert saved["meta"]["gt_sky_masking"] == {
+        "samples": 3, "samples_without_segmentation": 1, "samples_with_sky": 2,
+    }
+    parameters = saved["protocol"]["parameters"]
+    assert parameters["population.gt_sky_masking"] is True
+    assert parameters["population.missing_segmentation"] == "unmasked"
+    out = capsys.readouterr().out
+    assert (
+        "the GT segmentation of 'model' lacks 1 pairs that the other inputs "
+        "share; with --missing-segmentation unmasked they are evaluated without "
+        "GT sky masking"
+    ) in out
+    assert "found no GT segmentation of their own frame for 1 of the 3" in out
+
+
+def test_missing_segmentation_unmasked_matches_drop_on_covered_frames(
+    monkeypatch, flat_frames
+):
+    _patch_depth_metrics(monkeypatch)
+    config_path, paths = flat_frames(segmentation_frames=("f0", "f1"))
+
+    dropped = _run(monkeypatch, config_path, paths["pred"], "--mask-sky")
+    kept = _run(
+        monkeypatch, config_path, paths["pred"],
+        "--mask-sky", "--missing-segmentation", "unmasked",
+    )
+
+    covered = {k: v for k, v in _per_file_mae(kept).items() if k != "f2"}
+    assert covered == _per_file_mae(dropped)
+    assert dropped["protocol"]["parameters"]["population.missing_segmentation"] == "drop"
+
+
+def test_missing_segmentation_unmasked_scores_sky_iou_on_covered_frames(
+    monkeypatch, flat_frames
+):
+    _patch_depth_metrics(monkeypatch)
+    config_path, paths = flat_frames(segmentation_frames=("f0", "f1"))
+
+    saved = _run(
+        monkeypatch, config_path, paths["pred"],
+        "--sky-iou", "--sky-depth", "50", "--missing-segmentation", "unmasked",
+    )
+
+    assert saved["dataset_info"]["num_pairs"] == 3
+    meta = saved["meta"]["sky_segmentation"]
+    assert meta["implicit"]["available"] is True
+    assert meta["samples"] == 3
+    assert meta["samples_without_gt"] == 1
+    # Without --mask-sky, the policy is not a comparison parameter.
+    assert saved["protocol"]["parameters"]["population.missing_segmentation"] is None
+
+
+def test_missing_segmentation_unmasked_with_prefetch_workers(monkeypatch, flat_frames):
+    """Worker processes receive the combined dataset intact."""
+    _patch_depth_metrics(monkeypatch)
+    config_path, paths = flat_frames(segmentation_frames=("f0", "f1"))
+
+    saved = _run(
+        monkeypatch, config_path, paths["pred"],
+        "--mask-sky", "--missing-segmentation", "unmasked", "--num-workers", "2",
+    )
+
+    assert _per_file_mae(saved) == {"f0": 0.0, "f1": 0.0, "f2": 225.0}
+
+
+class _Frames:
+    def __init__(self, ids, tag):
+        self.ids, self.tag = list(ids), tag
+        self.public = f"{tag} attribute"
+
+    def __len__(self):
+        return len(self.ids)
+
+    def __getitem__(self, index):
+        return {"id": self.ids[index], "source": self.tag}
+
+    def sample_full_id(self, index, modality_name=None):
+        return f"/{self.ids[index]}"
+
+
+def test_partial_input_dataset_keeps_every_frame_in_order():
+    import pickle
+
+    dataset = data.PartialInputDataset(
+        _Frames(["a", "b", "c"], "complete"), _Frames(["a", "c"], "with")
+    )
+
+    assert len(dataset) == 3
+    assert [dataset[i] for i in range(3)] == [
+        {"id": "a", "source": "with"},
+        {"id": "b", "source": "complete"},
+        {"id": "c", "source": "with"},
+    ]
+    assert dataset.frames_without_input == 1
+    assert dataset.sample_full_id(1) == "/b"
+    assert dataset.public == "with attribute"
+    with pytest.raises(AttributeError):
+        dataset._lookups
+    restored = pickle.loads(pickle.dumps(dataset))
+    assert [restored[i]["source"] for i in range(3)] == ["with", "complete", "with"]
+
+
+def test_partial_input_dataset_rejects_frames_missing_from_the_complete_set():
+    with pytest.raises(ValueError, match="1 frames with the optional input"):
+        data.PartialInputDataset(_Frames(["a"], "complete"), _Frames(["a", "z"], "with"))

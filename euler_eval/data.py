@@ -1117,6 +1117,60 @@ def build_rgb_eval_dataset(
     )
 
 
+class PartialInputDataset:
+    """Every frame of *complete*, with an optional input where a frame has it.
+
+    euler-loading intersects every modality by ID, so an input such as GT
+    segmentation that covers only some frames removes the others from the
+    pairing. This dataset keeps them: *complete* is built without the input
+    and *with_input* with it, from the same other inputs, so its frames are a
+    subset of *complete*'s. A frame of *with_input* is read from it, any
+    other frame from *complete*, whose sample then has no entry for the
+    input. Frames keep *complete*'s order and identities.
+
+    Public attributes such as ``get_modality_metadata`` and ``modality_paths``
+    come from *with_input*, which describes every input.
+    """
+
+    def __init__(self, complete: Any, with_input: Any) -> None:
+        self._complete = complete
+        self._with_input = with_input
+        index = {
+            with_input.sample_full_id(j): j for j in range(len(with_input))
+        }
+        self._source = [
+            index.pop(complete.sample_full_id(i), None) for i in range(len(complete))
+        ]
+        if index:
+            raise ValueError(
+                f"{len(index)} frames with the optional input are not among the "
+                "frames without it; both datasets must share their other inputs"
+            )
+
+    @property
+    def frames_without_input(self) -> int:
+        return sum(source is None for source in self._source)
+
+    def __len__(self) -> int:
+        return len(self._source)
+
+    def __getitem__(self, index: int) -> dict[str, Any]:
+        source = self._source[index]
+        if source is None:
+            return self._complete[index]
+        return self._with_input[source]
+
+    def sample_full_id(self, index: int, modality_name: Optional[str] = None) -> str:
+        return self._complete.sample_full_id(index, modality_name)
+
+    def __getattr__(self, name: str) -> Any:
+        # Private and dunder lookups (pickling, ``_lookups``) are not forwarded:
+        # they would describe *with_input*'s frames, not this dataset's.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return getattr(self._with_input, name)
+
+
 def count_ids_dropped_by(
     dataset: Any, modality: str, *, optional: tuple[str, ...] = ()
 ) -> Optional[int]:

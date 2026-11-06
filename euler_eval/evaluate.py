@@ -588,6 +588,14 @@ class _SkyMaskCoverage:
         elif not np.all(sky_valid):
             self.with_sky += 1
 
+    def info(self) -> dict:
+        """Return provenance for ``meta.gt_sky_masking`` in ``eval.json``."""
+        return {
+            "samples": self.samples,
+            "samples_without_segmentation": self.missing,
+            "samples_with_sky": self.with_sky,
+        }
+
     def warn_if_empty(self, modality: str) -> None:
         if self.missing:
             print(
@@ -2042,6 +2050,8 @@ def evaluate_depth_samples(
                 result["sky_segmentation_info"] = sky_iou_scores.info()
             if pred_sky_masking is not None:
                 result["pred_sky_masking"] = pred_sky_masking.info()
+            if sky_mask_enabled:
+                result["gt_sky_masking"] = sky_coverage.info()
             return _finalize_depth_distributions(
                 result, distribution_config, "depth", benchmark_depth_range, sky_depth
             )
@@ -2676,6 +2686,8 @@ def evaluate_sparse_depth_samples(
                 result["sky_segmentation_info"] = sky_iou_scores.info()
             if pred_sky_masking is not None:
                 result["pred_sky_masking"] = pred_sky_masking.info()
+            if sky_mask_enabled:
+                result["gt_sky_masking"] = sky_coverage.info()
             return _finalize_depth_distributions(
                 result, distribution_config, "sparse_depth",
                 benchmark_depth_range, sky_depth,
@@ -3246,6 +3258,7 @@ def evaluate_rgb_samples(
             return {
                 "rgb": rgb_results,
                 "rgb_benchmark": rgb_benchmark,
+                "gt_sky_masking": sky_coverage.info() if sky_mask_enabled else None,
                 "per_file_metrics": per_file_metrics,
                 "dataset_info": {
                     "num_pairs": num_samples,
@@ -4083,6 +4096,8 @@ def evaluate_points_3d_samples(
                     else None,
                 },
             }
+            if sky_mask_enabled:
+                result["gt_sky_masking"] = sky_coverage.info()
             return finalize_distributions(result, distribution_config, "rmse3d", "points_3d")
         finally:
             for st in stores.values():
@@ -4819,6 +4834,8 @@ def evaluate_points_3d_sparse_samples(
                     else None,
                 },
             }
+            if sky_mask_enabled:
+                result["gt_sky_masking"] = sky_coverage.info()
             return finalize_distributions(result, distribution_config, "rmse3d", "points_3d")
         finally:
             for st in stores.values():
