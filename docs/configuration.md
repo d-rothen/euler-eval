@@ -250,6 +250,63 @@ sources:
    unprojected on the fly. Whether the GT depth is radial or planar is read from
    its metadata (`radial_depth`).
 
+## `experiments` section (optional)
+
+Runs the same config several times in one invocation, each time with its own
+command-line flags and under its own name:
+
+```json
+{
+  "gt": { "depth": { "path": "/data/gt/depth" } },
+  "datasets": [{ "name": "model_a", "depth": { "path": "/data/model_a/depth" } }],
+  "experiments": [
+    { "name": "eval" },
+    { "name": "no_sky", "args": ["--mask-sky", "--benchmark-depth-range", 0.01, 80] },
+    { "name": "affine", "args": ["--depth-alignment", "affine"] },
+    { "name": "capped_no_mask", "args": ["--sky-depth", 80], "modalities": ["depth"] }
+  ]
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `name` | yes | Evaluation name: results are written as `<name>.json` in each prediction dataset's `.eval/` folder ([where results land](output.md#where-results-land)). Same rules as `--eval-name`; unique |
+| `args` | no | Command-line tokens this experiment adds, exactly as you would type them; numbers may be written as JSON numbers |
+| `modalities` | no | The configured modalities this experiment may load (default: all). Names: `depth` (also covers `relative_depth` and `affine_depth` predictions), `sparse_depth`, `rgb`, `rays`, `points_3d`, `sky_mask`, `segmentation` (also covers `semantic_segmentation`), `calibration`, `intrinsics`, `camera_extrinsics`, `lidar_extrinsics` |
+
+- **The command line is the base.** Each experiment runs with the flags given on
+  the command line followed by its own `args`, so for a flag that takes a
+  value, the experiment's value wins. Switches such as `--mask-sky` can only be
+  turned on that way, so put the ones that vary between experiments in
+  `args`, not on the command line.
+- **Checked before any work.** Every experiment's `args` are parsed and
+  validated before the first one runs. `--eval-name` and `--experiment` are not
+  allowed in `args`, and `--eval-name` cannot be combined with an `experiments`
+  section, because `name` names the results.
+- **Modalities.** An experiment with `modalities` runs as if the unlisted GT
+  inputs and prediction entries were not in the config; a name covers both
+  sides. A listed modality is still read only when the evaluation needs it,
+  e.g. `sky_mask` only with `--sky-depth`, `--mask-sky-prediction` or
+  `--sky-iou`. This is how to compare runs where a modality's presence changes
+  the output: above, `capped_no_mask` caps depth at 80 m without filling the
+  predicted sky. A dataset left without a prediction is not evaluated in that
+  experiment, and the reduced config must still be valid (e.g. `sparse_depth`
+  needs `intrinsics` and `camera_extrinsics`). Listing a modality the config
+  does not have only prints a warning, so one experiment list can serve several
+  generated configs.
+- **Selecting experiments.** By default all experiments run, in config order.
+  `--experiment NAME` (repeatable) runs only the named ones, e.g. one per task
+  of a job array.
+- **Failures.** An experiment that fails is reported and the rest still run;
+  the exit status is then `1`.
+
+Each experiment loads and scores the data again, and its results carry the
+settings it ran with in [`protocol.parameters`](output.md#comparing-evaluations)
+and its name in `meta.eval_name`. With euler-train logging, each prediction
+dataset is logged once per experiment, as `<name>/<experiment>`; the
+sanity-check report is written per experiment as
+`sanity_check_report_<experiment>.json`.
+
 ## `euler_train` section (optional)
 
 When present, results are logged to an
@@ -260,7 +317,8 @@ created and finished on completion) or a full path to an existing run directory
 only supported key.
 
 Each prediction dataset is registered as an evaluation named after its config
-`name`, first as `running` and then with its metrics attached, alongside package
+`name` (`<name>/<experiment>` with [`experiments`](#experiments-section-optional)),
+first as `running` and then with its metrics attached, alongside package
 provenance (euler-eval version, Python, torch, CUDA).
 
 ## Loader resolution & dataset metadata

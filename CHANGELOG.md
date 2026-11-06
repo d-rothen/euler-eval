@@ -43,6 +43,17 @@ the git history for those.
 
 ### Added
 
+- An optional `experiments` config section runs the config several times in
+  one invocation: each entry is a `name` (its results file, as with
+  `--eval-name`) and the command-line `args` it adds to those on the command
+  line. An optional `modalities` list restricts which configured modalities it
+  may load, e.g. to run `--sky-depth` with and without the prediction's
+  `sky_mask`. All experiments are validated before any work, a failing one does
+  not stop the rest, and `--experiment NAME` selects a subset. Results record
+  their name in `meta.eval_name`.
+- `protocol` schema 1.1 adds `method.pred_sky_mask` to depth and sparse depth:
+  whether the prediction's `sky_mask` was loaded and scored with. Runs that
+  differ only in a loaded `sky_mask` were indistinguishable in 1.0.
 - Every `eval.json` has a `protocol` block whose flat `parameters` map holds the
   comparison keys: each setting that changes metric values, in `reference`
   (GT inputs by dataset id, scope and split, not path), `population` and

@@ -74,7 +74,7 @@ set.
     "metricDescriptions": { "absrel": { "…": "…" } }
   },
   "protocol": {
-    "schemaVersion": "1.0",
+    "schemaVersion": "1.1",
     "parameters": { "reference.gt.dataset": "muses", "method.depth_alignment": "auto_affine", "…": "…" }
   },
   "dataset_info": { "num_pairs": 500, "gt_name": "GT", "pred_name": "model_a" },
@@ -188,7 +188,7 @@ values differ say where. Nothing else in the file needs to be compared for that;
 
 ```json
 "protocol": {
-  "schemaVersion": "1.0",
+  "schemaVersion": "1.1",
   "parameters": {
     "reference.gt.modality": "sparse_depth",
     "reference.gt.dataset": "seeingthroughfog",
@@ -213,7 +213,8 @@ values differ say where. Nothing else in the file needs to be compared for that;
     "population.benchmark_depth_range_m": [0.01, 80.0],
     "method.metrics_revision": 1,
     "method.depth_alignment": "auto_affine",
-    "method.sky_depth_m": null
+    "method.sky_depth_m": null,
+    "method.pred_sky_mask": false
   }
 }
 ```
@@ -224,14 +225,14 @@ The first segment of a key is its section:
 |---|---|
 | `reference` | The GT the prediction is scored against (`gt`, with its config key as `modality`) and every other GT input the modality reads, each identified by `dataset` (the `dataset.id` of its `dataset-head.json`), metadata `scope` and `split` — not by file path, so the same data on another machine matches |
 | `population` | Which samples and pixels were scored: the matched `samples`, sky masking, the grid the metrics were computed on and benchmark depth bins |
-| `method` | How they were scored: alignment modes, the sky-depth cap, how GT and prediction resolutions were reconciled, the FID backend and `metrics_revision` |
+| `method` | How they were scored: alignment modes, the sky-depth cap and whether the prediction's `sky_mask` was used, how GT and prediction resolutions were reconciled, the FID backend and `metrics_revision` |
 
 What is recorded, per modality:
 
 | Modality | `reference` inputs besides `gt` | `population` | `method` |
 |---|---|---|---|
-| `depth` | `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `pred_sky_masking`, `evaluated_resolution`, `benchmark_depth_range_m` | `depth_alignment`, `sky_depth_m`, `spatial_alignment` |
-| `sparsedepth` | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | as `depth` | `depth_alignment`, `sky_depth_m` |
+| `depth` | `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `pred_sky_masking`, `evaluated_resolution`, `benchmark_depth_range_m` | `depth_alignment`, `sky_depth_m`, `pred_sky_mask`, `spatial_alignment` |
+| `sparsedepth` | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | as `depth` | `depth_alignment`, `sky_depth_m`, `pred_sky_mask` |
 | `rgb` | `depth`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `evaluated_resolution`, `benchmark_depth_range_m` | `fid_backend`, `spatial_alignment` |
 | `rays` | `calibration` | `samples`, `evaluated_resolution` | `spatial_alignment` |
 | `points3d` (dense) | `intrinsics`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `evaluated_resolution` | `points_3d_alignment`, `spatial_alignment` |
@@ -253,10 +254,14 @@ Rules that keep comparisons a plain map comparison:
   for identical inputs and settings, which the [changelog](../CHANGELOG.md)
   then says. Different revisions are not comparable even when every other
   key matches.
-- Settings are recorded, not what they caused. With `--mask-sky-prediction`,
-  `population.pred_sky_masking` is `true` for every prediction, while
-  `meta.pred_sky_masking` records how much each model's own sky removed;
-  `metricSet.metadata` records whether an alignment was actually applied.
+- Settings are recorded, not what they caused. `population.pred_sky_masking`
+  is the `--mask-sky-prediction` flag, and `method.pred_sky_mask` says whether
+  the prediction's `sky_mask` was loaded and scored with (filled at
+  `--sky-depth`, or excluded by `--mask-sky-prediction`). It is `false` for a
+  prediction without one, or an [experiment](configuration.md#experiments-section-optional)
+  that leaves it out. How much each model's own sky removed is in
+  `meta.pred_sky_masking`, and `metricSet.metadata` records whether an
+  alignment was actually applied.
 - Renaming or removing a key bumps the major `schemaVersion`; adding one bumps
   the minor version.
 

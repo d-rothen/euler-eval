@@ -13,9 +13,11 @@ import math
 import platform
 import re
 import sys
+import traceback
 import zipfile
 from dataclasses import replace
 from pathlib import Path
+from typing import NamedTuple
 
 import torch
 from ds_crawler.zip_utils import get_zip_root_prefix
@@ -270,6 +272,25 @@ def _points_3d_eval_axes(*, distributions: bool = False) -> dict[str, AxisDeclar
 
 
 _PRED_DEPTH_KEYS = ("depth", "relative_depth", "affine_depth")
+
+#: Names an experiment's ``modalities`` may list, and the GT and prediction
+#: config keys each one covers.
+_EXPERIMENT_MODALITIES = {
+    "depth": _PRED_DEPTH_KEYS,
+    "sparse_depth": ("sparse_depth",),
+    "rgb": ("rgb",),
+    "rays": ("rays",),
+    "points_3d": ("points_3d",),
+    "sky_mask": ("sky_mask",),
+    "segmentation": GT_SEGMENTATION_KEYS,
+    "calibration": ("calibration",),
+    "intrinsics": ("intrinsics",),
+    "camera_extrinsics": ("camera_extrinsics",),
+    "lidar_extrinsics": ("lidar_extrinsics",),
+}
+_MODALITY_OF_CONFIG_KEY = {
+    key: name for name, keys in _EXPERIMENT_MODALITIES.items() for key in keys
+}
 
 # Downstream eval consumers validate metricSet.metricNamespace with a stricter
 # first-segment rule than euler_metric_naming's modality validator. Keep the
@@ -1083,6 +1104,125 @@ def validate_euler_train_config(et_config: dict) -> None:
         )
 
 
+def validate_experiments_config(experiments) -> None:
+    """Validate the optional ``experiments`` config section.
+
+    Each experiment is ``{"name": ..., "args": [...]}``: a unique evaluation
+    name and the command-line flags it adds. Flags are checked later, by the
+    argument parser.
+
+    Raises:
+        ValueError: Naming the offending experiment.
+    """
+    if not isinstance(experiments, list) or not experiments:
+        raise ValueError(
+            "'experiments' must be a non-empty array of "
+            '{"name": ..., "args": [...]} objects'
+        )
+    seen = set()
+    for index, entry in enumerate(experiments):
+        label = f"experiments[{index}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{label} must be an object with 'name' and 'args'")
+        unknown = sorted(set(entry) - {"name", "args", "modalities"})
+        if unknown:
+            raise ValueError(
+                f"{label} has unknown keys {unknown}; only 'name', 'args' and "
+                "'modalities' are supported"
+            )
+        if not isinstance(entry.get("name"), str):
+            raise ValueError(f"{label}.name must be a string")
+        try:
+            name = validate_eval_name(entry["name"])
+        except ValueError as e:
+            raise ValueError(f"{label}.name: {e}") from e
+        if name in seen:
+            raise ValueError(
+                f"{label}.name {name!r} is already used; experiment names must "
+                "be unique"
+            )
+        seen.add(name)
+        args = entry.get("args", [])
+        if not isinstance(args, list) or not all(
+            isinstance(value, (str, int, float)) and not isinstance(value, bool)
+            for value in args
+        ):
+            raise ValueError(
+                f"{label}.args must be an array of command-line tokens (strings "
+                'or numbers), e.g. ["--mask-sky", "--benchmark-depth-range", 1, 80]'
+            )
+        if "modalities" in entry:
+            _validate_experiment_modalities(entry["modalities"], label)
+
+
+def _validate_experiment_modalities(modalities, label: str) -> None:
+    if (
+        not isinstance(modalities, list)
+        or not modalities
+        or not all(isinstance(name, str) for name in modalities)
+    ):
+        raise ValueError(
+            f"{label}.modalities must be a non-empty array of modality names, "
+            'e.g. ["depth", "sky_mask"]'
+        )
+    for name in modalities:
+        if name not in _EXPERIMENT_MODALITIES:
+            covered_by = _MODALITY_OF_CONFIG_KEY.get(name)
+            hint = f" (use {covered_by!r}, which covers it)" if covered_by else ""
+            raise ValueError(
+                f"{label}.modalities: unknown modality {name!r}{hint}; expected "
+                f"one of {', '.join(_EXPERIMENT_MODALITIES)}"
+            )
+    duplicates = sorted({name for name in modalities if modalities.count(name) > 1})
+    if duplicates:
+        raise ValueError(f"{label}.modalities lists {duplicates} more than once")
+
+
+def _has_prediction(entry: dict) -> bool:
+    return _prediction_depth_entry(entry)[0] is not None or any(
+        key in entry and "path" in entry[key] for key in ("rgb", "rays", "points_3d")
+    )
+
+
+def _configured_modalities(config: dict) -> set[str]:
+    sections = [config["gt"], *config["datasets"]]
+    return {
+        _MODALITY_OF_CONFIG_KEY[key]
+        for section in sections
+        for key in section
+        if key in _MODALITY_OF_CONFIG_KEY
+    }
+
+
+def _experiment_config(config: dict, modalities: list[str] | None) -> dict:
+    """Return *config* reduced to the modalities an experiment lists.
+
+    Unlisted GT inputs and prediction entries are left out, as if they were
+    not configured. A dataset left without a prediction is not evaluated, and
+    a ``sky_mask`` is dropped with the depth prediction it belongs to.
+    """
+    if modalities is None:
+        return config
+    keep = set(modalities)
+
+    def reduced(section: dict) -> dict:
+        return {
+            key: value
+            for key, value in section.items()
+            if key not in _MODALITY_OF_CONFIG_KEY
+            or _MODALITY_OF_CONFIG_KEY[key] in keep
+        }
+
+    datasets = []
+    for entry in config["datasets"]:
+        entry = reduced(entry)
+        if _prediction_depth_entry(entry)[0] is None:
+            entry.pop("sky_mask", None)
+        if _has_prediction(entry):
+            datasets.append(entry)
+    return {**config, "gt": reduced(config["gt"]), "datasets": datasets}
+
+
 def load_config(config_path: str) -> dict:
     """Load and validate configuration from JSON file.
 
@@ -1109,6 +1249,9 @@ def load_config(config_path: str) -> dict:
 
     if "euler_train" in config:
         validate_euler_train_config(config["euler_train"])
+
+    if "experiments" in config:
+        validate_experiments_config(config["experiments"])
 
     DistributionConfig.from_config(config.get("distributions"))
 
@@ -1420,8 +1563,194 @@ def _sky_iou_summary_line(ds_name: str, results: dict) -> str | None:
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(
+class _ArgumentParser(argparse.ArgumentParser):
+    """An argument parser that can raise instead of exiting.
+
+    Experiment ``args`` from the config are parsed with the same parser as the
+    command line; their errors are reported as config errors.
+    """
+
+    raise_errors = False
+
+    def error(self, message):
+        if self.raise_errors:
+            raise ValueError(message)
+        super().error(message)
+
+
+class _Run(NamedTuple):
+    """One evaluation pass: parsed arguments plus what they resolve to."""
+
+    name: str | None
+    args: argparse.Namespace
+    config: dict
+    distribution_config: DistributionConfig | None
+    metric_sets: tuple
+    extra_args: tuple = ()
+
+
+def _finish_args(args: argparse.Namespace) -> None:
+    """Validate and normalize parsed arguments in place.
+
+    Raises:
+        ValueError: Prefixed with the offending flag.
+    """
+    try:
+        validate_sky_depth(args.sky_depth)
+    except ValueError as e:
+        raise ValueError(f"--sky-depth: {e}") from e
+    try:
+        args.eval_name = validate_eval_name(args.eval_name)
+    except ValueError as e:
+        raise ValueError(f"--eval-name: {e}") from e
+
+
+def _prepare_run(
+    args: argparse.Namespace,
+    config: dict,
+    *,
+    name: str | None = None,
+    extra_args: tuple = (),
+) -> _Run:
+    """Resolve the settings of one evaluation pass, before any work starts."""
+    return _Run(
+        name=name,
+        args=args,
+        config=config,
+        distribution_config=_resolve_distribution_config(
+            config.get("distributions"), args
+        ),
+        metric_sets=tuple(resolve_metric_sets(args.domains)),
+        extra_args=extra_args,
+    )
+
+
+def _experiment_runs(
+    parser: _ArgumentParser,
+    argv: list[str],
+    config: dict,
+    *,
+    selected: list[str] | None,
+) -> list[_Run]:
+    """Parse every selected experiment as ``argv`` followed by its ``args``.
+
+    Experiments run in config order. Every one is parsed and validated here,
+    so a mistake in a later experiment stops the run before any work.
+
+    Raises:
+        ValueError: Naming the experiment and the problem.
+    """
+    base = parser.parse_args(argv)
+    runs = []
+    for index, entry in enumerate(config["experiments"]):
+        name = validate_eval_name(entry["name"])
+        if selected and name not in selected:
+            continue
+        extra = [str(value) for value in entry.get("args", [])]
+        modalities = entry.get("modalities")
+        run_config = _experiment_config(config, modalities)
+        parser.raise_errors = True
+        try:
+            if modalities is not None:
+                validate_gt_config(run_config["gt"])
+                if not run_config["datasets"]:
+                    raise ValueError(
+                        "'modalities' leave no dataset with a prediction to evaluate"
+                    )
+                unconfigured = sorted(set(modalities) - _configured_modalities(config))
+                if unconfigured:
+                    print(
+                        f"Warning: experiments[{index}] ({name!r}): modalities "
+                        f"{unconfigured} are not configured, so listing them has "
+                        "no effect",
+                        file=sys.stderr,
+                    )
+            run_args = parser.parse_args([*argv, *extra])
+            if (
+                run_args.eval_name != base.eval_name
+                or run_args.experiments != base.experiments
+            ):
+                raise ValueError(
+                    "'args' cannot set --eval-name or --experiment; the "
+                    "experiment's 'name' names its results"
+                )
+            run_args.eval_name = name
+            _finish_args(run_args)
+            if run_args.sky_iou and _gt_segmentation_entry(run_config["gt"])[1] is None:
+                raise ValueError(
+                    "--sky-iou requires gt.segmentation (or its alias "
+                    "gt.semantic_segmentation), which this experiment does not load"
+                )
+            runs.append(
+                _prepare_run(run_args, run_config, name=name, extra_args=tuple(extra))
+            )
+        except ValueError as e:
+            raise ValueError(f"experiments[{index}] ({name!r}): {e}") from e
+        finally:
+            parser.raise_errors = False
+    return runs
+
+
+def _start_euler_train(config: dict):
+    """Initialize euler-train logging if configured; once for all experiments."""
+    et_config = config.get("euler_train")
+    if et_config is None:
+        return None, False
+    et_dir = Path(et_config["dir"])
+    et_resuming = (et_dir / "meta.json").is_file()
+    et_run = _euler_train.init(dir=et_dir, mode="eval")
+    print(f"euler_train logging enabled -> {et_run.dir}")
+    return et_run, et_resuming
+
+
+def _finish_euler_train(et_run, et_resuming: bool) -> None:
+    if et_run is None:
+        return
+    if et_resuming:
+        et_run.detach()
+        print(f"\neuler_train run detached (run still active): {et_run.run_id}")
+    else:
+        et_run.finish()
+        print(f"\neuler_train run finished: {et_run.run_id}")
+
+
+def _evaluate_experiments(
+    runs: list[_Run], *, package_metadata: dict, et_run=None
+) -> list[str]:
+    """Run each experiment in turn; a failing one does not stop the rest.
+
+    Returns:
+        Names of the experiments that failed.
+    """
+    failed = []
+    for number, run in enumerate(runs, 1):
+        print(f"\n{'#' * 60}\nExperiment {number}/{len(runs)}: {run.name}")
+        print(f"  args: {' '.join(run.extra_args) or '(none)'}\n{'#' * 60}")
+        try:
+            _evaluate(
+                run,
+                package_metadata=package_metadata,
+                et_run=et_run,
+                experiment=run.name,
+            )
+        except SystemExit as e:
+            if e.code not in (None, 0):
+                failed.append(run.name)
+        except Exception:
+            traceback.print_exc()
+            failed.append(run.name)
+        if failed and failed[-1] == run.name:
+            print(f"\nExperiment {run.name!r} failed.", file=sys.stderr)
+
+    print(f"\nExperiments: {len(runs) - len(failed)} of {len(runs)} succeeded")
+    if failed:
+        print(f"Failed: {', '.join(failed)}", file=sys.stderr)
+    return failed
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    """Return the ``euler-eval`` argument parser."""
+    parser = _ArgumentParser(
         description="Evaluate depth, sparse depth, RGB, rays, and points_3d datasets using euler_loading"
     )
     parser.add_argument(
@@ -1604,35 +1933,37 @@ def main():
             "output_file still takes precedence."
         ),
     )
+    parser.add_argument(
+        "--experiment",
+        dest="experiments",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Run only this experiment from the config's 'experiments' section; "
+            "repeatable (default: every experiment)"
+        ),
+    )
+    return parser
 
-    args = parser.parse_args()
-    try:
-        validate_sky_depth(args.sky_depth)
-    except ValueError as e:
-        parser.error(f"--sky-depth: {e}")
-    try:
-        args.eval_name = validate_eval_name(args.eval_name)
-    except ValueError as e:
-        parser.error(f"--eval-name: {e}")
 
-    selected_metric_sets = resolve_metric_sets(args.domains)
+def _evaluate(
+    run: _Run,
+    *,
+    package_metadata: dict,
+    et_run=None,
+    experiment: str | None = None,
+) -> None:
+    """Evaluate every configured prediction dataset with one set of arguments.
 
-    # Emit producer provenance before configuration loading or evaluation work.
-    package_metadata = _log_package_metadata()
-
-    # Load and validate config
-    try:
-        config = load_config(args.config)
-    except (json.JSONDecodeError, ValueError) as e:
-        print(f"Error loading config: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    try:
-        distribution_config = _resolve_distribution_config(
-            config.get("distributions"), args
-        )
-    except ValueError as e:
-        parser.error(str(e))
+    *experiment* is the experiment name when the config defines
+    ``experiments``; it keys the euler-train evaluations and the sanity-check
+    report so experiments do not overwrite each other.
+    """
+    args = run.args
+    config = run.config
+    distribution_config = run.distribution_config
+    selected_metric_sets = run.metric_sets
 
     requested_device = args.device
     args.device = resolve_device(requested_device)
@@ -1709,19 +2040,6 @@ def main():
         print("Sanity checking disabled")
     print("-" * 60)
 
-    # Initialize euler_train logging if configured
-    et_config = config.get("euler_train")
-    et_run = None
-    et_resuming = False
-    if et_config is not None:
-        et_dir = Path(et_config["dir"])
-        et_resuming = (et_dir / "meta.json").is_file()
-        et_run = _euler_train.init(
-            dir=et_dir,
-            mode="eval",
-        )
-        print(f"euler_train logging enabled -> {et_run.dir}")
-    print("-" * 60)
 
     gt = config["gt"]
     protocol_identities = reference_identities(gt)
@@ -1760,6 +2078,7 @@ def main():
     # Evaluate each prediction dataset
     for dataset_config in config["datasets"]:
         ds_name = dataset_config["name"]
+        et_key = ds_name if experiment is None else f"{ds_name}/{experiment}"
         pred_depth_key, pred_depth_config = _prediction_depth_entry(dataset_config)
         has_depth = pred_depth_config is not None
         pred_sky_mask_config = (
@@ -1802,8 +2121,8 @@ def main():
         # Register evaluation as running before work begins
         if et_run is not None:
             et_run.add_evaluation(
-                ds_name,
-                name=ds_name,
+                et_key,
+                name=et_key,
                 status="running",
                 metadata={"package": package_metadata},
             )
@@ -1938,12 +2257,16 @@ def main():
                     method={
                         "depth_alignment": args.depth_alignment,
                         "sky_depth_m": args.sky_depth,
+                        "pred_sky_mask": bool(
+                            pred_sky_mask_path and sky_mask_scores_depth
+                        ),
                         "spatial_alignment": depth_spatial.get("method", "none"),
                     },
                 ),
                 "dataset_info": depth_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
+                    "eval_name": args.eval_name,
                     "modality": "depth",
                     "device": args.device,
                     "gt": {
@@ -2200,11 +2523,15 @@ def main():
                     method={
                         "depth_alignment": args.depth_alignment,
                         "sky_depth_m": args.sky_depth,
+                        "pred_sky_mask": bool(
+                            pred_sky_mask_path and sky_mask_scores_depth
+                        ),
                     },
                 ),
                 "dataset_info": sparse_depth_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
+                    "eval_name": args.eval_name,
                     "modality": "sparse_depth",
                     "device": args.device,
                     "gt": {
@@ -2451,6 +2778,7 @@ def main():
                 "dataset_info": rgb_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
+                    "eval_name": args.eval_name,
                     "modality": "rgb",
                     "device": args.device,
                     "gt": {
@@ -2596,6 +2924,7 @@ def main():
                 "dataset_info": rays_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
+                    "eval_name": args.eval_name,
                     "modality": "rays",
                     "device": args.device,
                     "gt": {
@@ -2771,6 +3100,7 @@ def main():
                 "dataset_info": p3_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
+                    "eval_name": args.eval_name,
                     "modality": "points_3d",
                     "device": args.device,
                     "gt": {
@@ -2968,6 +3298,7 @@ def main():
                 "dataset_info": p3s_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
+                    "eval_name": args.eval_name,
                     "modality": "points_3d",
                     "device": args.device,
                     "gt": {
@@ -3089,7 +3420,7 @@ def main():
         # Log to euler_train
         if et_run is not None and et_eval_datasets:
             et_run.add_evaluation(
-                ds_name,
+                et_key,
                 datasets=et_eval_datasets,
                 # name=ds_name,
                 # status="completed",
@@ -3100,25 +3431,85 @@ def main():
                     }
                 },
             )
-            et_run.finish_evaluation(ds_name)
+            et_run.finish_evaluation(et_key)
 
     # Print sanity check report at the end
     if sanity_checker is not None:
         sanity_checker.print_report()
 
         report = sanity_checker.get_full_report()
-        report_path = Path("sanity_check_report.json")
+        report_path = Path(
+            "sanity_check_report.json"
+            if experiment is None
+            else f"sanity_check_report_{experiment}.json"
+        )
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2)
         print(f"\nSanity check report saved to: {report_path}")
 
-    if et_run is not None:
-        if et_resuming:
-            et_run.detach()
-            print(f"\neuler_train run detached (run still active): {et_run.run_id}")
-        else:
-            et_run.finish()
-            print(f"\neuler_train run finished: {et_run.run_id}")
+
+def main():
+    parser = _build_parser()
+    argv = sys.argv[1:]
+    args = parser.parse_args(argv)
+    try:
+        _finish_args(args)
+    except ValueError as e:
+        parser.error(str(e))
+
+    # Emit producer provenance before configuration loading or evaluation work.
+    package_metadata = _log_package_metadata()
+
+    # Load and validate config
+    try:
+        config = load_config(args.config)
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"Error loading config: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    experiments = config.get("experiments")
+    if experiments is None:
+        if args.experiments:
+            parser.error(
+                "--experiment selects from the config's 'experiments' section, "
+                "which this config does not have"
+            )
+        try:
+            runs = [_prepare_run(args, config)]
+        except ValueError as e:
+            parser.error(str(e))
+    else:
+        if args.eval_name != DEFAULT_EVAL_NAME:
+            parser.error(
+                "--eval-name cannot be combined with the config's 'experiments': "
+                "each experiment's 'name' names its results"
+            )
+        names = [validate_eval_name(entry["name"]) for entry in experiments]
+        unknown = [
+            name for name in (args.experiments or []) if name not in names
+        ]
+        if unknown:
+            parser.error(
+                f"--experiment {', '.join(map(repr, unknown))} is not in the "
+                f"config's experiments ({', '.join(names)})"
+            )
+        try:
+            runs = _experiment_runs(parser, argv, config, selected=args.experiments)
+        except ValueError as e:
+            print(f"Error loading config: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    et_run, et_resuming = _start_euler_train(config)
+    failed = []
+    if experiments is None:
+        _evaluate(runs[0], package_metadata=package_metadata, et_run=et_run)
+    else:
+        failed = _evaluate_experiments(
+            runs, package_metadata=package_metadata, et_run=et_run
+        )
+    _finish_euler_train(et_run, et_resuming)
+    if failed:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

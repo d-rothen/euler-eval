@@ -30,7 +30,7 @@ from .config_paths import (
 
 #: Version of the ``protocol`` block. Renaming or removing a key is a major
 #: bump; adding one is a minor bump.
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 #: Bump whenever a release changes metric values for identical inputs and
 #: settings, and say so in the CHANGELOG. Evaluations with different revisions

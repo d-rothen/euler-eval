@@ -43,6 +43,7 @@ EXPECTED_KEYS = {
         "method.metrics_revision",
         "method.depth_alignment",
         "method.sky_depth_m",
+        "method.pred_sky_mask",
         "method.spatial_alignment",
     },
     "sparsedepth": _reference_keys(*SPARSE_INPUTS) | {
@@ -54,6 +55,7 @@ EXPECTED_KEYS = {
         "method.metrics_revision",
         "method.depth_alignment",
         "method.sky_depth_m",
+        "method.pred_sky_mask",
     },
     "rgb": _reference_keys("depth", "calibration", "segmentation") | {
         "population.samples",
@@ -253,6 +255,7 @@ def test_depth_parameters(monkeypatch, tmp_path, depth_paths):
     assert parameters["method.metrics_revision"] == METRICS_REVISION
     assert parameters["method.depth_alignment"] == "none"
     assert parameters["method.sky_depth_m"] is None
+    assert parameters["method.pred_sky_mask"] is False
     assert parameters["method.spatial_alignment"] == "none"
     # Paths are provenance, not comparison keys.
     assert not any(depth_paths["gt"] in str(value) for value in parameters.values())
@@ -262,9 +265,13 @@ def test_depth_parameters(monkeypatch, tmp_path, depth_paths):
     ("flags", "changed"),
     [
         (("--depth-alignment", "affine"), {"method.depth_alignment"}),
-        (("--sky-depth", "50"), {"method.sky_depth_m"}),
+        # The config has a sky_mask, which both settings then score with.
+        (("--sky-depth", "50"), {"method.sky_depth_m", "method.pred_sky_mask"}),
         (("--mask-sky",), {"population.gt_sky_masking"}),
-        (("--mask-sky-prediction",), {"population.pred_sky_masking"}),
+        (
+            ("--mask-sky-prediction",),
+            {"population.pred_sky_masking", "method.pred_sky_mask"},
+        ),
         (
             ("--benchmark-depth-range", "1", "80"),
             {"population.benchmark_depth_range_m"},
