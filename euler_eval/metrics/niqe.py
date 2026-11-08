@@ -27,23 +27,35 @@ _AGGD_RATIO = gamma(2.0 / _AGGD_SHAPES) ** 2 / (
 )
 
 
-def _to_uint8_rgb(image: np.ndarray) -> np.ndarray:
-    """Validate an evaluator RGB image and restore its 8-bit representation."""
+def _validate_unit_rgb(
+    image: np.ndarray, *, subject: str = "Natural-scene metrics"
+) -> np.ndarray:
+    """Check an evaluator RGB image and return it clipped to ``[0, 1]``.
+
+    ``subject`` names the metrics in error messages. Values may overshoot the
+    range by a rounding tolerance; anything further is rejected.
+    """
     array = np.asarray(image)
     if array.ndim != 3 or array.shape[-1] != 3:
         raise ValueError(
             f"Expected an RGB image with shape (H, W, 3), got {array.shape}"
         )
     if not np.all(np.isfinite(array)):
-        raise ValueError("Natural-scene metrics require finite RGB values")
+        raise ValueError(f"{subject} require finite RGB values")
 
     array = array.astype(np.float64, copy=False)
     tolerance = 1e-6
     if array.size and (
         float(np.min(array)) < -tolerance or float(np.max(array)) > 1.0 + tolerance
     ):
-        raise ValueError("Natural-scene metrics expect RGB values in the [0, 1] range")
-    return np.floor(np.clip(array, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+        raise ValueError(f"{subject} expect RGB values in the [0, 1] range")
+    return np.clip(array, 0.0, 1.0)
+
+
+def _to_uint8_rgb(image: np.ndarray) -> np.ndarray:
+    """Validate an evaluator RGB image and restore its 8-bit representation."""
+    array = _validate_unit_rgb(image)
+    return np.floor(array * 255.0 + 0.5).astype(np.uint8)
 
 
 def _rgb_to_gray_255(image: np.ndarray) -> np.ndarray:

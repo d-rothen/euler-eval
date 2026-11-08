@@ -192,14 +192,27 @@ metrics above remain enabled.
 |---|---|---|
 | NIQE | `rgb.eval.dehazing.niqe` | Natural Image Quality Evaluator; distance from pristine natural-scene statistics (lower is better) |
 | FADE | `rgb.eval.dehazing.fade` | Fog Aware Density Evaluator; perceptual fog density from foggy/fog-free natural-scene models (lower is better) |
+| MUSIQ | `rgb.eval.dehazing.musiq` | Multi-scale image quality transformer with KonIQ-10k weights; predicted perceptual quality, roughly 0–100 (higher is better) |
+| CLIP-IQA | `rgb.eval.dehazing.clipiqa` | CLIP ResNet-50 agreement with "good"/"bad", "sharp"/"blurry" and similar quality prompts, in [0, 1] (higher is better) |
 
-Both metrics are no-reference: each value is computed from the predicted image
-alone, included in `per_file_metrics`, and the dataset value is the arithmetic
-mean of its valid per-image values. NIQE keeps the reference model's 96×96 block
-size and therefore reports no value for images smaller than 96×96. FADE crops
-the bottom and right edges to its 8×8 patch grid and requires at least 16×16
-pixels. Neither metric applies sky mask fills, which would create artificial
-edges and alter the statistics being scored.
+All four metrics are no-reference: each value is computed from the predicted
+image alone, included in `per_file_metrics`, and the dataset value is the
+arithmetic mean of its valid per-image values. NIQE keeps the reference model's
+96×96 block size and therefore reports no value for images smaller than 96×96.
+FADE crops the bottom and right edges to its 8×8 patch grid and requires at
+least 16×16 pixels. MUSIQ and CLIP-IQA score each image at its native
+resolution. None of the metrics applies sky mask fills, which would create
+artificial edges and alter the statistics being scored.
+
+MUSIQ and CLIP-IQA are the `musiq` and `clipiqa` metrics of
+[pyiqa](https://github.com/chaofengc/IQA-PyTorch), an optional dependency
+installed with `pip install "euler-eval[dehazing]"`; `--domain dehazing` stops
+with that instruction before any work when pyiqa is missing. pyiqa is licensed
+for non-commercial use only (PolyForm Noncommercial 1.0.0), unlike euler-eval
+itself. Their networks run on `--device`, are loaded once per RGB evaluation,
+and download their weights on first use into the torch hub cache (`TORCH_HOME`);
+`euler-eval.init` pre-fetches them for offline machines. The installed pyiqa
+version is recorded as `meta.eval_params.metric_set_packages`.
 
 The pristine NIQE parameters and foggy/fog-free FADE parameters are bundled
 from the official LIVE software releases for deterministic offline evaluation;

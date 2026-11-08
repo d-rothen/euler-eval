@@ -56,6 +56,8 @@ from .evaluate import (
 from .metric_sets import (
     DOMAIN_METRIC_SETS,
     available_domains,
+    check_metric_set_requirements,
+    metric_set_package_versions,
     resolve_metric_sets,
     selected_domain_categories,
 )
@@ -498,6 +500,8 @@ for _metric_set in DOMAIN_METRIC_SETS.values():
     for _metric in _metric_set.rgb_no_reference:
         _RGB_EVAL_DESCRIPTIONS[_metric.name] = MetricDescription(
             is_higher_better=_metric.is_higher_better,
+            min_value=_metric.min_value,
+            max_value=_metric.max_value,
             display_name=_metric.display_name,
         )
 
@@ -1652,6 +1656,8 @@ def _prepare_run(
     extra_args: tuple = (),
 ) -> _Run:
     """Resolve the settings of one evaluation pass, before any work starts."""
+    metric_sets = tuple(resolve_metric_sets(args.domains))
+    check_metric_set_requirements(metric_sets)
     return _Run(
         name=name,
         args=args,
@@ -1659,7 +1665,7 @@ def _prepare_run(
         distribution_config=_resolve_distribution_config(
             config.get("distributions"), args
         ),
-        metric_sets=tuple(resolve_metric_sets(args.domains)),
+        metric_sets=metric_sets,
         extra_args=extra_args,
     )
 
@@ -2867,6 +2873,9 @@ def _evaluate(
                         "metric_sets": [
                             metric_set.name for metric_set in selected_metric_sets
                         ],
+                        "metric_set_packages": metric_set_package_versions(
+                            selected_metric_sets
+                        ),
                         "batch_size": args.batch_size,
                         "num_workers": args.num_workers,
                         "benchmark_depth_range": (

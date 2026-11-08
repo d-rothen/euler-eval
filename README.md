@@ -51,6 +51,7 @@ result is self-describing to downstream tools.
 ```bash
 pip install euler-eval                  # core
 pip install "euler-eval[fid]"           # + clean-fid RGB FID backend
+pip install "euler-eval[dehazing]"      # + pyiqa for MUSIQ/CLIP-IQA in --domain dehazing
 pip install "euler-eval[logging]"       # + euler-train experiment logging
 ```
 
@@ -112,7 +113,7 @@ straight out of the archive. Full schema: [Configuration](docs/configuration.md)
 |---|---|---|---|
 | **Depth** | `depth`, `relative_depth`, `affine_depth` | dense GT depth | `absrel`…`delta3`, PSNR/SSIM/LPIPS/FID/KID, surface-normal consistency, depth-edge F1 |
 | **Sparse depth** | `depth` + `gt.sparse_depth` | a LiDAR-style point cloud, projected into the prediction plane | pointwise depth metrics at projected points |
-| **RGB** | `rgb` | GT RGB | PSNR, SSIM, LPIPS, FID, SCE, edge F1, tail errors, HF energy ratio, depth-binned photometric error; optional NIQE/FADE dehazing metrics |
+| **RGB** | `rgb` | GT RGB | PSNR, SSIM, LPIPS, FID, SCE, edge F1, tail errors, HF energy ratio, depth-binned photometric error; optional NIQE/FADE/MUSIQ/CLIP-IQA dehazing metrics |
 | **Rays** | `rays` | GT ray direction map | ρ_A (angular-accuracy AUC), angular error, threshold percentages |
 | **Points-3D** | `points_3d` | GT point map, GT depth unprojected on the fly, or a sparse point cloud | 3D EPE/RMSE/δ, radial-vs-lateral decomposition, true-3D normals and edge F1, Chamfer / F-score |
 
@@ -133,7 +134,7 @@ metric is written under, is in [Metrics](docs/metrics.md).
 | **Per-file + aggregate** | Dataset-level numbers plus per-image metrics in dataset-hierarchy order, in the same file. |
 | **Sanity checks** | Results are validated against configurable thresholds; implausible ranges, degenerate inputs and scale mismatches are reported instead of quietly scored. |
 | **Structured metric names** | Each result carries a `metricSet` envelope declaring its namespace, axes, units and metric directions. |
-| **Composable domains** | `--domain dehazing` supplements the stable core set with prediction-only NIQE and FADE; the registry is ready for additional domains. |
+| **Composable domains** | `--domain dehazing` supplements the stable core set with prediction-only NIQE, FADE, MUSIQ and CLIP-IQA; the registry is ready for additional domains. |
 | **euler-train logging** | Optional: register each evaluation in an experiment run with full package provenance. |
 
 ## In-training validation

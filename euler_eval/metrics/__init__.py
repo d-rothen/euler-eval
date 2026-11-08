@@ -15,7 +15,8 @@ RGB metrics:
 - Tail errors (p95/p99)
 - High-frequency energy ratio
 - Depth-binned photometric error (MAE/MSE per depth bin)
-- Domain-specific no-reference metrics: NIQE and FADE (dehazing)
+- Domain-specific no-reference metrics: NIQE, FADE, MUSIQ and CLIP-IQA
+  (dehazing; MUSIQ and CLIP-IQA need the optional ``pyiqa`` package)
 
 Rays metrics:
 - ρ_A: AUC of angular accuracy curve between predicted and GT ray directions
@@ -52,6 +53,7 @@ from .high_freq_energy import (
     compute_high_freq_energy_comparison,
     compute_high_freq_energy_ratio,
 )
+from .learned_iqa import PyIQAScorer, load_clipiqa, load_musiq
 from .lpips_metric import LPIPSMetric
 from .niqe import compute_niqe
 from .normal_consistency import (
@@ -158,6 +160,9 @@ __all__ = [
     "compute_sce",
     "compute_niqe",
     "compute_fade",
+    "PyIQAScorer",
+    "load_musiq",
+    "load_clipiqa",
     # RGB depth-binned metrics
     "compute_depth_binned_mae",
     "compute_depth_binned_mse",

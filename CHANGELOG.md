@@ -49,6 +49,16 @@ the git history for those.
 
 ### Added
 
+- `--domain dehazing` also scores MUSIQ (`rgb.eval.dehazing.musiq`, KonIQ-10k
+  weights, roughly 0–100) and CLIP-IQA (`rgb.eval.dehazing.clipiqa`, in
+  [0, 1]) per image and as dataset means; higher is better for both. They are
+  computed with [pyiqa](https://github.com/chaofengc/IQA-PyTorch) on `--device`,
+  installed with the new `[dehazing]` extra. pyiqa is licensed for
+  non-commercial use only (PolyForm Noncommercial 1.0.0). Without it,
+  `--domain dehazing` now stops with a usage error that says how to install
+  it, before any work; NIQE and FADE values are unchanged. The pyiqa version is
+  recorded as `meta.eval_params.metric_set_packages`, and `euler-eval.init`
+  pre-fetches the MUSIQ and CLIP-IQA weights when pyiqa is installed.
 - `--missing-segmentation {drop,unmasked}` decides what happens to frames
   without their own GT segmentation, as in MUSES splits that lack some.
   `drop` (the default) leaves them out as before; `unmasked` evaluates them

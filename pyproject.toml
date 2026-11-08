@@ -65,6 +65,9 @@ logging = [
 fid = [
     "clean-fid>=0.1.35",
 ]
+dehazing = [
+    "pyiqa>=0.1.15",
+]
 dev = [
     "pytest>=7.0.0",
     "jsonschema>=4.18",

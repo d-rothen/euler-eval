@@ -5,6 +5,8 @@ This script pre-downloads the model artifacts used by euler-eval:
 - torchvision Inception v3 weights (used by builtin FID/KID)
 - LPIPS AlexNet weights
 - clean-fid inception checkpoint when clean-fid is installed
+- weights of model-backed domain metrics (MUSIQ and CLIP-IQA for
+  ``--domain dehazing``) when their optional packages are installed
 """
 
 from __future__ import annotations
@@ -75,6 +77,41 @@ def _warm_clean_fid() -> str | None:
     return f"clean-fid inception checkpoint: {checkpoint}"
 
 
+def _warm_domain_metrics() -> tuple[list[str], list[str], list[str]]:
+    """Load every model-backed domain metric once so its weights are cached.
+
+    Returns the warmed metrics, the metrics skipped because an optional
+    package is missing, and the failures.
+    """
+    import importlib.util
+
+    from euler_eval.metric_sets import DOMAIN_METRIC_SETS
+
+    warmed: list[str] = []
+    skipped: list[str] = []
+    failures: list[str] = []
+    for metric_set in DOMAIN_METRIC_SETS.values():
+        for metric in metric_set.rgb_no_reference:
+            if metric.load is None:
+                continue
+            label = f"{metric.display_name} weights (--domain {metric_set.name})"
+            missing = [
+                package
+                for package in metric.requires
+                if importlib.util.find_spec(package) is None
+            ]
+            if missing:
+                skipped.append(f"{label}: {', '.join(missing)} not installed")
+                continue
+            try:
+                metric.bind("cpu")
+            except Exception as exc:  # pragma: no cover - environment dependent
+                failures.append(f"{label}: {exc}")
+            else:
+                warmed.append(label)
+    return warmed, skipped, failures
+
+
 def main() -> None:
     """Warm the caches needed for offline evaluation."""
     torch_home, derived_torch_home = _configure_torch_home()
@@ -112,6 +149,12 @@ def main() -> None:
             print("clean-fid not installed; skipping optional clean-fid checkpoint")
         else:
             warmed.append(clean_fid_result)
+
+    domain_warmed, domain_skipped, domain_failures = _warm_domain_metrics()
+    warmed.extend(domain_warmed)
+    failures.extend(domain_failures)
+    for item in domain_skipped:
+        print(f"Skipping optional {item}")
 
     if warmed:
         print("Warmup complete:")

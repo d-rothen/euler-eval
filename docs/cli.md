@@ -17,7 +17,7 @@ validation exits with status `1` before any dataset is opened.
 | `--batch-size` | `int` | `16` | Batch size for metrics that support batching |
 | `--num-workers` | `int` | `4` | Number of data-loading workers |
 | `--verbose`, `-v` | flag | off | Enable verbose output |
-| `--domain` | `{dehazing}` | none | Add a domain-specific metric set to the core metrics; repeatable |
+| `--domain` | `{dehazing}` | none | Add a domain-specific metric set to the core metrics; repeatable. `dehazing` requires the `[dehazing]` extra |
 | `--skip-depth` | flag | off | Skip depth evaluation |
 | `--skip-rgb` | flag | off | Skip RGB evaluation |
 | `--skip-rays` | flag | off | Skip rays (spherical direction map) evaluation |
@@ -88,7 +88,8 @@ euler-eval config.json --depth-alignment affine
 # Use clean-fid for RGB FID
 euler-eval config.json --rgb-fid-backend clean-fid
 
-# Keep all core metrics and add no-reference dehazing metrics (NIQE + FADE)
+# Keep all core metrics and add no-reference dehazing metrics
+# (NIQE, FADE, MUSIQ, CLIP-IQA; needs `pip install "euler-eval[dehazing]"`)
 euler-eval config.json --domain dehazing
 
 # Benchmark depth/RGB metrics within a depth range (near/mid/far bins)
@@ -114,11 +115,14 @@ metrics suited to a particular evaluation domain without removing or changing
 the core results. The flag is repeatable so future domains can be composed in a
 single run.
 
-`--domain dehazing` adds NIQE and FADE under `rgb.eval.dehazing`. Both are
-no-reference metrics: they score each predicted RGB image, do not use the paired
-GT image, and are averaged across valid images for the dataset result. They use
-the full prediction even with `--mask-sky`, because filling masked pixels would
-change the natural-scene statistics being measured. See [Metrics](metrics.md#dehazing-domain).
+`--domain dehazing` adds NIQE, FADE, MUSIQ and CLIP-IQA under
+`rgb.eval.dehazing`. All four are no-reference metrics: they score each
+predicted RGB image, do not use the paired GT image, and are averaged across
+valid images for the dataset result. They use the full prediction even with
+`--mask-sky`, because filling masked pixels would change the image statistics
+being measured. MUSIQ and CLIP-IQA are computed with the optional `pyiqa`
+package (`pip install "euler-eval[dehazing]"`); without it, the run stops with
+a usage error before any dataset is opened. See [Metrics](metrics.md#dehazing-domain).
 
 ## What a run prints
 
@@ -170,8 +174,9 @@ euler-eval.init
 ```
 
 This pre-downloads the torchvision AlexNet and Inception v3 weights (used by
-LPIPS and the builtin FID/KID), the LPIPS AlexNet weights, and the clean-fid
-Inception checkpoint if `clean-fid` is installed. `TORCH_HOME` is derived from
+LPIPS and the builtin FID/KID), the LPIPS AlexNet weights, the clean-fid
+Inception checkpoint if `clean-fid` is installed, and the MUSIQ and CLIP-IQA
+weights used by `--domain dehazing` if `pyiqa` is installed. `TORCH_HOME` is derived from
 `HF_HOME` when it is not set explicitly, so pointing `HF_HOME` at the shared
 cache is usually enough.
 

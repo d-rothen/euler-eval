@@ -2750,7 +2750,7 @@ def evaluate_rgb_samples(
             for pixels within this range, subdivided into square-root-scaled bins.
         domains: Optional additive metric-domain names. The ``core`` metric set
             is always evaluated. For example, ``("dehazing",)`` adds the
-            prediction-only NIQE and FADE metrics.
+            prediction-only NIQE, FADE, MUSIQ and CLIP-IQA metrics.
 
     Returns:
         Dictionary containing aggregate and per-file metrics, and
@@ -2810,6 +2810,26 @@ def evaluate_rgb_samples(
         print(f"Warning: Failed to initialize LPIPS metric: {exc}")
         lpips_metric = None
     fid_metric = FIDKIDMetric(device=device) if fid_backend == "builtin" else None
+
+    # Model-backed domain metrics load their networks once, on this device.
+    # A domain the caller asked for must not silently lose metrics, so load
+    # failures stop the evaluation.
+    domain_scorers = {}
+    for metric_set in domain_metric_sets:
+        for metric in metric_set.rgb_no_reference:
+            label = f"{metric_set.name}.{metric.name}"
+            if metric.load is not None:
+                print(f"Loading {metric.display_name} ({label}) on {device}...")
+            try:
+                scorer = metric.bind(device)
+            except ImportError:
+                raise
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to load {label}: {exc}. Offline machines need "
+                    "the model weights cached first; see `euler-eval.init`."
+                ) from exc
+            domain_scorers[(metric_set.category, metric.name)] = scorer
 
     psnr_values = []
     ssim_values = []
@@ -2950,8 +2970,9 @@ def evaluate_rgb_samples(
 
                 # Domain metrics are no-reference measures of the prediction.
                 # They intentionally use the unmasked prediction: filling a
-                # masked region would alter the natural-scene statistics that
-                # NIQE and FADE are designed to measure.
+                # masked region would add artificial edges and flat areas that
+                # change the image statistics and perceived quality these
+                # metrics measure.
                 domain_metrics = {}
                 for metric_set in domain_metric_sets:
                     category_metrics = {}
@@ -2959,7 +2980,7 @@ def evaluate_rgb_samples(
                         value = _safe_compute(
                             f"{metric_set.name}.{metric.name}",
                             entry_id,
-                            metric.compute,
+                            domain_scorers[(metric_set.category, metric.name)],
                             img_pred,
                         )
                         value = _none_if_nan(value)
