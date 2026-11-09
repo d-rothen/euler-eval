@@ -303,6 +303,16 @@ _GT_ONLY_KEYS = (
     "camera_extrinsics",
     "lidar_extrinsics",
 )
+#: Every ``gt`` key that configures an input, as ``experiments[].gt_modalities``
+#: may list them. Other ``gt`` keys, such as ``name``, are always kept.
+_GT_INPUT_KEYS = ("rgb", "depth", "rays", "points_3d", *_GT_ONLY_KEYS)
+#: The GT inputs that can score each prediction modality.
+_GT_FOR_PREDICTION = {
+    "depth": ("depth", "sparse_depth"),
+    "rgb": ("rgb", "input_rgb"),
+    "rays": ("rays",),
+    "points_3d": ("points_3d", "depth", "sparse_depth"),
+}
 
 # Downstream eval consumers validate metricSet.metricNamespace with a stricter
 # first-segment rule than euler_metric_naming's modality validator. Keep the
@@ -1051,19 +1061,7 @@ def validate_gt_config(gt: dict) -> None:
 
     _gt_segmentation_entry(gt)
 
-    for modality in (
-        "rgb",
-        "input_rgb",
-        "depth",
-        "sparse_depth",
-        "rays",
-        "points_3d",
-        *GT_SEGMENTATION_KEYS,
-        "calibration",
-        "intrinsics",
-        "camera_extrinsics",
-        "lidar_extrinsics",
-    ):
+    for modality in _GT_INPUT_KEYS:
         if modality in gt and "path" in gt[modality]:
             p = normalize_modality_path(
                 gt[modality]["path"],
@@ -1158,11 +1156,11 @@ def validate_experiments_config(experiments) -> None:
         label = f"experiments[{index}]"
         if not isinstance(entry, dict):
             raise ValueError(f"{label} must be an object with 'name' and 'args'")
-        unknown = sorted(set(entry) - {"name", "args", "modalities"})
+        unknown = sorted(set(entry) - {"name", "args", "modalities", "gt_modalities"})
         if unknown:
             raise ValueError(
-                f"{label} has unknown keys {unknown}; only 'name', 'args' and "
-                "'modalities' are supported"
+                f"{label} has unknown keys {unknown}; only 'name', 'args', "
+                "'modalities' and 'gt_modalities' are supported"
             )
         if not isinstance(entry.get("name"), str):
             raise ValueError(f"{label}.name must be a string")
@@ -1187,6 +1185,31 @@ def validate_experiments_config(experiments) -> None:
             )
         if "modalities" in entry:
             _validate_experiment_modalities(entry["modalities"], label)
+        if "gt_modalities" in entry:
+            _validate_experiment_gt_modalities(entry["gt_modalities"], label)
+
+
+def _validate_experiment_gt_modalities(gt_modalities, label: str) -> None:
+    if (
+        not isinstance(gt_modalities, list)
+        or not gt_modalities
+        or not all(isinstance(name, str) for name in gt_modalities)
+    ):
+        raise ValueError(
+            f"{label}.gt_modalities must be a non-empty array of gt keys, "
+            'e.g. ["input_rgb"]'
+        )
+    for name in gt_modalities:
+        if name not in _GT_INPUT_KEYS:
+            raise ValueError(
+                f"{label}.gt_modalities: unknown gt input {name!r}; expected "
+                f"one of {', '.join(_GT_INPUT_KEYS)}"
+            )
+    duplicates = sorted(
+        {name for name in gt_modalities if gt_modalities.count(name) > 1}
+    )
+    if duplicates:
+        raise ValueError(f"{label}.gt_modalities lists {duplicates} more than once")
 
 
 def _validate_experiment_modalities(modalities, label: str) -> None:
@@ -1203,8 +1226,7 @@ def _validate_experiment_modalities(modalities, label: str) -> None:
         if name in _GT_ONLY_KEYS:
             raise ValueError(
                 f"{label}.modalities: {name!r} is a GT input; 'modalities' selects "
-                "prediction modalities, and GT inputs are used as configured "
-                "(flags such as --mask-sky decide which ones are read)"
+                "prediction modalities, and 'gt_modalities' selects GT inputs"
             )
         if name not in _EXPERIMENT_MODALITIES:
             covered_by = _MODALITY_OF_CONFIG_KEY.get(name)
@@ -1233,14 +1255,32 @@ def _configured_modalities(config: dict) -> set[str]:
     }
 
 
-def _experiment_config(config: dict, modalities: list[str] | None) -> dict:
-    """Return *config* with only the prediction modalities an experiment lists.
+def _experiment_config(
+    config: dict,
+    modalities: list[str] | None,
+    gt_modalities: list[str] | None = None,
+) -> dict:
+    """Return *config* with only the modalities an experiment lists.
 
-    Unlisted ``datasets[]`` entries are left out, as if they were not
-    configured; the ``gt`` section is unchanged. A dataset left without a
-    prediction is not evaluated, and a ``sky_mask`` is dropped with the depth
-    prediction it belongs to.
+    ``modalities`` selects prediction modalities: unlisted ``datasets[]``
+    entries are left out, as if they were not configured. A dataset left
+    without a prediction is not evaluated, and a ``sky_mask`` is dropped with
+    the depth prediction it belongs to. ``gt_modalities`` selects ``gt``
+    inputs the same way; either segmentation key keeps the GT segmentation,
+    and keys that are not inputs (``name``) stay.
     """
+    if gt_modalities is not None:
+        keep_gt = set(gt_modalities)
+        if keep_gt & set(GT_SEGMENTATION_KEYS):
+            keep_gt |= set(GT_SEGMENTATION_KEYS)
+        config = {
+            **config,
+            "gt": {
+                key: value
+                for key, value in config["gt"].items()
+                if key not in _GT_INPUT_KEYS or key in keep_gt
+            },
+        }
     if modalities is None:
         return config
     keep = set(modalities)
@@ -1719,7 +1759,8 @@ def _experiment_runs(
             continue
         extra = [str(value) for value in entry.get("args", [])]
         modalities = entry.get("modalities")
-        run_config = _experiment_config(config, modalities)
+        gt_modalities = entry.get("gt_modalities")
+        run_config = _experiment_config(config, modalities, gt_modalities)
         parser.raise_errors = True
         try:
             if modalities is not None:
@@ -1735,6 +1776,8 @@ def _experiment_runs(
                         "no effect",
                         file=sys.stderr,
                     )
+            if gt_modalities is not None:
+                _check_experiment_gt(config, run_config, gt_modalities, index, name)
             run_args = parser.parse_args([*argv, *extra])
             if (
                 run_args.eval_name != base.eval_name
@@ -1746,6 +1789,15 @@ def _experiment_runs(
                 )
             run_args.eval_name = name
             _finish_args(run_args)
+            segmentation_left_out = (
+                _gt_segmentation_entry(config["gt"])[1] is not None
+                and _gt_segmentation_entry(run_config["gt"])[1] is None
+            )
+            if run_args.mask_sky and segmentation_left_out:
+                raise ValueError(
+                    "--mask-sky requires gt.segmentation, which 'gt_modalities' "
+                    "leaves out"
+                )
             if run_args.sky_iou and _gt_segmentation_entry(run_config["gt"])[1] is None:
                 raise ValueError(
                     "--sky-iou requires gt.segmentation (or its alias "
@@ -1759,6 +1811,52 @@ def _experiment_runs(
         finally:
             parser.raise_errors = False
     return runs
+
+
+def _check_experiment_gt(
+    config: dict, run_config: dict, gt_modalities: list[str], index: int, name: str
+) -> None:
+    """Validate an experiment's ``gt`` after ``gt_modalities`` filtered it.
+
+    Raises:
+        ValueError: If the filtered ``gt`` is invalid or leaves no prediction
+            a GT input to be scored against.
+    """
+    label = f"experiments[{index}] ({name!r})"
+    configured = {key for key in config["gt"] if key in _GT_INPUT_KEYS}
+    unconfigured = sorted(
+        key
+        for key in set(gt_modalities) - configured
+        if not (key in GT_SEGMENTATION_KEYS and configured & set(GT_SEGMENTATION_KEYS))
+    )
+    if unconfigured:
+        print(
+            f"Warning: {label}: gt_modalities {unconfigured} are not configured "
+            "in gt, so listing them has no effect",
+            file=sys.stderr,
+        )
+    try:
+        validate_gt_config(run_config["gt"])
+    except ValueError as e:
+        raise ValueError(f"'gt_modalities' leave an invalid gt section: {e}") from e
+
+    kept = set(run_config["gt"])
+    scorable = []
+    for modality in sorted(_configured_modalities(run_config) & set(_GT_FOR_PREDICTION)):
+        references = _GT_FOR_PREDICTION[modality]
+        if any(key in kept for key in references):
+            scorable.append(modality)
+        elif any(key in configured for key in references):
+            print(
+                f"Warning: {label}: gt_modalities leave {modality} predictions "
+                "without a GT input, so they are not evaluated (add "
+                "'modalities' to leave them out)",
+                file=sys.stderr,
+            )
+    if not scorable:
+        raise ValueError(
+            "'gt_modalities' leave no prediction a GT input to be scored against"
+        )
 
 
 def _start_euler_train(config: dict):
