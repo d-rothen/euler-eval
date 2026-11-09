@@ -61,12 +61,13 @@ shorter:
 
 ## `gt` section
 
-At least one of `rgb`, `depth`, `sparse_depth`, `rays`, or `points_3d` is
-required.
+At least one of `rgb`, `input_rgb`, `depth`, `sparse_depth`, `rays`, or
+`points_3d` is required.
 
 | Field | Required | Description |
 |---|---|---|
-| `gt.rgb.path` | no\* | GT RGB dataset |
+| `gt.rgb.path` | no\* | GT RGB dataset: the clear reference for full-reference RGB metrics |
+| `gt.input_rgb.path` | no\* | The degraded input the RGB predictions restore (hazy images for dehazing); see [RGB references](#rgb-references) |
 | `gt.depth.path` | no\* | GT dense depth dataset |
 | `gt.sparse_depth.path` | no\* | Sparse pointcloud GT, `(N,C)` points whose first columns are `x,y,z` in metres |
 | `gt.rays.path` | no\* | GT ray direction map dataset |
@@ -79,7 +80,34 @@ required.
 | `gt.lidar_extrinsics.path` | no | Optional lidar pose in a shared frame; composed with `gt.camera_extrinsics` |
 | `gt.name` | no | Display name for ground truth (default `"GT"`) |
 
-\* At least one of the five modality entries must be present.
+\* At least one of the six modality entries must be present.
+
+### RGB references
+
+An `rgb` prediction is evaluated against `gt.rgb`, `gt.input_rgb`, or both,
+and each reference enables the metrics that can use it:
+
+| Configured | Full-reference metrics (PSNR, SSIM, LPIPS, FID, SCE, edge F1, tail errors, HF energy, depth-binned, benchmark bins) | A `--domain`'s no-reference metrics (NIQE, FADE, MUSIQ, CLIP-IQA) | Its input-referenced metrics (Hautière e, r̄, σ) |
+|---|---|---|---|
+| `gt.rgb` | ✓ | ✓ | – |
+| `gt.input_rgb` | – | ✓ | ✓ |
+| both | ✓ | ✓ | ✓ |
+
+Full-reference metrics are never computed against the degraded input: scored
+against it, PSNR and its kin reward a restoration for changing nothing. So a
+real-world hazy set without clear images is configured with `gt.input_rgb`
+alone. `gt.depth`, `gt.calibration` and GT segmentation serve only the
+full-reference metrics, so RGB does not read them without `gt.rgb`, and
+`--mask-sky` does not apply to it.
+
+`gt.input_rgb` is an RGB dataset: its metadata is read from the `rgb` scope,
+like `gt.rgb`, unless the path selects another with `#scope=`. Its frames are
+paired with the prediction by hierarchy path and file ID; with both references
+configured, a frame needs both, and the run prints how many pairs the input
+lacked. When the input and the prediction differ in size, input-referenced
+metrics upscale the smaller one onto the other's grid with bilinear
+interpolation (the prediction's grid wins a tie of pixel counts); the other
+metrics are unaffected.
 
 ### GT segmentation
 
@@ -374,8 +402,9 @@ key, e.g. `"sparse_depth": { "path": "/data/capture.zip:test#scope=lidar" }`.
 GT segmentation is the exception: under either of its keys it also finds a
 scope named after the other key, as described in [GT segmentation](#gt-segmentation).
 
-Regular modalities (`rgb`, `depth`, `rays`, `points_3d`, `sparse_depth`, GT
-segmentation and a predicted `sky_mask`) participate in file-ID intersection;
+Regular modalities (`rgb`, `input_rgb`, `depth`, `rays`, `points_3d`,
+`sparse_depth`, GT segmentation and a predicted `sky_mask`) participate in
+file-ID intersection;
 calibration and pose data (`intrinsics`, `calibration`, `camera_extrinsics`,
 `lidar_extrinsics`) are loaded hierarchically and do not. A hierarchical file
 applies to every frame at or below its folder, which suits one calibration per

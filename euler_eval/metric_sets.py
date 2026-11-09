@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 
 import numpy as np
 
 from .metrics.fade import compute_fade
+from .metrics.hautiere import load_hautiere
 from .metrics.learned_iqa import load_clipiqa, load_musiq
 from .metrics.niqe import compute_niqe
 
@@ -56,9 +57,46 @@ class NoReferenceRGBMetric:
 
 
 @dataclass(frozen=True)
+class MetricOutput:
+    """One scalar reported by a multi-output metric."""
+
+    name: str
+    display_name: str
+    is_higher_better: bool
+    min_value: float | None = None
+    max_value: float | None = None
+    scale: str | None = None
+
+
+@dataclass(frozen=True)
+class InputReferenceRGBMetric:
+    """Scalars that score a prediction against the degraded input it restores.
+
+    They need ``gt.input_rgb`` and are not computed without it. ``load`` is
+    called once per evaluation with the torch device and returns a function
+    of ``(prediction, input)``, both ``(H, W, 3)`` RGB on one pixel grid, that
+    returns a value for every name in ``outputs``.
+    """
+
+    name: str
+    outputs: tuple[MetricOutput, ...]
+    load: Callable[
+        [str], Callable[[np.ndarray, np.ndarray], Mapping[str, float]]
+    ]
+
+    def bind(
+        self, device: str
+    ) -> Callable[[np.ndarray, np.ndarray], Mapping[str, float]]:
+        """Return the per-image scorer for one evaluation on ``device``."""
+        return self.load(device)
+
+
+@dataclass(frozen=True)
 class MetricSet:
     """Metrics contributed by a named core or domain set.
 
+    ``rgb_no_reference`` metrics score the prediction alone and
+    ``rgb_input_reference`` metrics score it against ``gt.input_rgb``.
     ``extra`` is the euler-eval pip extra that installs the optional packages
     its metrics require.
     """
@@ -66,6 +104,7 @@ class MetricSet:
     name: str
     category: str | None = None
     rgb_no_reference: tuple[NoReferenceRGBMetric, ...] = ()
+    rgb_input_reference: tuple[InputReferenceRGBMetric, ...] = ()
     extra: str | None = None
 
 
@@ -102,6 +141,33 @@ DEHAZING_METRIC_SET = MetricSet(
             is_higher_better=True,
             min_value=0.0,
             max_value=1.0,
+        ),
+    ),
+    rgb_input_reference=(
+        InputReferenceRGBMetric(
+            name="hautiere",
+            outputs=(
+                MetricOutput(
+                    name="hautiere_e",
+                    display_name="Hautière e",
+                    is_higher_better=True,
+                ),
+                MetricOutput(
+                    name="hautiere_r",
+                    display_name="Hautière r̄",
+                    is_higher_better=True,
+                    min_value=0.0,
+                ),
+                MetricOutput(
+                    name="hautiere_sigma",
+                    display_name="Hautière σ",
+                    is_higher_better=False,
+                    min_value=0.0,
+                    max_value=100.0,
+                    scale="percentage",
+                ),
+            ),
+            load=load_hautiere,
         ),
     ),
     extra="dehazing",

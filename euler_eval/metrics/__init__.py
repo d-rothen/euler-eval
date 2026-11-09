@@ -17,6 +17,8 @@ RGB metrics:
 - Depth-binned photometric error (MAE/MSE per depth bin)
 - Domain-specific no-reference metrics: NIQE, FADE, MUSIQ and CLIP-IQA
   (dehazing; MUSIQ and CLIP-IQA need the optional ``pyiqa`` package)
+- Domain-specific input-referenced metrics: Hautière's e, r̄ and σ
+  (dehazing; scored against the degraded input)
 
 Rays metrics:
 - ρ_A: AUC of angular accuracy curve between predicted and GT ray directions
@@ -48,6 +50,7 @@ from .fade import compute_fade
 from .fid_kid import FIDKIDMetric, compute_clean_fid
 from .gpu_depth_batch import GPUDepthMetricsBatcher
 from .gpu_image_batch import GPUImageMetricsBatcher
+from .hautiere import HautiereScorer, compute_hautiere, load_hautiere
 from .high_freq_energy import (
     aggregate_high_freq_metrics,
     compute_high_freq_energy_comparison,
@@ -163,6 +166,9 @@ __all__ = [
     "PyIQAScorer",
     "load_musiq",
     "load_clipiqa",
+    "HautiereScorer",
+    "compute_hautiere",
+    "load_hautiere",
     # RGB depth-binned metrics
     "compute_depth_binned_mae",
     "compute_depth_binned_mse",

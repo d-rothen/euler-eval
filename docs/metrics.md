@@ -204,6 +204,47 @@ least 16×16 pixels. MUSIQ and CLIP-IQA score each image at its native
 resolution. None of the metrics applies sky mask fills, which would create
 artificial edges and alter the statistics being scored.
 
+With [`gt.input_rgb`](configuration.md#rgb-references) configured, the domain
+also scores each restored image against the hazy input it was computed from:
+
+| Metric | Key | Description |
+|---|---|---|
+| Hautière e | `rgb.eval.dehazing.hautiere_e` | Rate of new visible edges, `(n_r − n_o) / n_o` (higher is better; no value when the input has no visible edge) |
+| Hautière r̄ | `rgb.eval.dehazing.hautiere_r` | Geometric mean of the gradient-magnitude ratios restored / input at the restored image's visible edges (higher is better; 1 is no change) |
+| Hautière σ | `rgb.eval.dehazing.hautiere_sigma` | Percentage of pixels that are black or white after restoration but were not before (lower is better) |
+
+These are the descriptors of Hautière, Tarel, Aubert and Dumont, ["Blind
+contrast enhancement assessment by gradient ratioing at visible
+edges"](https://www.ias-iss.org/ojs/IAS/article/view/834/737), Image Analysis &
+Stereology 27 (2008). Visible edges follow the implementation that paper
+refers to (Hautière, Aubert and Jourlin, Traitement du Signal 23, 2006):
+Köhler's threshold selection in sliding windows that advance by half a window,
+on the couples of the half 4-neighbourhood, with Weber contrast; a window whose
+best border has contrast above 5 % marks that border's pixels. The papers leave
+some details open, and this implementation fixes them as follows:
+
+- 7 × 7 windows (the papers name 7 × 7 or 9 × 9) advancing 3 pixels, plus
+  windows flush with the right and bottom borders;
+- both pixels of a border couple are visible-edge pixels;
+- the gradient is the Sobel magnitude, and r̄ averages over the restored
+  image's visible-edge pixels where both gradients are non-zero;
+- images are rounded to 8 bits and converted to grey with MATLAB's `rgb2gray`
+  weights, as for NIQE; black and white are grey 0 and 255.
+
+Values are comparable between euler-eval evaluations; other implementations of
+these descriptors make different choices, so published numbers may not match.
+The prediction and its input must be on one pixel grid; when their sizes
+differ, the smaller one is upscaled bilinearly onto the other's
+(`protocol.parameters["method.input_alignment"]` records which). Scoring the
+input itself as a prediction gives e = 0, r̄ = 1, σ = 0, a useful check of a
+configuration. e and r̄ reward any contrast gain, including amplified noise
+and halos, and σ only partly counters that: read them next to FADE and NIQE,
+not alone.
+
+The descriptors run in torch on `--device`. Köhler's per-window contrast
+curves are accumulated in exact integer arithmetic, so CPU and CUDA give
+identical values.
+
 MUSIQ and CLIP-IQA are the `musiq` and `clipiqa` metrics of
 [pyiqa](https://github.com/chaofengc/IQA-PyTorch), an optional dependency
 installed with `pip install "euler-eval[dehazing]"`; `--domain dehazing` stops

@@ -59,7 +59,7 @@ EXPECTED_KEYS = {
         "method.sky_depth_m",
         "method.pred_sky_mask",
     },
-    "rgb": _reference_keys("depth", "calibration", "segmentation") | {
+    "rgb": _reference_keys("input_rgb", "depth", "calibration", "segmentation") | {
         "population.samples",
         "population.gt_sky_masking",
         "population.missing_segmentation",
@@ -68,6 +68,7 @@ EXPECTED_KEYS = {
         "method.metrics_revision",
         "method.fid_backend",
         "method.spatial_alignment",
+        "method.input_alignment",
     },
     "rays": _reference_keys("calibration") | {
         "population.samples",
@@ -404,6 +405,8 @@ def test_rgb_rays_and_points_3d_parameters(monkeypatch, tmp_path):
     assert rgb["population.samples"] == 3
     assert rgb["reference.calibration.dataset"] == "calib"
     assert rgb["reference.depth.dataset"] is None
+    assert rgb["reference.input_rgb.dataset"] is None
+    assert rgb["method.input_alignment"] is None
 
     rays = parameters(paths["pred_rays"])
     assert set(rays) == EXPECTED_KEYS["rays"]

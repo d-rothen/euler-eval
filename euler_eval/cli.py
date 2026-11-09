@@ -138,10 +138,11 @@ _RGB_CORE_CATEGORIES = (
 )
 
 
-def _rgb_category_axis(domains=None) -> AxisDeclaration:
+def _rgb_category_axis(domains=None, *, full_reference: bool = True) -> AxisDeclaration:
+    core = _RGB_CORE_CATEGORIES if full_reference else ()
     return AxisDeclaration(
         position=0,
-        values=(*_RGB_CORE_CATEGORIES, *selected_domain_categories(domains)),
+        values=(*core, *selected_domain_categories(domains)),
         optional=True,
         description="Metric category",
     )
@@ -229,9 +230,12 @@ def _with_sky_segmentation_axes(
 
 
 def _rgb_eval_axes(
-    *, benchmark: bool = False, domains=None
+    *, benchmark: bool = False, domains=None, full_reference: bool = True
 ) -> dict[str, AxisDeclaration]:
-    axes = {"category": _rgb_category_axis(domains)}
+    """Axes of ``rgb.eval``; without gt.rgb only domain categories exist."""
+    axes = {
+        "category": _rgb_category_axis(domains, full_reference=full_reference)
+    }
     if benchmark:
         axes["bin"] = _RGB_BENCHMARK_BIN_AXIS
     return axes
@@ -292,6 +296,7 @@ _MODALITY_OF_CONFIG_KEY = {
 }
 _GT_ONLY_KEYS = (
     "sparse_depth",
+    "input_rgb",
     *GT_SEGMENTATION_KEYS,
     "calibration",
     "intrinsics",
@@ -504,6 +509,15 @@ for _metric_set in DOMAIN_METRIC_SETS.values():
             max_value=_metric.max_value,
             display_name=_metric.display_name,
         )
+    for _metric in _metric_set.rgb_input_reference:
+        for _output in _metric.outputs:
+            _RGB_EVAL_DESCRIPTIONS[_output.name] = MetricDescription(
+                is_higher_better=_output.is_higher_better,
+                scale=_output.scale,
+                min_value=_output.min_value,
+                max_value=_output.max_value,
+                display_name=_output.display_name,
+            )
 
 _RAYS_EVAL_DESCRIPTIONS = {
     "rho_a.mean": MetricDescription(
@@ -724,6 +738,14 @@ def _resolve_distribution_config(value, args) -> DistributionConfig | None:
         enabled = value is True or isinstance(value, dict) or bool(overrides)
     settings.update(overrides)
     return DistributionConfig.from_config(settings if enabled else False)
+
+
+def _without_inputs(identities: dict, keys: tuple[str, ...]) -> dict:
+    """Return protocol *identities* with *keys* recorded as not configured."""
+    return {
+        **identities,
+        **{key: {"dataset": None, "scope": None, "split": None} for key in keys},
+    }
 
 
 def _get_version() -> str:
@@ -998,6 +1020,7 @@ def validate_gt_config(gt: dict) -> None:
         ValueError: If required fields are missing or paths do not exist.
     """
     has_rgb = "rgb" in gt and "path" in gt.get("rgb", {})
+    has_input_rgb = "input_rgb" in gt and "path" in gt.get("input_rgb", {})
     has_depth = "depth" in gt and "path" in gt.get("depth", {})
     has_sparse_depth = "sparse_depth" in gt and "path" in gt.get("sparse_depth", {})
     has_rays = "rays" in gt and "path" in gt.get("rays", {})
@@ -1009,14 +1032,15 @@ def validate_gt_config(gt: dict) -> None:
 
     if (
         not has_rgb
+        and not has_input_rgb
         and not has_depth
         and not has_sparse_depth
         and not has_rays
         and not has_points_3d
     ):
         raise ValueError(
-            "gt must have at least one of 'rgb.path', 'depth.path', "
-            "'sparse_depth.path', 'rays.path', or 'points_3d.path'"
+            "gt must have at least one of 'rgb.path', 'input_rgb.path', "
+            "'depth.path', 'sparse_depth.path', 'rays.path', or 'points_3d.path'"
         )
 
     if has_sparse_depth and (not has_intrinsics or not has_camera_extrinsics):
@@ -1029,6 +1053,7 @@ def validate_gt_config(gt: dict) -> None:
 
     for modality in (
         "rgb",
+        "input_rgb",
         "depth",
         "sparse_depth",
         "rays",
@@ -1479,6 +1504,7 @@ def print_results(results: dict, title: str) -> None:
 _PAIRED_OPTIONAL_INPUTS = {
     "segmentation": (("segmentation_path", "segmentation_split"), "GT segmentation"),
     "pred_sky_mask": (("pred_sky_mask_path", "pred_sky_mask_split"), "sky_mask"),
+    "input": (("input_rgb_path", "input_rgb_split"), "gt.input_rgb"),
 }
 
 
@@ -2103,6 +2129,7 @@ def _evaluate(
     gt_depth_path = gt.get("depth", {}).get("path")
     gt_sparse_depth_path = gt.get("sparse_depth", {}).get("path")
     gt_rgb_path = gt.get("rgb", {}).get("path")
+    gt_input_rgb_path = gt.get("input_rgb", {}).get("path")
     gt_rays_path = gt.get("rays", {}).get("path")
     gt_points_3d_path = gt.get("points_3d", {}).get("path")
     calibration_path = gt.get("calibration", {}).get("path")
@@ -2113,6 +2140,7 @@ def _evaluate(
     gt_depth_split = gt.get("depth", {}).get("split")
     gt_sparse_depth_split = gt.get("sparse_depth", {}).get("split")
     gt_rgb_split = gt.get("rgb", {}).get("split")
+    gt_input_rgb_split = gt.get("input_rgb", {}).get("split")
     gt_rays_split = gt.get("rays", {}).get("split")
     gt_points_3d_split = gt.get("points_3d", {}).get("split")
     calibration_split = gt.get("calibration", {}).get("split")
@@ -2739,27 +2767,51 @@ def _evaluate(
 
         # -- RGB evaluation --
         rgb_dataset = None
-        if has_rgb and not args.skip_rgb:
+        # gt.rgb (clear) enables the full-reference metrics, gt.input_rgb
+        # (degraded input) the input-referenced ones; either is enough.
+        rgb_full_reference = gt_rgb_path is not None
+        if (
+            has_rgb
+            and (rgb_full_reference or gt_input_rgb_path is not None)
+            and not args.skip_rgb
+        ):
             pred_rgb_path = dataset_config["rgb"]["path"]
             pred_rgb_split = dataset_config["rgb"].get("split")
             print(f"\n[RGB] Evaluating: '{ds_name}'")
-            print(f"  GT:   {gt_rgb_path}")
-            print(f"  Pred: {pred_rgb_path}")
+            if rgb_full_reference:
+                print(f"  GT:    {gt_rgb_path}")
+            if gt_input_rgb_path is not None:
+                print(f"  Input: {gt_input_rgb_path}")
+            print(f"  Pred:  {pred_rgb_path}")
+            if args.mask_sky and not rgb_full_reference:
+                print(
+                    "  Note: --mask-sky applies to full-reference metrics, which "
+                    "need gt.rgb; RGB reads no segmentation."
+                )
 
+            # GT depth, calibration and segmentation serve only the
+            # full-reference metrics, so they are not paired without gt.rgb
+            # and cannot drop frames from an input-referenced evaluation.
             rgb_dataset, _ = _build_eval_dataset(
                 build_rgb_eval_dataset,
                 dict(
                     gt_rgb_path=gt_rgb_path,
                     pred_rgb_path=pred_rgb_path,
-                    gt_depth_path=gt_depth_path,
-                    calibration_path=calibration_path,
-                    segmentation_path=segmentation_path,
+                    gt_depth_path=gt_depth_path if rgb_full_reference else None,
+                    calibration_path=(
+                        calibration_path if rgb_full_reference else None
+                    ),
+                    segmentation_path=(
+                        segmentation_path if rgb_full_reference else None
+                    ),
                     gt_rgb_split=gt_rgb_split,
                     pred_rgb_split=pred_rgb_split,
                     gt_depth_split=gt_depth_split,
                     calibration_split=calibration_split,
                     segmentation_split=segmentation_split,
                     segmentation_modality_key=segmentation_key or "segmentation",
+                    input_rgb_path=gt_input_rgb_path,
+                    input_rgb_split=gt_input_rgb_split,
                 ),
                 ds_name=ds_name,
                 missing_segmentation=args.missing_segmentation,
@@ -2811,8 +2863,9 @@ def _evaluate(
                 producer_version=_get_version(),
                 modalities=("rgb",),
                 axes=_rgb_eval_axes(
-                    benchmark=has_benchmark,
+                    benchmark=has_benchmark and rgb_full_reference,
                     domains=args.domains,
+                    full_reference=rgb_full_reference,
                 ),
                 descriptions=_RGB_EVAL_DESCRIPTIONS,
             )
@@ -2826,21 +2879,41 @@ def _evaluate(
                     },
                 ),
                 "protocol": build_protocol(
-                    protocol_identities,
+                    (
+                        protocol_identities
+                        if rgb_full_reference
+                        else _without_inputs(
+                            protocol_identities,
+                            ("depth", "calibration", "segmentation"),
+                        )
+                    ),
                     gt="rgb",
-                    inputs=("depth", "calibration", "segmentation"),
+                    inputs=("input_rgb", "depth", "calibration", "segmentation"),
+                    # Sky masking, benchmark bins, FID and GT alignment act on
+                    # full-reference metrics only; without gt.rgb they are off.
                     population={
                         "samples": rgb_dataset_info.get("num_pairs"),
-                        "gt_sky_masking": bool(args.mask_sky),
+                        "gt_sky_masking": bool(args.mask_sky) and rgb_full_reference,
                         "missing_segmentation": (
-                            args.missing_segmentation if args.mask_sky else None
+                            args.missing_segmentation
+                            if args.mask_sky and rgb_full_reference
+                            else None
                         ),
                         "evaluated_resolution": evaluated_resolution(rgb_spatial),
-                        "benchmark_depth_range_m": protocol_benchmark_range,
+                        "benchmark_depth_range_m": (
+                            protocol_benchmark_range if rgb_full_reference else None
+                        ),
                     },
                     method={
-                        "fid_backend": args.rgb_fid_backend,
-                        "spatial_alignment": rgb_spatial.get("method", "none"),
+                        "fid_backend": (
+                            args.rgb_fid_backend if rgb_full_reference else None
+                        ),
+                        "spatial_alignment": (
+                            rgb_spatial.get("method", "none")
+                            if rgb_full_reference
+                            else None
+                        ),
+                        "input_alignment": rgb_spatial.get("input_alignment"),
                     },
                 ),
                 "dataset_info": rgb_dataset_info,
@@ -2854,16 +2927,26 @@ def _evaluate(
                         "split": gt_rgb_split,
                         "dimensions": rgb_spatial.get("gt_dimensions"),
                     },
+                    "input": {
+                        "path": gt_input_rgb_path,
+                        "split": gt_input_rgb_split,
+                        "dimensions": rgb_spatial.get("input_dimensions"),
+                    },
                     "pred": {
                         "path": pred_rgb_path,
                         "split": pred_rgb_split,
                         "dimensions": rgb_spatial.get("pred_dimensions"),
                     },
                     "spatial_alignment": {
-                        "method": rgb_spatial.get("method", "none"),
+                        "method": (
+                            rgb_spatial.get("method", "none")
+                            if rgb_full_reference
+                            else None
+                        ),
                         "evaluated_dimensions": rgb_spatial.get(
                             "evaluated_dimensions"
                         ),
+                        "input": rgb_spatial.get("input_alignment"),
                     },
                     "modality_params": rgb_meta,
                     "gt_sky_masking": rgb_results.get("gt_sky_masking"),
