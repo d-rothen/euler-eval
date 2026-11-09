@@ -49,6 +49,13 @@ the git history for those.
 
 ### Added
 
+- `experiments[].gt_modalities` selects the `gt` inputs an experiment loads,
+  as `modalities` selects predictions; unlisted inputs are treated as not
+  configured, and `protocol.parameters` records them as `null`. One config can
+  thus score RGB with both references and against `gt.input_rgb` alone. A
+  filter that leaves an invalid `gt`, no GT for any prediction, or drops the
+  segmentation that `--mask-sky`/`--sky-iou` in the same experiment needs, is
+  an error before any work.
 - **`gt.input_rgb`: the degraded input as an RGB reference.** RGB predictions
   are evaluated against `gt.rgb` (clear), `gt.input_rgb` (the hazy input they
   restore), or both, and only the metrics a reference supports are computed.
