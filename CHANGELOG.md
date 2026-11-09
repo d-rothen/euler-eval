@@ -49,6 +49,25 @@ the git history for those.
 
 ### Added
 
+- **`gt.input_rgb`: the degraded input as an RGB reference.** RGB predictions
+  are evaluated against `gt.rgb` (clear), `gt.input_rgb` (the hazy input they
+  restore), or both, and only the metrics a reference supports are computed.
+  With `gt.input_rgb` alone, as for real-world hazy sets without clear images,
+  the full-reference metrics (PSNR, SSIM, LPIPS, FID, ...) are not computed and
+  not declared, and LPIPS/FID models are not loaded; a domain's no-reference
+  metrics still are. An `rgb` prediction with neither reference is not
+  evaluated (it previously failed). Input frames are paired by hierarchy path
+  and file ID. `protocol` (schema 1.3) adds `reference.input_rgb.*` and
+  `method.input_alignment`; `meta.input` records the input's path and size.
+- `--domain dehazing` with `gt.input_rgb` adds Hautière's e
+  (`rgb.eval.dehazing.hautiere_e`), r̄ (`hautiere_r`) and σ (`hautiere_sigma`,
+  percent): new visible edges, visible-edge gradient gain and newly saturated
+  pixels of the restored image relative to its input, after Hautière et al.,
+  Image Analysis & Stereology 27 (2008). They run in torch on `--device`, with
+  exact integer accumulation so CPU and CUDA agree. When the input and the
+  prediction differ in size, the smaller is upscaled bilinearly onto the
+  other's grid for these metrics. The implementation choices the paper leaves
+  open are documented in [Metrics](docs/metrics.md#dehazing-domain).
 - `--domain dehazing` also scores MUSIQ (`rgb.eval.dehazing.musiq`, KonIQ-10k
   weights, roughly 0–100) and CLIP-IQA (`rgb.eval.dehazing.clipiqa`, in
   [0, 1]) per image and as dataset means; higher is better for both. They are

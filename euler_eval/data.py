@@ -614,6 +614,68 @@ def align_to_prediction(gt: np.ndarray, pred: np.ndarray) -> np.ndarray:
     return result.astype(bool) if is_bool else result
 
 
+def classify_upscaling_alignment(
+    pred_shape: tuple[int, int], input_shape: tuple[int, int]
+) -> str:
+    """Name what :func:`align_by_upscaling` does to a prediction and its input.
+
+    Returns ``"none"``, ``"upscale_input"`` or ``"upscale_prediction"``.
+    """
+    pred_shape = tuple(pred_shape[:2])
+    input_shape = tuple(input_shape[:2])
+    if pred_shape == input_shape:
+        return "none"
+    if input_shape[0] * input_shape[1] <= pred_shape[0] * pred_shape[1]:
+        return "upscale_input"
+    return "upscale_prediction"
+
+
+def align_by_upscaling(
+    pred: np.ndarray, input_image: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Bring a prediction and its degraded input onto one pixel grid.
+
+    The image with fewer pixels is resized to the other's height and width
+    with bilinear interpolation (the prediction's grid wins a tie); neither
+    is cropped. Equal shapes are returned unchanged. Warns when the aspect
+    ratios differ by more than 5 %, since the resize then also stretches.
+
+    Returns:
+        ``(pred, input_image)`` with equal spatial dimensions.
+    """
+    method = classify_upscaling_alignment(pred.shape, input_image.shape)
+    if method == "none":
+        return pred, input_image
+
+    import warnings
+
+    import cv2
+
+    source, target = (
+        (input_image, pred) if method == "upscale_input" else (pred, input_image)
+    )
+    source_h, source_w = source.shape[:2]
+    target_h, target_w = target.shape[:2]
+    source_ar = source_w / source_h
+    target_ar = target_w / target_h
+    if abs(source_ar - target_ar) / max(source_ar, target_ar) > 0.05:
+        warnings.warn(
+            f"Significant aspect-ratio mismatch between prediction "
+            f"{pred.shape[1]}x{pred.shape[0]} and input "
+            f"{input_image.shape[1]}x{input_image.shape[0]}; the smaller one is "
+            "stretched onto the larger one's grid.",
+            stacklevel=2,
+        )
+    resized = cv2.resize(
+        np.ascontiguousarray(source, dtype=np.float32),
+        (target_w, target_h),
+        interpolation=cv2.INTER_LINEAR,
+    )
+    if method == "upscale_input":
+        return pred, resized
+    return resized, input_image
+
+
 def validate_sky_depth(sky_depth: Optional[float]) -> None:
     """Require a finite positive depth cap when sky-depth processing is enabled."""
     if sky_depth is not None and (not np.isfinite(sky_depth) or sky_depth <= 0):
@@ -1042,7 +1104,7 @@ def build_points_3d_sparse_eval_dataset(
 
 
 def build_rgb_eval_dataset(
-    gt_rgb_path: str,
+    gt_rgb_path: Optional[str],
     pred_rgb_path: str,
     gt_depth_path: Optional[str] = None,
     calibration_path: Optional[str] = None,
@@ -1053,17 +1115,22 @@ def build_rgb_eval_dataset(
     calibration_split: Optional[str] = None,
     segmentation_split: Optional[str] = None,
     segmentation_modality_key: str = "segmentation",
+    input_rgb_path: Optional[str] = None,
+    input_rgb_split: Optional[str] = None,
 ) -> MultiModalDataset:
     """Build a MultiModalDataset for RGB evaluation.
 
-    The returned dataset yields samples with keys ``"gt"``, ``"pred"``,
-    and optionally ``"gt_depth"``, ``"calibration"``, ``"segmentation"``.
+    The returned dataset yields samples with key ``"pred"``, ``"gt"`` (the
+    clear reference) and/or ``"input"`` (the degraded input the prediction
+    restores), and optionally ``"gt_depth"``, ``"calibration"``,
+    ``"segmentation"``. Every modality is paired with the prediction by ID.
 
     Loaders are resolved automatically from each dataset directory's
     ds-crawler index metadata.
 
     Args:
-        gt_rgb_path: Path to GT RGB dataset root.
+        gt_rgb_path: Path to GT RGB dataset root, or ``None`` when only the
+            input is a reference.
         pred_rgb_path: Path to prediction RGB dataset root.
         gt_depth_path: Optional GT depth path for depth-binned metrics.
         calibration_path: Optional calibration dataset path.
@@ -1073,23 +1140,37 @@ def build_rgb_eval_dataset(
         gt_depth_split: Optional split name for the GT depth modality.
         calibration_split: Optional split name for the calibration modality.
         segmentation_split: Optional split name for the segmentation modality.
+        segmentation_modality_key: Config key of the segmentation input.
+        input_rgb_path: Optional path to the degraded input RGB dataset root.
+        input_rgb_split: Optional split name for the input RGB modality.
 
     Returns:
         A MultiModalDataset instance.
+
+    Raises:
+        ValueError: If neither ``gt_rgb_path`` nor ``input_rgb_path`` is set.
     """
-    modalities: dict[str, Modality] = {
-        "gt": _modality(
+    if gt_rgb_path is None and input_rgb_path is None:
+        raise ValueError("RGB evaluation needs gt.rgb or gt.input_rgb")
+    modalities: dict[str, Modality] = {}
+    if gt_rgb_path is not None:
+        modalities["gt"] = _modality(
             path=gt_rgb_path,
             modality_key="rgb",
             split=gt_rgb_split,
-        ),
-        "pred": _modality(
-            path=pred_rgb_path,
+        )
+    if input_rgb_path is not None:
+        modalities["input"] = _modality(
+            path=input_rgb_path,
             modality_key="rgb",
-            used_as="output",
-            split=pred_rgb_split,
-        ),
-    }
+            split=input_rgb_split,
+        )
+    modalities["pred"] = _modality(
+        path=pred_rgb_path,
+        modality_key="rgb",
+        used_as="output",
+        split=pred_rgb_split,
+    )
     if gt_depth_path is not None:
         modalities["gt_depth"] = _modality(
             path=gt_depth_path,
@@ -1224,12 +1305,15 @@ def get_sparse_depth_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
 
 
 def get_rgb_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
-    """Extract RGB modality metadata from a dataset.
+    """Extract RGB modality metadata from a dataset's reference.
+
+    The reference is the clear GT when configured, else the degraded input.
 
     Returns:
         Dict with ``rgb_range`` ([min, max]).
     """
-    meta = dataset.get_modality_metadata("gt")
+    reference = "gt" if "gt" in dataset.modality_paths() else "input"
+    meta = dataset.get_modality_metadata(reference)
     return {
         "rgb_range": meta.get("rgb_range", [0.0, 1.0]),
     }

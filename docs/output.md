@@ -74,7 +74,7 @@ set.
     "metricDescriptions": { "absrel": { "…": "…" } }
   },
   "protocol": {
-    "schemaVersion": "1.2",
+    "schemaVersion": "1.3",
     "parameters": { "reference.gt.dataset": "muses", "method.depth_alignment": "auto_affine", "…": "…" }
   },
   "dataset_info": { "num_pairs": 500, "gt_name": "GT", "pred_name": "model_a" },
@@ -201,7 +201,7 @@ values differ say where. Nothing else in the file needs to be compared for that;
 
 ```json
 "protocol": {
-  "schemaVersion": "1.2",
+  "schemaVersion": "1.3",
   "parameters": {
     "reference.gt.modality": "sparse_depth",
     "reference.gt.dataset": "seeingthroughfog",
@@ -247,12 +247,21 @@ What is recorded, per modality:
 |---|---|---|---|
 | `depth` | `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `pred_sky_masking`, `evaluated_resolution`, `benchmark_depth_range_m` | `depth_alignment`, `sky_depth_m`, `pred_sky_mask`, `spatial_alignment` |
 | `sparsedepth` | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | as `depth` | `depth_alignment`, `sky_depth_m`, `pred_sky_mask` |
-| `rgb` | `depth`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `evaluated_resolution`, `benchmark_depth_range_m` | `fid_backend`, `spatial_alignment` |
+| `rgb` | `input_rgb`, `depth`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `evaluated_resolution`, `benchmark_depth_range_m` | `fid_backend`, `spatial_alignment`, `input_alignment` |
 | `rays` | `calibration` | `samples`, `evaluated_resolution` | `spatial_alignment` |
 | `points3d` (dense) | `intrinsics`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `evaluated_resolution` | `points_3d_alignment`, `spatial_alignment` |
 | `points3d` (sparse GT) | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `evaluated_resolution` | `points_3d_alignment` |
 
 Every modality also has `method.metrics_revision`.
+
+RGB evaluated without `gt.rgb`, against [`gt.input_rgb`](configuration.md#rgb-references)
+only, computes no full-reference metric, so the settings that act on them are
+recorded as off: `reference.gt`, `reference.depth`, `reference.calibration` and
+`reference.segmentation` are `null`, as are `population.missing_segmentation`,
+`population.benchmark_depth_range_m`, `method.fid_backend` and
+`method.spatial_alignment`, and `population.gt_sky_masking` is `false`.
+`method.input_alignment` is `none`, `upscale_input` or `upscale_prediction`
+when `gt.input_rgb` is configured, else `null`.
 
 Rules that keep comparisons a plain map comparison:
 

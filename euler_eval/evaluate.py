@@ -20,10 +20,12 @@ from .calibration import (
     get_sample_pointcloud_to_camera_extrinsics as _get_pointcloud_to_camera_extrinsics,
 )
 from .data import (
+    align_by_upscaling,
     align_intrinsics_to_prediction,
     align_to_prediction,
     apply_point_transform,
     classify_spatial_alignment,
+    classify_upscaling_alignment,
     compute_scale_and_shift,
     decompose_point_errors,
     fit_scale_transform,
@@ -270,13 +272,15 @@ def _compute_array_stats(arr: np.ndarray) -> dict:
     }
 
 
-def _log_sample_stats(gt: np.ndarray, pred: np.ndarray, label: str) -> None:
+def _log_sample_stats(
+    gt: np.ndarray, pred: np.ndarray, label: str, reference: str = "GT"
+) -> None:
     gt_stats = _compute_array_stats(gt)
     pred_stats = _compute_array_stats(pred)
     print(f"\n{'=' * 77}")
     print(f"  {label} SAMPLE STATISTICS")
     print("=" * 77)
-    for tag, stats in [("GT", gt_stats), ("Pred", pred_stats)]:
+    for tag, stats in [(reference, gt_stats), ("Pred", pred_stats)]:
         print(
             f"  {tag}: shape={stats['shape']}  dtype={stats['dtype']}  "
             f"range=[{stats['min']:.4f}, {stats['max']:.4f}]  "
@@ -2728,9 +2732,17 @@ def evaluate_rgb_samples(
 ) -> dict:
     """Evaluate all RGB metrics from a MultiModalDataset.
 
-    The dataset must yield samples with ``"gt"`` and ``"pred"`` keys
-    containing RGB data. Optionally ``"gt_depth"`` for depth-binned
+    The dataset must yield samples with a ``"pred"`` key and at least one
+    reference: ``"gt"``, the clear image, and/or ``"input"``, the degraded
+    input the prediction restores. Optionally ``"gt_depth"`` for depth-binned
     metrics, ``"segmentation"`` for sky masking, and ``"calibration"``.
+
+    What is computed depends on the references. Full-reference metrics
+    (PSNR, SSIM, LPIPS, FID, SCE, edge F1, tail errors, high-frequency energy,
+    depth-binned and benchmark errors) need ``"gt"``; scoring a restoration
+    against its degraded input with them would reward changing nothing.
+    A domain's no-reference metrics are always computed and its
+    input-referenced metrics need ``"input"``.
 
     Args:
         dataset: The MultiModalDataset to iterate.
@@ -2790,35 +2802,75 @@ def evaluate_rgb_samples(
             f"Expected one of {sorted(valid_fid_backends)}."
         )
 
+    modality_paths = dataset.modality_paths()
+    has_gt = "gt" in modality_paths
+    has_input = "input" in modality_paths
+    if not has_gt and not has_input:
+        raise ValueError(
+            "RGB evaluation needs a 'gt' (clear) or 'input' (degraded input) "
+            "reference modality"
+        )
+
     metric_sets = resolve_metric_sets(domains)
     domain_metric_sets = [
         metric_set for metric_set in metric_sets if metric_set.category is not None
     ]
-    domain_metric_values = {
-        metric_set.category: {
-            metric.name: [] for metric in metric_set.rgb_no_reference
-        }
-        for metric_set in domain_metric_sets
-    }
+    domain_metric_values = {}
+    for metric_set in domain_metric_sets:
+        names = [metric.name for metric in metric_set.rgb_no_reference]
+        if has_input:
+            names += [
+                output.name
+                for metric in metric_set.rgb_input_reference
+                for output in metric.outputs
+            ]
+        elif metric_set.rgb_input_reference:
+            skipped = ", ".join(
+                output.display_name
+                for metric in metric_set.rgb_input_reference
+                for output in metric.outputs
+            )
+            print(
+                f"Note: --domain {metric_set.name}: {skipped} need gt.input_rgb "
+                "and are not computed."
+            )
+        domain_metric_values[metric_set.category] = {name: [] for name in names}
 
-    has_depth = "gt_depth" in dataset.modality_paths() and depth_meta is not None
+    has_depth = has_gt and "gt_depth" in modality_paths and depth_meta is not None
 
     print(f"Initializing RGB metrics (device: {device})...")
-    try:
-        lpips_metric = RGBLPIPSMetric(device=device)
-    except Exception as exc:
-        print(f"Warning: Failed to initialize LPIPS metric: {exc}")
-        lpips_metric = None
-    fid_metric = FIDKIDMetric(device=device) if fid_backend == "builtin" else None
+    lpips_metric = None
+    fid_metric = None
+    if has_gt:
+        try:
+            lpips_metric = RGBLPIPSMetric(device=device)
+        except Exception as exc:
+            print(f"Warning: Failed to initialize LPIPS metric: {exc}")
+        if fid_backend == "builtin":
+            fid_metric = FIDKIDMetric(device=device)
+    else:
+        print(
+            "  No gt.rgb: full-reference metrics (PSNR, SSIM, LPIPS, FID, ...) "
+            "are not computed."
+        )
 
     # Model-backed domain metrics load their networks once, on this device.
     # A domain the caller asked for must not silently lose metrics, so load
     # failures stop the evaluation.
     domain_scorers = {}
     for metric_set in domain_metric_sets:
-        for metric in metric_set.rgb_no_reference:
-            label = f"{metric_set.name}.{metric.name}"
-            if metric.load is not None:
+        bound = [
+            (metric, metric.name, metric.load is not None)
+            for metric in metric_set.rgb_no_reference
+        ]
+        if has_input:
+            bound += [
+                (metric, metric.name, False)
+                for metric in metric_set.rgb_input_reference
+            ]
+        for metric, name, loads_model in bound:
+            label = f"{metric_set.name}.{name}"
+            if loads_model:
                 print(f"Loading {metric.display_name} ({label}) on {device}...")
             try:
                 scorer = metric.bind(device)
@@ -2829,7 +2881,10 @@ def evaluate_rgb_samples(
                     f"Failed to load {label}: {exc}. Offline machines need "
                     "the model weights cached first; see `euler-eval.init`."
                 ) from exc
-            domain_scorers[(metric_set.category, metric.name)] = scorer
+            domain_scorers[(metric_set.category, name)] = scorer
+    scores_input = has_input and any(
+        metric_set.rgb_input_reference for metric_set in domain_metric_sets
+    )
 
     psnr_values = []
     ssim_values = []
@@ -2843,9 +2898,12 @@ def evaluate_rgb_samples(
 
     logged_stats = False
     logged_alignment = False
+    logged_input_alignment = False
     gt_native_dims: Optional[tuple[int, int]] = None
     pred_native_dims: Optional[tuple[int, int]] = None
+    input_native_dims: Optional[tuple[int, int]] = None
     spatial_method = "none"
+    input_alignment: Optional[str] = None
 
     with tempfile.TemporaryDirectory(prefix="euler_eval_rgb_") as temp_dir_str:
         temp_dir = Path(temp_dir_str)
@@ -2867,7 +2925,7 @@ def evaluate_rgb_samples(
             GPUImageMetricsBatcher(
                 device=device, batch_size=batch_size, modality="rgb"
             )
-            if GPUImageMetricsBatcher.is_available(device)
+            if has_gt and GPUImageMetricsBatcher.is_available(device)
             else None
         )
 
@@ -2882,15 +2940,96 @@ def evaluate_rgb_samples(
             ):
                 hierarchy, entry_id = _extract_hierarchy(sample)
 
-                img_gt = to_numpy_rgb(sample["gt"])
                 img_pred = to_numpy_rgb(sample["pred"])
+                img_gt = to_numpy_rgb(sample["gt"]) if has_gt else None
+                img_input = to_numpy_rgb(sample["input"]) if has_input else None
 
                 if i == 0:
-                    gt_native_dims = img_gt.shape[:2]
                     pred_native_dims = img_pred.shape[:2]
-                    spatial_method = classify_spatial_alignment(
-                        *gt_native_dims, *pred_native_dims
+                    if has_gt:
+                        gt_native_dims = img_gt.shape[:2]
+                        spatial_method = classify_spatial_alignment(
+                            *gt_native_dims, *pred_native_dims
+                        )
+                    if has_input:
+                        input_native_dims = img_input.shape[:2]
+                        input_alignment = classify_upscaling_alignment(
+                            pred_native_dims, input_native_dims
+                        )
+
+                # Domain metrics score the prediction itself, or against its
+                # degraded input. They intentionally use the unmasked
+                # prediction: filling a masked region would add artificial
+                # edges and flat areas that change the image statistics and
+                # perceived quality these metrics measure. Input-referenced
+                # metrics compare pixels, so the smaller of the prediction and
+                # its input is upscaled onto the other's grid first.
+                input_pair = None
+                if scores_input:
+                    if (
+                        img_input.shape[:2] != img_pred.shape[:2]
+                        and not logged_input_alignment
+                    ):
+                        print(
+                            f"  Aligning input {img_input.shape[:2]} and pred "
+                            f"{img_pred.shape[:2]} by upscaling the smaller one"
+                        )
+                        logged_input_alignment = True
+                    input_pair = _safe_compute(
+                        "input_alignment",
+                        entry_id,
+                        align_by_upscaling,
+                        img_pred,
+                        img_input,
                     )
+                domain_metrics = {}
+                for metric_set in domain_metric_sets:
+                    category = metric_set.category
+                    category_metrics = {}
+                    for metric in metric_set.rgb_no_reference:
+                        value = _none_if_nan(
+                            _safe_compute(
+                                f"{metric_set.name}.{metric.name}",
+                                entry_id,
+                                domain_scorers[(category, metric.name)],
+                                img_pred,
+                            )
+                        )
+                        domain_metric_values[category][metric.name].append(value)
+                        category_metrics[metric.name] = value
+                    input_metrics = metric_set.rgb_input_reference if has_input else ()
+                    for metric in input_metrics:
+                        scores = None
+                        if input_pair is not None:
+                            scores = _safe_compute(
+                                f"{metric_set.name}.{metric.name}",
+                                entry_id,
+                                domain_scorers[(category, metric.name)],
+                                *input_pair,
+                            )
+                        for output in metric.outputs:
+                            value = (
+                                _none_if_nan(scores.get(output.name))
+                                if scores
+                                else None
+                            )
+                            domain_metric_values[category][output.name].append(value)
+                            category_metrics[output.name] = value
+                    domain_metrics[category] = category_metrics
+
+                if not has_gt:
+                    if not logged_stats:
+                        _log_sample_stats(img_input, img_pred, "RGB", "Input")
+                        logged_stats = True
+                    if sanity_checker is not None:
+                        sanity_checker.validate_rgb_input(img_input, img_pred, entry_id)
+                    set_value(
+                        per_file_metrics,
+                        hierarchy,
+                        entry_id,
+                        {"id": entry_id, "metrics": {"rgb": domain_metrics}},
+                    )
+                    continue
 
                 if img_gt.shape[:2] != img_pred.shape[:2]:
                     if not logged_alignment:
@@ -2967,28 +3106,6 @@ def evaluate_rgb_samples(
                     pred_masked,
                     gt_masked,
                 )
-
-                # Domain metrics are no-reference measures of the prediction.
-                # They intentionally use the unmasked prediction: filling a
-                # masked region would add artificial edges and flat areas that
-                # change the image statistics and perceived quality these
-                # metrics measure.
-                domain_metrics = {}
-                for metric_set in domain_metric_sets:
-                    category_metrics = {}
-                    for metric in metric_set.rgb_no_reference:
-                        value = _safe_compute(
-                            f"{metric_set.name}.{metric.name}",
-                            entry_id,
-                            domain_scorers[(metric_set.category, metric.name)],
-                            img_pred,
-                        )
-                        value = _none_if_nan(value)
-                        domain_metric_values[metric_set.category][metric.name].append(
-                            value
-                        )
-                        category_metrics[metric.name] = value
-                    domain_metrics[metric_set.category] = category_metrics
 
                 depth_binned_entry = None
                 if has_depth:
@@ -3168,85 +3285,86 @@ def evaluate_rgb_samples(
                     if depth_binned_entry is not None:
                         sanity_checker.validate_depth_binned(depth_binned_entry, entry_id)
 
-            sky_coverage.warn_if_empty("RGB")
+            rgb_results = {}
+            if has_gt:
+                sky_coverage.warn_if_empty("RGB")
 
-            if rgb_lpips_batcher is not None:
-                print("Computing batched RGB LPIPS (tail flush)...")
-                rgb_lpips_batcher.finalize()
+                if rgb_lpips_batcher is not None:
+                    print("Computing batched RGB LPIPS (tail flush)...")
+                    rgb_lpips_batcher.finalize()
 
-            if rgb_image_batcher is not None:
-                print("Computing batched RGB PSNR/SSIM (tail flush)...")
-                rgb_image_batcher.finalize()
+                if rgb_image_batcher is not None:
+                    print("Computing batched RGB PSNR/SSIM (tail flush)...")
+                    rgb_image_batcher.finalize()
 
-            print(f"Computing RGB FID using backend: {fid_backend}...")
-            if fid_backend == "builtin":
-                rgb_fid = fid_metric.compute_rgb_fid(
-                    fid_gt_inputs, fid_pred_inputs, batch_size, num_workers
+                print(f"Computing RGB FID using backend: {fid_backend}...")
+                if fid_backend == "builtin":
+                    rgb_fid = fid_metric.compute_rgb_fid(
+                        fid_gt_inputs, fid_pred_inputs, batch_size, num_workers
+                    )
+                else:
+                    rgb_fid = compute_clean_fid(
+                        str(fid_gt_dir),
+                        str(fid_pred_dir),
+                        mode="clean",
+                        batch_size=batch_size,
+                        num_workers=num_workers,
+                        device=device,
+                        verbose=verbose,
+                    )
+
+                print("Aggregating RGB results...")
+
+                edge_f1_valid = [r for r in edge_f1_results if r is not None]
+                edge_f1_agg = (
+                    aggregate_rgb_edge_f1(edge_f1_valid)
+                    if edge_f1_valid
+                    else {"precision": None, "recall": None, "f1": None}
                 )
-            else:
-                rgb_fid = compute_clean_fid(
-                    str(fid_gt_dir),
-                    str(fid_pred_dir),
-                    mode="clean",
-                    batch_size=batch_size,
-                    num_workers=num_workers,
-                    device=device,
-                    verbose=verbose,
+
+                tail_p95, tail_p99 = tail_error_store.quantiles([0.95, 0.99])
+
+                high_freq_valid = [r for r in high_freq_results if r is not None]
+                high_freq_agg = (
+                    aggregate_high_freq_metrics(high_freq_valid)
+                    if high_freq_valid
+                    else {
+                        "pred_hf_ratio_mean": None,
+                        "gt_hf_ratio_mean": None,
+                        "relative_diff_mean": None,
+                    }
                 )
 
-            print("Aggregating RGB results...")
-
-            edge_f1_valid = [r for r in edge_f1_results if r is not None]
-            edge_f1_agg = (
-                aggregate_rgb_edge_f1(edge_f1_valid)
-                if edge_f1_valid
-                else {"precision": None, "recall": None, "f1": None}
-            )
-
-            tail_p95, tail_p99 = tail_error_store.quantiles([0.95, 0.99])
-
-            high_freq_valid = [r for r in high_freq_results if r is not None]
-            high_freq_agg = (
-                aggregate_high_freq_metrics(high_freq_valid)
-                if high_freq_valid
-                else {
-                    "pred_hf_ratio_mean": None,
-                    "gt_hf_ratio_mean": None,
-                    "relative_diff_mean": None,
+                rgb_results = {
+                    "image_quality": {
+                        "psnr": _safe_mean(psnr_values, "psnr"),
+                        "ssim": _safe_mean(ssim_values, "ssim"),
+                        "sce": _safe_mean(sce_values, "sce"),
+                        "lpips": _safe_mean(lpips_values, "lpips"),
+                        "fid": _none_if_nan(rgb_fid),
+                    },
+                    "edge_f1": {
+                        "precision": _none_if_nan(edge_f1_agg["precision"]),
+                        "recall": _none_if_nan(edge_f1_agg["recall"]),
+                        "f1": _none_if_nan(edge_f1_agg["f1"]),
+                    },
+                    "tail_errors": {
+                        "p95": _none_if_nan(tail_p95),
+                        "p99": _none_if_nan(tail_p99),
+                    },
+                    "high_frequency": {
+                        "pred_hf_ratio": _none_if_nan(high_freq_agg["pred_hf_ratio_mean"]),
+                        "gt_hf_ratio": _none_if_nan(high_freq_agg["gt_hf_ratio_mean"]),
+                        "relative_diff": _none_if_nan(high_freq_agg["relative_diff_mean"]),
+                    },
                 }
-            )
-
-            rgb_results = {
-                "image_quality": {
-                    "psnr": _safe_mean(psnr_values, "psnr"),
-                    "ssim": _safe_mean(ssim_values, "ssim"),
-                    "sce": _safe_mean(sce_values, "sce"),
-                    "lpips": _safe_mean(lpips_values, "lpips"),
-                    "fid": _none_if_nan(rgb_fid),
-                },
-                "edge_f1": {
-                    "precision": _none_if_nan(edge_f1_agg["precision"]),
-                    "recall": _none_if_nan(edge_f1_agg["recall"]),
-                    "f1": _none_if_nan(edge_f1_agg["f1"]),
-                },
-                "tail_errors": {
-                    "p95": _none_if_nan(tail_p95),
-                    "p99": _none_if_nan(tail_p99),
-                },
-                "high_frequency": {
-                    "pred_hf_ratio": _none_if_nan(high_freq_agg["pred_hf_ratio_mean"]),
-                    "gt_hf_ratio": _none_if_nan(high_freq_agg["gt_hf_ratio_mean"]),
-                    "relative_diff": _none_if_nan(high_freq_agg["relative_diff_mean"]),
-                },
-            }
 
             for metric_set in domain_metric_sets:
                 rgb_results[metric_set.category] = {
-                    metric.name: _safe_mean(
-                        domain_metric_values[metric_set.category][metric.name],
-                        f"{metric_set.name}.{metric.name}",
-                    )
-                    for metric in metric_set.rgb_no_reference
+                    name: _safe_mean(values, f"{metric_set.name}.{name}")
+                    for name, values in domain_metric_values[
+                        metric_set.category
+                    ].items()
                 }
 
             if depth_binned_results:
@@ -3300,6 +3418,13 @@ def evaluate_rgb_samples(
                     }
                     if pred_native_dims
                     else None,
+                    "input_dimensions": {
+                        "height": input_native_dims[0],
+                        "width": input_native_dims[1],
+                    }
+                    if input_native_dims
+                    else None,
+                    "input_alignment": input_alignment,
                 },
             }
         finally:

@@ -118,7 +118,11 @@ single run.
 `--domain dehazing` adds NIQE, FADE, MUSIQ and CLIP-IQA under
 `rgb.eval.dehazing`. All four are no-reference metrics: they score each
 predicted RGB image, do not use the paired GT image, and are averaged across
-valid images for the dataset result. They use the full prediction even with
+valid images for the dataset result. With `gt.input_rgb` (the hazy inputs)
+configured, it also adds Hautière's e, r̄ and σ, which score each prediction
+against its input; with only `gt.input_rgb` and no `gt.rgb`, the run computes
+just these domain metrics and no full-reference ones (see [RGB
+references](configuration.md#rgb-references)). They use the full prediction even with
 `--mask-sky`, because filling masked pixels would change the image statistics
 being measured. MUSIQ and CLIP-IQA are computed with the optional `pyiqa`
 package (`pip install "euler-eval[dehazing]"`); without it, the run stops with

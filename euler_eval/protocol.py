@@ -30,7 +30,7 @@ from .config_paths import (
 
 #: Version of the ``protocol`` block. Renaming or removing a key is a major
 #: bump; adding one is a minor bump.
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
 
 #: Bump whenever a release changes metric values for identical inputs and
 #: settings, and say so in the CHANGELOG. Evaluations with different revisions
@@ -42,6 +42,7 @@ REFERENCE_KEYS = (
     "depth",
     "sparse_depth",
     "rgb",
+    "input_rgb",
     "rays",
     "points_3d",
     "calibration",
@@ -49,6 +50,10 @@ REFERENCE_KEYS = (
     "camera_extrinsics",
     "lidar_extrinsics",
 )
+
+#: Metadata scope of a GT config key whose data is another modality's: the
+#: degraded input is RGB data, read from its ``rgb`` scope like gt.rgb.
+_MODALITY_KEY_OF = {"input_rgb": "rgb"}
 
 _NO_INPUT = {"dataset": None, "scope": None, "split": None}
 
@@ -77,7 +82,9 @@ def reference_identities(gt_config: Mapping[str, Any]) -> dict[str, dict]:
         entry = gt_config.get(key)
         if isinstance(entry, Mapping) and "path" in entry:
             identities[key] = dataset_identity(
-                entry["path"], modality_key=key, split=entry.get("split")
+                entry["path"],
+                modality_key=_MODALITY_KEY_OF.get(key, key),
+                split=entry.get("split"),
             )
         else:
             identities[key] = dict(_NO_INPUT)
