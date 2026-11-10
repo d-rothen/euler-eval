@@ -84,7 +84,7 @@ set.
     "device": "cuda",
     "gt":   { "path": "/data/gt/depth",      "dimensions": { "height": 1080, "width": 1920 } },
     "pred": { "path": "/data/model_a/depth", "entry": "depth" },
-    "spatial_alignment": { "method": "resize", "evaluated_dimensions": { "height": 512, "width": 960 } },
+    "spatial_alignment": { "mode": "auto", "method": "resize_prediction", "evaluated_dimensions": { "height": 1080, "width": 1920 } },
     "modality_params": { "radial_depth": false },
     "eval_params": { "sky_masking": false, "depth_alignment_mode": "auto_affine" }
   },
@@ -116,8 +116,12 @@ histograms. With a benchmark range they represent its `all` population.
 alignment mode that ran, whether sky masking was on, the benchmark range, and
 the exact paths and versions involved. `spatial_alignment.method` reports how a
 GT/prediction resolution mismatch was resolved — `none` when they already match,
-`vae_crop` for the multiple-of-8 crop that latent models produce, `resize`
-otherwise, and `pointcloud_projection` when GT was a sparse cloud.
+`vae_crop` when the GT was cropped to the top-left region the prediction covers,
+`resize_prediction` when dense depth or point maps were resized onto the GT
+grid, `resize` when RGB or rays GT was resized onto the prediction grid, and
+`pointcloud_projection` when GT was a sparse cloud. `spatial_alignment.mode` is
+the [`--spatial-alignment`](alignment.md#resolution-alignment) setting that
+chose between crop and resize.
 
 ### Sky segmentation provenance
 
@@ -225,7 +229,7 @@ values differ say where. Nothing else in the file needs to be compared for that;
     "population.pred_sky_masking": false,
     "population.evaluated_resolution": [1024, 1920],
     "population.benchmark_depth_range_m": [0.01, 80.0],
-    "method.metrics_revision": 1,
+    "method.metrics_revision": 2,
     "method.depth_alignment": "auto_affine",
     "method.sky_depth_m": null,
     "method.pred_sky_mask": false

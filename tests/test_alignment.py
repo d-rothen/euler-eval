@@ -4,9 +4,14 @@ import numpy as np
 import pytest
 
 from euler_eval.data import (
+    align_intrinsics_to_prediction,
+    align_to_ground_truth,
     align_to_prediction,
     classify_spatial_alignment,
     compute_scale_and_shift,
+    resize_depth_gt,
+    resize_mask,
+    resize_prediction,
 )
 
 # ---------------------------------------------------------------------------
@@ -168,6 +173,170 @@ class TestClassifySpatialAlignment:
     def test_resize_pred_not_mult_8(self):
         """Pred dims not multiple of 8 -> resize even if delta < 8."""
         assert classify_spatial_alignment(103, 205, 99, 201) == "resize"
+
+
+class TestSpatialAlignmentModes:
+    """Stating what the model did instead of guessing from shapes."""
+
+    def test_crop_mode_crops_any_smaller_prediction(self):
+        assert classify_spatial_alignment(400, 879, 384, 768, mode="crop") == "vae_crop"
+
+    def test_crop_mode_rejects_a_larger_prediction(self):
+        with pytest.raises(ValueError, match="'crop' needs a prediction no larger"):
+            classify_spatial_alignment(64, 64, 72, 64, mode="crop")
+
+    def test_resize_mode_overrides_the_crop_pattern(self):
+        # DrivingStereo half size, 879 px wide, at the next multiple of 8 down.
+        assert classify_spatial_alignment(400, 879, 400, 872) == "vae_crop"
+        assert (
+            classify_spatial_alignment(400, 879, 400, 872, mode="resize") == "resize"
+        )
+
+    def test_unknown_mode_is_rejected(self):
+        with pytest.raises(ValueError, match="spatial_alignment must be one of"):
+            classify_spatial_alignment(8, 8, 8, 8, mode="stretch")
+
+    def test_align_to_prediction_follows_the_mode(self):
+        gt = np.arange(400 * 879, dtype=np.float32).reshape(400, 879) + 1.0
+        pred = np.zeros((400, 872), dtype=np.float32)
+        cropped = align_to_prediction(gt, pred)
+        np.testing.assert_array_equal(cropped, gt[:, :872])
+        resized = align_to_prediction(gt, pred, spatial_alignment="resize")
+        assert resized.shape == (400, 872)
+        assert not np.array_equal(resized, gt[:, :872])
+
+    def test_intrinsics_follow_the_mode(self):
+        K = np.array([[500.0, 0.0, 439.0], [0.0, 500.0, 199.5], [0.0, 0.0, 1.0]])
+        np.testing.assert_array_equal(
+            align_intrinsics_to_prediction(K, (400, 879), (400, 872)), K
+        )
+        resized = align_intrinsics_to_prediction(
+            K, (400, 879), (400, 872), mode="resize"
+        )
+        assert resized[0, 0] == pytest.approx(500.0 * 872 / 879)
+        assert resized[0, 2] == pytest.approx((439.0 + 0.5) * 872 / 879 - 0.5)
+
+
+class TestResizeMask:
+    def test_downsampling_samples_pixel_centres(self):
+        # Halving keeps source columns 1, 3, 5, 7: the centres of each pair,
+        # like the image resize and the intrinsics update.
+        mask = np.zeros((2, 8), dtype=bool)
+        mask[:, 1::2] = True
+        assert resize_mask(mask, (1, 4)).all()
+
+    def test_upsampling_repeats_each_pixel(self):
+        mask = np.array([[True, False]])
+        np.testing.assert_array_equal(
+            resize_mask(mask, (1, 4)), [[True, True, False, False]]
+        )
+
+    def test_bool_gt_masks_use_it(self):
+        mask = np.zeros((4, 8), dtype=bool)
+        mask[:, 1::2] = True
+        pred = np.zeros((2, 4), dtype=np.float32)
+        assert align_to_prediction(mask, pred).all()
+
+
+class TestResizeDepthGt:
+    def test_dense_shrink_ignores_invalid_pixels(self):
+        depth = np.zeros((4, 4), dtype=np.float32)
+        depth[::2, ::2] = 10.0  # one valid pixel per 2x2 block
+        np.testing.assert_allclose(resize_depth_gt(depth, (2, 2)), 10.0)
+
+    def test_dense_shrink_averages_valid_pixels(self):
+        depth = np.array(
+            [[10.0, 20.0, 0.0, 0.0], [0.0, np.nan, 0.0, 0.0]], dtype=np.float32
+        )
+        np.testing.assert_allclose(resize_depth_gt(depth, (1, 2)), [[15.0, 0.0]])
+
+    def test_dense_growth_takes_the_nearest_pixel(self):
+        depth = np.array([[10.0, 0.0]], dtype=np.float32)
+        np.testing.assert_array_equal(
+            resize_depth_gt(depth, (1, 4)), [[10.0, 10.0, 0.0, 0.0]]
+        )
+
+    def test_sparse_keeps_measurements_and_the_nearest_surface(self):
+        depth = np.zeros((4, 4), dtype=np.float32)
+        depth[0, 1] = 10.0
+        depth[1, 1] = 5.0  # same target pixel, nearer
+        depth[3, 3] = 7.0
+        resized = resize_depth_gt(depth, (2, 2), sparse=True)
+        np.testing.assert_array_equal(resized, [[5.0, 0.0], [0.0, 7.0]])
+
+    def test_sparse_growth_stays_sparse(self):
+        depth = np.zeros((2, 2), dtype=np.float32)
+        depth[0, 0] = 4.0
+        resized = resize_depth_gt(depth, (4, 4), sparse=True)
+        assert np.count_nonzero(resized) == 1
+        assert resized.max() == 4.0
+
+    def test_sparse_flag_reaches_align_to_prediction(self):
+        depth = np.zeros((4, 4), dtype=np.float32)
+        depth[1, 1] = 10.0
+        pred = np.zeros((2, 2), dtype=np.float32)
+        dense = align_to_prediction(depth, pred)
+        sparse = align_to_prediction(depth, pred, sparse=True)
+        assert dense[0, 0] == pytest.approx(10.0)
+        np.testing.assert_array_equal(sparse, [[10.0, 0.0], [0.0, 0.0]])
+
+
+class TestResizePrediction:
+    def test_growth_is_pixel_centre_bilinear(self):
+        pred = np.array([[0.0, 2.0]], dtype=np.float32)
+        np.testing.assert_allclose(
+            resize_prediction(pred, (1, 4)), [[0.0, 0.5, 1.5, 2.0]]
+        )
+
+    def test_shrink_averages_areas(self):
+        pred = np.array([[1.0, 3.0, 5.0, 7.0]], dtype=np.float32)
+        np.testing.assert_allclose(resize_prediction(pred, (1, 2)), [[2.0, 6.0]])
+
+    def test_non_finite_pixels_carry_no_weight(self):
+        pred = np.array([[1.0, 3.0, np.nan, np.nan]], dtype=np.float32)
+        resized = resize_prediction(pred, (1, 2))
+        assert resized[0, 0] == pytest.approx(2.0)
+        assert np.isnan(resized[0, 1])
+
+    def test_point_maps(self):
+        pts = np.random.rand(4, 6, 3).astype(np.float32)
+        assert resize_prediction(pts, (8, 12)).shape == (8, 12, 3)
+
+
+class TestAlignToGroundTruth:
+    def test_equal_shapes_are_untouched(self):
+        gt = np.ones((8, 8), dtype=np.float32)
+        pred = np.ones((8, 8), dtype=np.float32)
+        out_pred, out_gt, method = align_to_ground_truth(pred, gt)
+        assert method == "none"
+        assert out_pred is pred and out_gt is gt
+
+    def test_crop_trims_the_gt(self):
+        gt = np.random.rand(53, 70).astype(np.float32)
+        pred = np.random.rand(48, 64).astype(np.float32)
+        out_pred, out_gt, method = align_to_ground_truth(pred, gt)
+        assert method == "vae_crop"
+        assert out_pred is pred
+        np.testing.assert_array_equal(out_gt, gt[:48, :64])
+
+    def test_resize_moves_the_prediction_and_keeps_the_gt(self):
+        gt = np.zeros((64, 128), dtype=np.float32)
+        gt[1::8, 1::8] = 10.0  # sparse
+        pred = np.full((32, 64), 10.0, dtype=np.float32)
+        out_pred, out_gt, method = align_to_ground_truth(pred, gt)
+        assert method == "resize_prediction"
+        assert out_gt is gt
+        assert out_pred.shape == gt.shape
+        np.testing.assert_allclose(out_pred, 10.0)
+
+    def test_resize_mode_resizes_the_crop_pattern(self):
+        gt = np.random.rand(53, 70).astype(np.float32)
+        pred = np.random.rand(48, 64).astype(np.float32)
+        out_pred, out_gt, method = align_to_ground_truth(
+            pred, gt, spatial_alignment="resize"
+        )
+        assert method == "resize_prediction"
+        assert out_pred.shape == (53, 70)
 
 
 # ---------------------------------------------------------------------------

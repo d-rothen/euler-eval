@@ -21,7 +21,7 @@ from .calibration import (
 )
 from .data import (
     align_by_upscaling,
-    align_intrinsics_to_prediction,
+    align_to_ground_truth,
     align_to_prediction,
     apply_point_transform,
     classify_spatial_alignment,
@@ -33,6 +33,7 @@ from .data import (
     process_depth,
     project_point_cloud_to_depth_map,
     project_point_cloud_to_point_map,
+    resize_mask,
     to_numpy_depth,
     to_numpy_directions,
     to_numpy_mask,
@@ -620,11 +621,15 @@ class _SkyMaskCoverage:
 def _get_prediction_sky_mask(
     sample: dict, depth_pred: np.ndarray
 ) -> Optional[np.ndarray]:
-    """Return the predicted sky mask on the depth grid (True = sky)."""
+    """Return the predicted sky mask on the evaluated depth grid (True = sky).
+
+    The mask belongs to the prediction, so it is resized like the prediction
+    (nearest pixel centre) and never cropped.
+    """
     mask_data = sample.get("pred_sky_mask")
     if mask_data is None:
         return None
-    return align_to_prediction(to_numpy_mask(mask_data), depth_pred)
+    return resize_mask(to_numpy_mask(mask_data), depth_pred.shape[:2])
 
 
 class _PredictedSkyMasking:
@@ -716,18 +721,23 @@ _SKY_IOU_VARIANTS = ("explicit", "implicit")
 class _SkyIoU:
     """Accumulate the ``--sky-iou`` scores of one depth evaluation.
 
-    GT sky ``G`` is the raw segmentation sky resized to the prediction grid.
-    The explicit variant compares ``sample["pred_sky_mask"]`` with ``G``. The
-    implicit variant compares ``depth >= sky_depth`` on the prediction after
-    :func:`process_depth` and before calibration and capping; it runs only for
-    metric predictions. Both are scored on the full prediction grid.
+    GT sky ``G`` is the raw segmentation sky on the evaluated grid: the GT's,
+    cropped when the prediction is a crop of it, for dense depth, and the
+    prediction's for sparse GT. The explicit variant compares
+    ``sample["pred_sky_mask"]`` with ``G``. The implicit variant compares
+    ``depth >= sky_depth`` on the prediction after :func:`process_depth` and
+    before calibration and capping; it runs only for metric predictions. Both
+    are scored on the full evaluated grid.
 
     Everything here reads arrays and never writes them, so enabling sky IoU
     cannot change a depth value, a validity mask or an alignment fit.
     """
 
-    def __init__(self, sky_depth: Optional[float]) -> None:
+    def __init__(
+        self, sky_depth: Optional[float], spatial_alignment: str = "auto"
+    ) -> None:
         self.threshold = sky_depth
+        self.spatial_alignment = spatial_alignment
         self.stores = {variant: init_sky_iou_store() for variant in _SKY_IOU_VARIANTS}
         self.samples = 0
         self.samples_without_gt = 0
@@ -752,7 +762,7 @@ class _SkyIoU:
     ) -> Optional[dict]:
         """Score one sample and return its per-image values by variant.
 
-        ``depth_pred`` defines the prediction grid; ``implicit_depth`` is the
+        ``depth_pred`` defines the evaluated grid; ``implicit_depth`` is the
         converted, uncalibrated, uncapped prediction (``None`` skips implicit).
         """
         self.samples += 1
@@ -762,7 +772,9 @@ class _SkyIoU:
         if gt_sky is None:
             self.samples_without_gt += 1
             return None
-        gt_sky = align_to_prediction(gt_sky, depth_pred)
+        gt_sky = align_to_prediction(
+            gt_sky, depth_pred, spatial_alignment=self.spatial_alignment
+        )
         self.gt_sky_pixels += int(np.count_nonzero(gt_sky))
         self.gt_pixels += int(gt_sky.size)
 
@@ -973,6 +985,7 @@ def evaluate_depth_samples(
     distribution_config: Optional[DistributionConfig] = None,
     sky_iou: bool = False,
     pred_sky_mask_enabled: bool = False,
+    spatial_alignment: str = "auto",
 ) -> dict:
     """Evaluate all depth metrics from a MultiModalDataset.
 
@@ -1019,6 +1032,13 @@ def evaluate_depth_samples(
             like ``sky_mask_enabled`` does for GT sky. Samples without a mask
             are scored in full. Adds ``pred_sky_masking`` (how many evaluable
             GT pixels were excluded) to the result.
+        spatial_alignment: How a GT/prediction resolution mismatch is
+            reconciled: ``auto``, ``crop`` or ``resize``
+            (:func:`~euler_eval.data.classify_spatial_alignment`). Metrics
+            run on the GT grid: a crop trims the GT to the region the
+            prediction covers, a resize moves the prediction onto the GT
+            (:func:`~euler_eval.data.align_to_ground_truth`), so GT depth
+            is never interpolated.
 
     Returns:
         Dictionary containing depth aggregate/per-file metrics with:
@@ -1392,6 +1412,7 @@ def evaluate_depth_samples(
     input_space_detected = "unknown"
     gt_native_dims: Optional[tuple[int, int]] = None
     pred_native_dims: Optional[tuple[int, int]] = None
+    evaluated_dims: Optional[tuple[int, int]] = None
     spatial_method = "none"
 
     if alignment_mode == "none":
@@ -1451,7 +1472,7 @@ def evaluate_depth_samples(
             print("Computing per-image depth metrics...")
             depth_iter = _prefetched_iter(dataset, num_workers)
             sky_coverage = _SkyMaskCoverage()
-            sky_iou_scores = _SkyIoU(sky_depth) if sky_iou else None
+            sky_iou_scores = _SkyIoU(sky_depth, spatial_alignment) if sky_iou else None
             pred_sky_masking = (
                 _PredictedSkyMasking() if pred_sky_mask_enabled else None
             )
@@ -1465,35 +1486,28 @@ def evaluate_depth_samples(
                 depth_gt = to_numpy_depth(sample["gt"])
                 depth_pred = to_numpy_depth(sample["pred"])
 
+                gt_shape, pred_shape = depth_gt.shape[:2], depth_pred.shape[:2]
+                # The GT stays as measured: a crop trims it to the region the
+                # prediction covers, a resize moves the prediction onto it.
+                depth_pred, depth_gt, sample_method = align_to_ground_truth(
+                    depth_pred, depth_gt, spatial_alignment=spatial_alignment
+                )
                 if i == 0:
-                    gt_native_dims = depth_gt.shape[:2]
-                    pred_native_dims = depth_pred.shape[:2]
-                    spatial_method = classify_spatial_alignment(
-                        *gt_native_dims, *pred_native_dims
+                    gt_native_dims, pred_native_dims = gt_shape, pred_shape
+                    spatial_method = sample_method
+                    evaluated_dims = depth_gt.shape[:2]
+                if sample_method != "none" and not logged_alignment:
+                    print(
+                        f"  Aligning GT {gt_shape} and pred {pred_shape} "
+                        f"({sample_method}): evaluated on {depth_gt.shape[:2]}"
                     )
-
-                gt_shape_before_alignment = depth_gt.shape[:2]
-                if depth_gt.shape[:2] != depth_pred.shape[:2]:
-                    if not logged_alignment:
-                        print(
-                            f"  Aligning GT {depth_gt.shape[:2]} -> "
-                            f"pred {depth_pred.shape[:2]}"
-                        )
-                        logged_alignment = True
-                    depth_gt = align_to_prediction(depth_gt, depth_pred)
+                    logged_alignment = True
 
                 intrinsics_K = _get_intrinsics_K(sample)
-                # Intrinsics describe the GT image; the metrics run on the
-                # prediction plane, so carry any GT resize over to them.
-                evaluated_K = (
-                    align_intrinsics_to_prediction(
-                        intrinsics_K,
-                        gt_shape_before_alignment,
-                        depth_pred.shape[:2],
-                    )
-                    if intrinsics_K is not None
-                    else None
-                )
+                # Intrinsics describe the GT grid, which is the evaluated grid:
+                # a crop keeps its pixel origin and a resize moves only the
+                # prediction.
+                evaluated_K = intrinsics_K
                 # process_depth() converts planar depth to radial whenever
                 # intrinsics are available, so both maps are radial from here
                 # on unless the dataset had neither.
@@ -1507,7 +1521,9 @@ def evaluate_depth_samples(
                         sky_valid is not None
                         and sky_valid.shape[:2] != depth_pred.shape[:2]
                     ):
-                        sky_valid = align_to_prediction(sky_valid, depth_pred)
+                        sky_valid = align_to_prediction(
+                            sky_valid, depth_pred, spatial_alignment=spatial_alignment
+                        )
 
                 if i == 0:
                     pred_min = float(np.nanmin(depth_pred))
@@ -2042,10 +2058,10 @@ def evaluate_depth_samples(
                     else None,
                     "method": spatial_method,
                     "evaluated_dimensions": {
-                        "height": pred_native_dims[0],
-                        "width": pred_native_dims[1],
+                        "height": evaluated_dims[0],
+                        "width": evaluated_dims[1],
                     }
-                    if pred_native_dims
+                    if evaluated_dims
                     else None,
                 },
             }
@@ -2090,6 +2106,7 @@ def evaluate_sparse_depth_samples(
     distribution_config: Optional[DistributionConfig] = None,
     sky_iou: bool = False,
     pred_sky_mask_enabled: bool = False,
+    spatial_alignment: str = "auto",
 ) -> dict:
     """Evaluate dense depth predictions against sparse pointcloud GT.
 
@@ -2103,9 +2120,12 @@ def evaluate_sparse_depth_samples(
     the evaluated projected pixels, using the same bins in every space and
     restricting GT to the benchmark range after sky-depth capping, if enabled.
     ``sky_iou`` scores predicted sky against GT segmentation on the dense
-    prediction grid, exactly as in :func:`evaluate_depth_samples`; sparse GT
-    depth plays no part in it. ``pred_sky_mask_enabled`` drops projected points
+    prediction grid, as in :func:`evaluate_depth_samples`; sparse GT depth
+    plays no part in it. ``pred_sky_mask_enabled`` drops projected points
     inside the prediction's own ``sky_mask`` from the metrics and the fit.
+    ``spatial_alignment`` (``auto``, ``crop`` or ``resize``) decides whether
+    a GT segmentation of another size is cropped or resized onto the
+    prediction grid.
     """
     validate_sky_depth(sky_depth)
     valid_alignment_modes = {"none", "auto_affine", "affine"}
@@ -2309,7 +2329,7 @@ def evaluate_sparse_depth_samples(
             print("Computing sparse pointcloud depth metrics...")
             depth_iter = _prefetched_iter(dataset, num_workers)
             sky_coverage = _SkyMaskCoverage()
-            sky_iou_scores = _SkyIoU(sky_depth) if sky_iou else None
+            sky_iou_scores = _SkyIoU(sky_depth, spatial_alignment) if sky_iou else None
             pred_sky_masking = (
                 _PredictedSkyMasking() if pred_sky_mask_enabled else None
             )
@@ -2382,7 +2402,9 @@ def evaluate_sparse_depth_samples(
                     sky_valid = _get_sky_mask(sample)
                     sky_coverage.add(sky_valid)
                     if sky_valid is not None and sky_valid.shape[:2] != depth_pred.shape[:2]:
-                        sky_valid = align_to_prediction(sky_valid, depth_pred)
+                        sky_valid = align_to_prediction(
+                            sky_valid, depth_pred, spatial_alignment=spatial_alignment
+                        )
 
                 depth_pred_raw = process_depth(
                     depth_pred, pred_is_radial, intrinsics_K
@@ -2729,6 +2751,7 @@ def evaluate_rgb_samples(
     fid_backend: str = "builtin",
     benchmark_depth_range: Optional[tuple[float, float]] = None,
     domains: Optional[tuple[str, ...]] = None,
+    spatial_alignment: str = "auto",
 ) -> dict:
     """Evaluate all RGB metrics from a MultiModalDataset.
 
@@ -2763,6 +2786,9 @@ def evaluate_rgb_samples(
         domains: Optional additive metric-domain names. The ``core`` metric set
             is always evaluated. For example, ``("dehazing",)`` adds the
             prediction-only NIQE, FADE, MUSIQ and CLIP-IQA metrics.
+        spatial_alignment: How a GT/prediction resolution mismatch is
+            reconciled: ``auto``, ``crop`` or ``resize``
+            (:func:`~euler_eval.data.classify_spatial_alignment`).
 
     Returns:
         Dictionary containing aggregate and per-file metrics, and
@@ -2949,7 +2975,9 @@ def evaluate_rgb_samples(
                     if has_gt:
                         gt_native_dims = img_gt.shape[:2]
                         spatial_method = classify_spatial_alignment(
-                            *gt_native_dims, *pred_native_dims
+                            *gt_native_dims,
+                            *pred_native_dims,
+                            mode=spatial_alignment,
                         )
                     if has_input:
                         input_native_dims = img_input.shape[:2]
@@ -3037,7 +3065,9 @@ def evaluate_rgb_samples(
                             f"  Aligning GT {img_gt.shape[:2]} -> pred {img_pred.shape[:2]}"
                         )
                         logged_alignment = True
-                    img_gt = align_to_prediction(img_gt, img_pred)
+                    img_gt = align_to_prediction(
+                        img_gt, img_pred, spatial_alignment=spatial_alignment
+                    )
 
                 if not logged_stats:
                     _log_sample_stats(img_gt, img_pred, "RGB")
@@ -3048,7 +3078,9 @@ def evaluate_rgb_samples(
                     sky_valid = _get_sky_mask(sample)
                     sky_coverage.add(sky_valid)
                     if sky_valid is not None and sky_valid.shape[:2] != img_pred.shape[:2]:
-                        sky_valid = align_to_prediction(sky_valid, img_pred)
+                        sky_valid = align_to_prediction(
+                            sky_valid, img_pred, spatial_alignment=spatial_alignment
+                        )
 
                 if sanity_checker is not None:
                     sanity_checker.validate_rgb_input(img_gt, img_pred, entry_id)
@@ -3118,7 +3150,12 @@ def evaluate_rgb_samples(
                             intrinsics_K,
                         )
                         if gt_depth.shape[:2] != img_pred.shape[:2]:
-                            gt_depth = align_to_prediction(gt_depth, img_pred)
+                            gt_depth = align_to_prediction(
+                                gt_depth,
+                                img_pred,
+                                spatial_alignment=spatial_alignment,
+                                sparse=bool(depth_meta.get("sparse", False)),
+                            )
                         depth_binned_entry = compute_depth_binned_photometric_error(
                             pred_masked, gt_masked, gt_depth
                         )
@@ -3444,6 +3481,7 @@ def evaluate_rays_samples(
     num_workers: int = 4,
     verbose: bool = False,
     sanity_checker: Optional[SanityChecker] = None,
+    spatial_alignment: str = "auto",
 ) -> dict:
     """Evaluate spherical direction map (rays) metrics.
 
@@ -3466,6 +3504,9 @@ def evaluate_rays_samples(
             iteration. Set to 0 to disable worker-based prefetching.
         verbose: Enable verbose output.
         sanity_checker: Optional SanityChecker.
+        spatial_alignment: How a GT/prediction resolution mismatch is
+            reconciled: ``auto``, ``crop`` or ``resize``
+            (:func:`~euler_eval.data.classify_spatial_alignment`).
 
     Returns:
         Dictionary containing ``rays`` aggregate metrics, ``per_file_metrics``,
@@ -3521,7 +3562,9 @@ def evaluate_rays_samples(
         if i == 0:
             gt_native_dims = dirs_gt.shape[:2]
             pred_native_dims = dirs_pred.shape[:2]
-            spatial_method = classify_spatial_alignment(*gt_native_dims, *pred_native_dims)
+            spatial_method = classify_spatial_alignment(
+                *gt_native_dims, *pred_native_dims, mode=spatial_alignment
+            )
 
         # Align GT to prediction dimensions if needed
         if dirs_gt.shape[:2] != dirs_pred.shape[:2]:
@@ -3531,13 +3574,16 @@ def evaluate_rays_samples(
                     f"pred {dirs_pred.shape[:2]}"
                 )
                 logged_alignment = True
-            dirs_gt = align_to_prediction(dirs_gt, dirs_pred)
+            dirs_gt = align_to_prediction(
+                dirs_gt, dirs_pred, spatial_alignment=spatial_alignment
+            )
 
         # Auto-detect FoV domain from intrinsics on first sample
         if resolved_domain is None and i == 0:
             intrinsics_K = _get_intrinsics_K(sample)
             if intrinsics_K is not None:
-                h, w = dirs_gt.shape[:2]
+                # The intrinsics describe the GT image as loaded.
+                h, w = gt_native_dims
                 resolved_domain = classify_fov_domain(intrinsics_K, h, w)
                 print(
                     f"  FoV domain auto-detected: {resolved_domain} "
@@ -3722,6 +3768,7 @@ def evaluate_points_3d_samples(
     gt_is_depth: bool = False,
     gt_depth_is_radial: bool = True,
     distribution_config: Optional[DistributionConfig] = None,
+    spatial_alignment: str = "auto",
 ) -> dict:
     """Evaluate per-pixel 3D point map (``points_3d``) predictions.
 
@@ -3755,6 +3802,13 @@ def evaluate_points_3d_samples(
         max_cloud_points: Per-cloud subsample cap for the cloud_distance KD-tree.
         distribution_config: Optional shared bins for per-sample and pooled
             ``rmse3d.distribution`` counts of Euclidean correspondence errors.
+        spatial_alignment: How a GT/prediction resolution mismatch is
+            reconciled: ``auto``, ``crop`` or ``resize``
+            (:func:`~euler_eval.data.classify_spatial_alignment`). Metrics
+            run on the GT grid: a crop trims the GT to the region the
+            prediction covers, a resize moves the prediction onto the GT
+            (:func:`~euler_eval.data.align_to_ground_truth`), so GT point maps
+            are never interpolated.
 
     Returns:
         Dict with ``points_3d_native``/``points_3d_metric``/``points_3d``
@@ -3908,6 +3962,7 @@ def evaluate_points_3d_samples(
     per_file_metrics: dict = {}
     gt_native_dims: Optional[tuple[int, int]] = None
     pred_native_dims: Optional[tuple[int, int]] = None
+    evaluated_dims: Optional[tuple[int, int]] = None
     spatial_method = "none"
     logged_alignment = False
     total_evaluated_points = 0
@@ -3943,21 +3998,22 @@ def evaluate_points_3d_samples(
                 else:
                     pts_gt = to_numpy_points_3d(sample["gt"])
 
+                gt_shape, pred_shape = pts_gt.shape[:2], pts_pred.shape[:2]
+                # As for dense depth, the GT stays as measured; invalid GT
+                # points never blend into valid ones.
+                pts_pred, pts_gt, sample_method = align_to_ground_truth(
+                    pts_pred, pts_gt, spatial_alignment=spatial_alignment
+                )
                 if i == 0:
-                    gt_native_dims = pts_gt.shape[:2]
-                    pred_native_dims = pts_pred.shape[:2]
-                    spatial_method = classify_spatial_alignment(
-                        *gt_native_dims, *pred_native_dims
+                    gt_native_dims, pred_native_dims = gt_shape, pred_shape
+                    spatial_method = sample_method
+                    evaluated_dims = pts_gt.shape[:2]
+                if sample_method != "none" and not logged_alignment:
+                    print(
+                        f"  Aligning GT {gt_shape} and pred {pred_shape} "
+                        f"({sample_method}): evaluated on {pts_gt.shape[:2]}"
                     )
-
-                if pts_gt.shape[:2] != pts_pred.shape[:2]:
-                    if not logged_alignment:
-                        print(
-                            f"  Aligning GT {pts_gt.shape[:2]} -> "
-                            f"pred {pts_pred.shape[:2]}"
-                        )
-                        logged_alignment = True
-                    pts_gt = align_to_prediction(pts_gt, pts_pred)
+                    logged_alignment = True
 
                 if resolved_domain is None and i == 0:
                     intrinsics_K = _get_intrinsics_K(sample)
@@ -3981,7 +4037,9 @@ def evaluate_points_3d_samples(
                     sky_coverage.add(sky_valid)
                     if sky_valid is not None:
                         if sky_valid.shape[:2] != pts_pred.shape[:2]:
-                            sky_valid = align_to_prediction(sky_valid, pts_pred)
+                            sky_valid = align_to_prediction(
+                                sky_valid, pts_pred, spatial_alignment=spatial_alignment
+                            )
                         valid = valid & sky_valid
 
                 if sanity_checker is not None:
@@ -4235,10 +4293,10 @@ def evaluate_points_3d_samples(
                     else None,
                     "method": spatial_method,
                     "evaluated_dimensions": {
-                        "height": pred_native_dims[0],
-                        "width": pred_native_dims[1],
+                        "height": evaluated_dims[0],
+                        "width": evaluated_dims[1],
                     }
-                    if pred_native_dims
+                    if evaluated_dims
                     else None,
                 },
             }
@@ -4268,6 +4326,7 @@ def evaluate_points_3d_sparse_samples(
     pred_is_depth: bool = True,
     sky_depth: Optional[float] = None,
     distribution_config: Optional[DistributionConfig] = None,
+    spatial_alignment: str = "auto",
 ) -> dict:
     """Evaluate a depth **or** ``points_3d`` prediction against sparse GT.
 
@@ -4330,6 +4389,9 @@ def evaluate_points_3d_sparse_samples(
         sky_depth: Optional depth cap and predicted-sky fill value, supported
             for depth predictions. GT points are capped radially, preserving
             their directions, to match the sparse-depth evaluation range.
+        spatial_alignment: How a GT/prediction resolution mismatch is
+            reconciled: ``auto``, ``crop`` or ``resize``
+            (:func:`~euler_eval.data.classify_spatial_alignment`).
 
     Returns:
         Dict shaped like :func:`evaluate_points_3d_samples`:
@@ -4654,7 +4716,9 @@ def evaluate_points_3d_sparse_samples(
                     sky_coverage.add(sky_valid)
                     if sky_valid is not None and sky_valid.shape[:2] != pred_shape:
                         ref = depth_pred if pred_is_depth else pts_pred
-                        sky_valid = align_to_prediction(sky_valid, ref)
+                        sky_valid = align_to_prediction(
+                            sky_valid, ref, spatial_alignment=spatial_alignment
+                        )
 
                 gt_radial = np.linalg.norm(gt_point_map, axis=-1)
 

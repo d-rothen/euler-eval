@@ -7,6 +7,29 @@ the git history for those.
 
 ### Changed
 
+- **Dense depth and `points_3d` are scored on the GT grid; `metrics_revision`
+  is now 2.** When a prediction's resolution differs from the GT's and it is
+  not a crop, the prediction is resized onto the GT (area average when
+  shrinking, bilinear when enlarging, at pixel centres) instead of the GT onto
+  the prediction. Shrinking GT with `INTER_AREA` averaged invalid pixels into
+  valid ones: a 10 m lidar measurement beside three empty pixels became a
+  "valid" 2.5 m. GT values are no longer interpolated across edges, and the
+  intrinsics stay those of the GT. These evaluations record
+  `spatial_alignment.method: "resize_prediction"` and the GT size as
+  `population.evaluated_resolution`. Depth and `points_3d` results that
+  needed no resize (`none`, `vae_crop`) keep their values, but every
+  evaluation now reports `method.metrics_revision: 2`, since the other
+  changes below move RGB and rays values. In-training
+  validation (`evaluate_dense_depth_sample`) scores on the GT grid too, and a
+  `valid_mask` may be on either plane.
+- GT and predicted masks are resized by nearest pixel centre
+  (`INTER_NEAREST_EXACT`) instead of `INTER_NEAREST`, which floors `i / s` and
+  shifted masks by up to half a source pixel against the image and the
+  rescaled intrinsics. GT depth that is still resized (beside RGB, for
+  depth-binned metrics) keeps invalid pixels out of valid ones, and is
+  resampled as sparse when its dataset head declares `"sparse": true`. That
+  needs euler-loading's `resize_raster(interpolation="sparse")`, added after
+  euler-loading 2.35.0. Older versions raise a clear error for sparse GT only.
 - **`experiments[].modalities` selects prediction modalities only** (`depth`,
   `rgb`, `rays`, `points_3d`, `sky_mask`). It also filtered GT inputs in
   2.33.0, so e.g. `["depth"]` removed a `gt.sparse_depth` (the run stopped
@@ -26,6 +49,14 @@ the git history for those.
 
 ### Fixed
 
+- **Moves dense depth values after a resize.** Planar depth was converted to
+  radial with the GT's intrinsics on the prediction's grid; it is now
+  converted on the GT grid those intrinsics describe.
+- **Moves RGB depth-binned values for planar GT depth.** RGB evaluation read
+  `radial_depth` from the RGB GT's head instead of the GT depth's, and so
+  binned planar depth as radial.
+- Rays FoV-domain detection used the GT intrinsics with the prediction's size
+  after a resize; it now uses the GT's size.
 - **Moves `--mask-sky` metric values.** GT segmentation is now paired with each
   frame by hierarchy path and file ID, like depth, in every evaluation that
   uses it (dense and sparse depth, RGB, dense and sparse points-3D). It was a
@@ -49,6 +80,16 @@ the git history for those.
 
 ### Added
 
+- `--spatial-alignment {auto,crop,resize}` and a per-entry
+  `datasets[].spatial_alignment` state whether predictions at another
+  resolution were cropped or resized, instead of guessing from the shapes
+  (`auto`, the default and the previous behaviour, still guesses). A model
+  that resizes 879 px wide DrivingStereo images to 872 px used to be scored as
+  a crop, up to 7 px off at the right edge. Recorded as `meta.spatial_alignment.mode`. See
+  [Resolution alignment](docs/alignment.md#resolution-alignment).
+- `align_to_ground_truth`, `resize_prediction`, `resize_depth_gt` and
+  `resize_mask` in `euler_eval.data`; `get_depth_metadata` reads a named
+  modality and reports the head's `sparse` flag.
 - `experiments[].gt_modalities` selects the `gt` inputs an experiment loads,
   as `modalities` selects predictions; unlisted inputs are treated as not
   configured, and `protocol.parameters` records them as `null`. One config can

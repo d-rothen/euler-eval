@@ -29,6 +29,7 @@ from .config_paths import (
     resolve_gt_segmentation_path,
 )
 from .data import (
+    SPATIAL_ALIGNMENT_MODES,
     PartialInputDataset,
     build_depth_eval_dataset,
     build_points_3d_eval_dataset,
@@ -1093,6 +1094,15 @@ def validate_dataset_entry(entry: dict, index: int) -> None:
             "or 'points_3d.path'"
         )
 
+    if (
+        "spatial_alignment" in entry
+        and entry["spatial_alignment"] not in SPATIAL_ALIGNMENT_MODES
+    ):
+        raise ValueError(
+            f"{label}.spatial_alignment must be one of "
+            f"{list(SPATIAL_ALIGNMENT_MODES)}, got {entry['spatial_alignment']!r}"
+        )
+
     if "sky_mask" in entry:
         if not isinstance(entry["sky_mask"], dict) or not entry["sky_mask"].get("path"):
             raise ValueError(f"{label}.sky_mask must have a 'path' field")
@@ -2049,6 +2059,20 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--spatial-alignment",
+        type=str,
+        default="auto",
+        choices=list(SPATIAL_ALIGNMENT_MODES),
+        help=(
+            "How predictions whose resolution differs from the GT's were made: "
+            "auto (default) treats a prediction whose sides are multiples of 8 "
+            "and up to 7 px shorter as a top-left crop and anything else as "
+            "resized; crop and resize state it. A datasets[] entry's "
+            "spatial_alignment overrides it. Dense depth and points_3d are "
+            "scored on the GT grid, RGB and rays on the prediction's."
+        ),
+    )
+    parser.add_argument(
         "--points-3d-alignment",
         type=str,
         default="auto",
@@ -2148,6 +2172,7 @@ def _evaluate(
     configure_torch_runtime(args.device)
     print_device_info(requested_device, args.device)
     print(f"Depth alignment: {args.depth_alignment}")
+    print(f"Spatial alignment: {args.spatial_alignment}")
     if distribution_config is not None:
         print(
             f"RMSE distributions: {distribution_config.n_bins} bins "
@@ -2259,6 +2284,10 @@ def _evaluate(
     for dataset_config in config["datasets"]:
         ds_name = dataset_config["name"]
         et_key = ds_name if experiment is None else f"{ds_name}/{experiment}"
+        # How this prediction was made beats the run-wide default.
+        spatial_mode = dataset_config.get("spatial_alignment", args.spatial_alignment)
+        if spatial_mode != args.spatial_alignment:
+            print(f"  {ds_name}: spatial alignment {spatial_mode}")
         pred_depth_key, pred_depth_config = _prediction_depth_entry(dataset_config)
         has_depth = pred_depth_config is not None
         pred_sky_mask_config = (
@@ -2352,6 +2381,7 @@ def _evaluate(
             print(f"  Matched pairs: {len(depth_dataset)}")
 
             depth_results = evaluate_depth_samples(
+                spatial_alignment=spatial_mode,
                 distribution_config=distribution_config,
                 dataset=depth_dataset,
                 is_radial=depth_meta["radial_depth"],
@@ -2471,6 +2501,7 @@ def _evaluate(
                         ),
                     },
                     "spatial_alignment": {
+                        "mode": spatial_mode,
                         "method": depth_spatial.get("method", "none"),
                         "evaluated_dimensions": depth_spatial.get(
                             "evaluated_dimensions"
@@ -2623,6 +2654,7 @@ def _evaluate(
             print(f"  Matched pairs: {len(sparse_depth_dataset)}")
 
             sparse_depth_results = evaluate_sparse_depth_samples(
+                spatial_alignment=spatial_mode,
                 distribution_config=distribution_config,
                 dataset=sparse_depth_dataset,
                 pred_is_radial=sparse_depth_meta["pred_radial_depth"],
@@ -2749,6 +2781,7 @@ def _evaluate(
                         "lidar_extrinsics_split": lidar_extrinsics_split,
                     },
                     "spatial_alignment": {
+                        "mode": spatial_mode,
                         "method": sparse_depth_spatial.get(
                             "method", "pointcloud_projection"
                         ),
@@ -2921,12 +2954,13 @@ def _evaluate(
             print(f"  Matched pairs: {len(rgb_dataset)}")
 
             depth_meta = (
-                get_depth_metadata(rgb_dataset)
+                get_depth_metadata(rgb_dataset, "gt_depth")
                 if "gt_depth" in rgb_dataset.modality_paths()
                 else None
             )
 
             rgb_results = evaluate_rgb_samples(
+                spatial_alignment=spatial_mode,
                 dataset=rgb_dataset,
                 depth_meta=depth_meta,
                 gt_name=gt.get("name", "GT"),
@@ -3036,6 +3070,7 @@ def _evaluate(
                         "dimensions": rgb_spatial.get("pred_dimensions"),
                     },
                     "spatial_alignment": {
+                        "mode": spatial_mode,
                         "method": (
                             rgb_spatial.get("method", "none")
                             if rgb_full_reference
@@ -3132,6 +3167,7 @@ def _evaluate(
             print(f"  Matched pairs: {len(rays_dataset)}")
 
             rays_results = evaluate_rays_samples(
+                spatial_alignment=spatial_mode,
                 dataset=rays_dataset,
                 fov_domain=rays_meta["fov_domain"],
                 gt_name=gt.get("name", "GT"),
@@ -3191,6 +3227,7 @@ def _evaluate(
                         "dimensions": rays_spatial.get("pred_dimensions"),
                     },
                     "spatial_alignment": {
+                        "mode": spatial_mode,
                         "method": rays_spatial.get("method", "none"),
                         "evaluated_dimensions": rays_spatial.get(
                             "evaluated_dimensions"
@@ -3285,6 +3322,7 @@ def _evaluate(
             print(f"  Matched pairs: {len(points_3d_dataset)}")
 
             points_3d_results = evaluate_points_3d_samples(
+                spatial_alignment=spatial_mode,
                 distribution_config=distribution_config,
                 dataset=points_3d_dataset,
                 fov_domain=points_3d_meta["fov_domain"],
@@ -3372,6 +3410,7 @@ def _evaluate(
                         "dimensions": p3_spatial.get("pred_dimensions"),
                     },
                     "spatial_alignment": {
+                        "mode": spatial_mode,
                         "method": p3_spatial.get("method", "none"),
                         "evaluated_dimensions": p3_spatial.get(
                             "evaluated_dimensions"
@@ -3480,6 +3519,7 @@ def _evaluate(
             print(f"  Matched pairs: {len(points_3d_sparse_dataset)}")
 
             points_3d_sparse_results = evaluate_points_3d_sparse_samples(
+                spatial_alignment=spatial_mode,
                 distribution_config=distribution_config,
                 dataset=points_3d_sparse_dataset,
                 pred_is_radial=True,
@@ -3584,6 +3624,7 @@ def _evaluate(
                         "lidar_extrinsics_split": lidar_extrinsics_split,
                     },
                     "spatial_alignment": {
+                        "mode": spatial_mode,
                         "method": p3s_spatial.get("method", "pointcloud_projection"),
                         "evaluated_dimensions": p3s_spatial.get(
                             "evaluated_dimensions"

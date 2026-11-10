@@ -587,6 +587,30 @@ class TestGtSynthesis:
         )
         assert result["points_3d"]["point_error"]["image_mean"]["mae3d"] < 1e-3
 
+    def test_prediction_is_resized_onto_the_gt_grid(self):
+        h, w = 40, 60
+        K = _make_intrinsics(400.0, 400.0, (w - 1) / 2.0, (h - 1) / 2.0)
+        depth = np.full((h, w), 5.0, np.float32)
+        depth[::2, :] = 0.0  # every other GT row has no measurement
+        # The same plane at half resolution, with the half-size camera.
+        half_K = _make_intrinsics(200.0, 200.0, (w / 2 - 1) / 2.0, (h / 2 - 1) / 2.0)
+        pred = unproject_depth_to_points(
+            np.full((h // 2, w // 2), 5.0, np.float32), half_K, depth_is_radial=False
+        )
+        result = evaluate_points_3d_samples(
+            _DepthGtDataset(pred, depth, K),
+            num_workers=0,
+            alignment_mode="none",
+            gt_is_depth=True,
+            gt_depth_is_radial=False,
+        )
+        si = result["spatial_info"]
+        assert si["method"] == "resize_prediction"
+        assert si["evaluated_dimensions"] == {"height": h, "width": w}
+        # GT holes stay holes; shrinking the GT instead would have averaged
+        # each point with the empty row next to it, halving it.
+        assert result["points_3d"]["point_error"]["image_mean"]["mae3d"] < 0.01
+
     def test_synthesis_requires_intrinsics(self):
         h, w = 20, 30
         depth = np.full((h, w), 5.0, np.float32)

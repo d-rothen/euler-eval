@@ -482,17 +482,58 @@ def project_point_cloud_to_point_map(
 # ---------------------------------------------------------------------------
 
 
-def classify_spatial_alignment(
-    gt_h: int, gt_w: int, pred_h: int, pred_w: int
-) -> str:
-    """Classify how ``align_to_prediction`` would align the given shapes.
+#: How a GT/prediction resolution mismatch is reconciled; see
+#: :func:`classify_spatial_alignment`.
+SPATIAL_ALIGNMENT_MODES = ("auto", "crop", "resize")
 
-    Returns one of ``"none"``, ``"vae_crop"``, or ``"resize"``.
+#: ``spatial_alignment.method`` when the prediction, not the GT, was resized
+#: (dense depth and points_3d, see :func:`align_to_ground_truth`).
+PREDICTION_RESIZE_METHOD = "resize_prediction"
+
+
+def validate_spatial_alignment(mode: str) -> str:
+    """Return *mode* when it is one of :data:`SPATIAL_ALIGNMENT_MODES`."""
+    if mode not in SPATIAL_ALIGNMENT_MODES:
+        raise ValueError(
+            f"spatial_alignment must be one of {list(SPATIAL_ALIGNMENT_MODES)}, "
+            f"got {mode!r}"
+        )
+    return mode
+
+
+def classify_spatial_alignment(
+    gt_h: int, gt_w: int, pred_h: int, pred_w: int, *, mode: str = "auto"
+) -> str:
+    """Classify how a GT and a prediction of these shapes go onto one grid.
+
+    Returns ``"none"`` for equal shapes, ``"vae_crop"`` when the prediction
+    covers the top-left ``pred_h x pred_w`` pixels of the GT, so the GT is
+    cropped, or ``"resize"`` when one of them is resampled onto the other.
+
+    *mode* states what the model did to its input. The shapes alone cannot
+    tell a crop from a resize to the same size:
+
+    - ``"auto"`` guesses: a crop when the prediction's sides are multiples of
+      8 and at most 7 px shorter than the GT's (what latent models that crop
+      produce), else a resize.
+    - ``"crop"``: always a top-left crop. A prediction larger than the GT
+      raises.
+    - ``"resize"``: always a resize.
     """
+    validate_spatial_alignment(mode)
     if gt_h == pred_h and gt_w == pred_w:
         return "none"
     dh = gt_h - pred_h
     dw = gt_w - pred_w
+    if mode == "crop":
+        if dh < 0 or dw < 0:
+            raise ValueError(
+                "spatial_alignment 'crop' needs a prediction no larger than "
+                f"the GT, got prediction {pred_h}x{pred_w} for GT {gt_h}x{gt_w}"
+            )
+        return "vae_crop"
+    if mode == "resize":
+        return "resize"
     if pred_h % 8 == 0 and pred_w % 8 == 0 and 0 <= dh < 8 and 0 <= dw < 8:
         return "vae_crop"
     return "resize"
@@ -502,6 +543,8 @@ def align_intrinsics_to_prediction(
     intrinsics_K: np.ndarray,
     gt_shape: tuple[int, int],
     pred_shape: tuple[int, int],
+    *,
+    mode: str = "auto",
 ) -> np.ndarray:
     """Adjust a camera matrix for the alignment :func:`align_to_prediction` did.
 
@@ -516,11 +559,15 @@ def align_intrinsics_to_prediction(
       continuous-coordinate convention (``x' = (x + 0.5)·s − 0.5``), matching
       the ``cv2.resize`` that :func:`align_to_prediction` performs.
 
+    Dense depth and points_3d keep the GT grid
+    (:func:`align_to_ground_truth`), so their intrinsics need no adjustment.
+
     Args:
         intrinsics_K: ``(3, 3)`` camera matrix for the GT image.
         gt_shape: ``(height, width)`` of the GT map before alignment.
         pred_shape: ``(height, width)`` of the prediction, i.e. the evaluated
             plane.
+        mode: The ``spatial_alignment`` mode the GT was aligned with.
 
     Returns:
         ``(3, 3)`` camera matrix describing the evaluated plane.
@@ -529,7 +576,7 @@ def align_intrinsics_to_prediction(
     gt_h, gt_w = int(gt_shape[0]), int(gt_shape[1])
     pred_h, pred_w = int(pred_shape[0]), int(pred_shape[1])
 
-    if classify_spatial_alignment(gt_h, gt_w, pred_h, pred_w) != "resize":
+    if classify_spatial_alignment(gt_h, gt_w, pred_h, pred_w, mode=mode) != "resize":
         return K
     if gt_h <= 0 or gt_w <= 0:
         raise ValueError(f"Invalid GT shape for intrinsics rescaling: {gt_shape}")
@@ -545,73 +592,251 @@ def align_intrinsics_to_prediction(
     return K
 
 
-def align_to_prediction(gt: np.ndarray, pred: np.ndarray) -> np.ndarray:
-    """Align GT array dimensions to match prediction.
+def _warn_aspect_ratio(
+    gt_shape: tuple[int, ...], pred_shape: tuple[int, ...]
+) -> None:
+    """Warn when GT and prediction aspect ratios differ by more than 5 %."""
+    gt_h, gt_w = gt_shape[:2]
+    pred_h, pred_w = pred_shape[:2]
+    gt_ar = gt_w / gt_h
+    pred_ar = pred_w / pred_h
+    if abs(gt_ar - pred_ar) / max(gt_ar, pred_ar) > 0.05:
+        import warnings
 
-    Detects the common VAE multiple-of-8 crop pattern (prediction dims are
-    multiples of 8 and differ from GT by fewer than 8 pixels per axis) and
-    applies the same top-left crop to the GT array.  Falls back to resizing
-    for any other mismatch.
+        warnings.warn(
+            f"Significant aspect-ratio mismatch: GT {gt_w}x{gt_h} "
+            f"({gt_ar:.3f}) vs pred {pred_w}x{pred_h} ({pred_ar:.3f}). "
+            f"Metrics may not be directly comparable to native-resolution "
+            f"evaluations.",
+            stacklevel=3,
+        )
 
-    Works for ``(H, W)`` depth/mask and ``(H, W, 3)`` RGB arrays.
+
+def resize_mask(mask: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Resize a boolean mask to ``shape = (height, width)``.
+
+    Each target pixel takes the source pixel whose centre is nearest to its
+    own (``cv2.INTER_NEAREST_EXACT``), the pixel-centre convention of the
+    image resizes and of :func:`align_intrinsics_to_prediction`. Plain
+    ``INTER_NEAREST`` floors ``i / s`` instead and shifts the mask by up to
+    half a source pixel against the image.
+    """
+    import cv2
+
+    height, width = int(shape[0]), int(shape[1])
+    mask = np.asarray(mask)
+    if mask.shape[:2] == (height, width):
+        return mask.astype(bool, copy=False)
+    resized = cv2.resize(
+        np.ascontiguousarray(mask, dtype=np.uint8),
+        (width, height),
+        interpolation=cv2.INTER_NEAREST_EXACT,
+    )
+    return resized.astype(bool)
+
+
+def _resize_dense(
+    values: np.ndarray,
+    shape: tuple[int, int],
+    *,
+    valid: Optional[np.ndarray] = None,
+    fill: float = float("nan"),
+) -> np.ndarray:
+    """Area-average when shrinking, bilinear otherwise, at pixel centres.
+
+    With a ``(H, W)`` *valid* mask, invalid pixels carry no weight: the valid
+    values and their support are resized separately and divided, and target
+    pixels without support get *fill*.
+    """
+    import cv2
+
+    height, width = int(shape[0]), int(shape[1])
+    src_h, src_w = values.shape[:2]
+    interp = (
+        cv2.INTER_AREA if height <= src_h and width <= src_w else cv2.INTER_LINEAR
+    )
+    if valid is None:
+        return cv2.resize(
+            np.ascontiguousarray(values, dtype=np.float32),
+            (width, height),
+            interpolation=interp,
+        )
+    weight = valid.astype(np.float32)
+    mask = valid if values.ndim == 2 else valid[..., None]
+    clean = np.where(mask, values, 0).astype(np.float32)
+    numerator = cv2.resize(clean, (width, height), interpolation=interp)
+    support = cv2.resize(weight, (width, height), interpolation=interp)
+    if numerator.ndim == 3:
+        support = support[..., None]
+    out = np.full_like(numerator, fill)
+    np.divide(numerator, support, out=out, where=support > 1e-6)
+    return out
+
+
+def resize_prediction(pred: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Resize a dense prediction onto the GT grid ``shape = (height, width)``.
+
+    For depth ``(H, W)`` and point maps ``(H, W, C)``. Shrinking averages
+    areas and enlarging is bilinear, both at pixel centres
+    (``align_corners=False``). Non-finite pixels carry no weight; target
+    pixels with no finite source become NaN.
+    """
+    pred = np.asarray(pred)
+    if pred.shape[:2] == (int(shape[0]), int(shape[1])):
+        return pred
+    finite = np.isfinite(pred) if pred.ndim == 2 else np.isfinite(pred).all(axis=-1)
+    resized = _resize_dense(pred, shape, valid=None if finite.all() else finite)
+    dtype = pred.dtype if pred.dtype.kind == "f" else np.float32
+    return resized.astype(dtype, copy=False)
+
+
+def _sparse_resize_raster():
+    """Return euler-loading's ``resize_raster`` if it can resize sparse depth."""
+    import inspect
+
+    try:
+        from euler_loading import resize_raster
+    except ImportError:
+        resize_raster = None
+    if (
+        resize_raster is None
+        or "invalid_value" not in inspect.signature(resize_raster).parameters
+    ):
+        raise RuntimeError(
+            "Resizing sparse GT depth needs euler-loading's "
+            "resize_raster(interpolation='sparse'), added after euler-loading "
+            "2.35.0. Upgrade euler-loading, or evaluate at the GT resolution."
+        )
+    return resize_raster
+
+
+def resize_depth_gt(
+    depth: np.ndarray, shape: tuple[int, int], *, sparse: bool = False
+) -> np.ndarray:
+    """Resize GT depth to ``shape = (height, width)`` without mixing in invalid pixels.
+
+    Valid GT is finite and ``> 0``, as everywhere in euler-eval. Invalid
+    pixels never contribute to a valid one, and come out as ``0``.
+
+    - *sparse* (a GT head with ``"sparse": true``, such as lidar-derived
+      depth): every valid pixel moves to the nearest target pixel, and where
+      several land on one the nearest surface wins (euler-loading's
+      ``resize_raster(..., interpolation="sparse")``). Every output value is
+      a measurement; none is spread or duplicated.
+    - dense: shrinking area-averages the valid pixels only; enlarging takes
+      the source pixel whose centre is nearest.
+    """
+    import cv2
+
+    depth = np.asarray(depth)
+    height, width = int(shape[0]), int(shape[1])
+    if depth.shape[:2] == (height, width):
+        return depth
+    valid = np.isfinite(depth) & (depth > 0)
+    clean = np.where(valid, depth, 0).astype(np.float32)
+    if sparse:
+        resized = _sparse_resize_raster()(
+            clean,
+            layout="HW",
+            size=(height, width),
+            interpolation="sparse",
+            invalid_value=0.0,
+        )
+    elif height >= depth.shape[0] and width >= depth.shape[1]:
+        resized = cv2.resize(
+            clean, (width, height), interpolation=cv2.INTER_NEAREST_EXACT
+        )
+    else:
+        resized = _resize_dense(clean, (height, width), valid=valid, fill=0.0)
+    dtype = depth.dtype if depth.dtype.kind == "f" else np.float32
+    return np.asarray(resized).astype(dtype, copy=False)
+
+
+def align_to_prediction(
+    gt: np.ndarray,
+    pred: np.ndarray,
+    *,
+    spatial_alignment: str = "auto",
+    sparse: bool = False,
+) -> np.ndarray:
+    """Bring a GT array onto the prediction's grid.
+
+    :func:`classify_spatial_alignment` with *spatial_alignment* decides
+    between a top-left crop and a resize. A resize depends on the array:
+
+    - boolean masks: :func:`resize_mask`, nearest pixel centre;
+    - ``(H, W)`` depth: :func:`resize_depth_gt`, which keeps invalid pixels
+      out of valid ones; *sparse* selects its sparse mode;
+    - ``(H, W, C)`` images and direction maps: area average when shrinking,
+      bilinear when enlarging.
+
+    Dense depth and points_3d are evaluated on the GT grid instead
+    (:func:`align_to_ground_truth`). This direction serves RGB, rays, GT
+    masks and the projection plane of sparse GT.
 
     Args:
         gt: Ground-truth array.
         pred: Prediction array whose spatial dimensions are the target.
+        spatial_alignment: ``auto``, ``crop`` or ``resize``.
+        sparse: The GT is sparse depth.
 
     Returns:
         GT array with spatial dimensions matching *pred*.
     """
     gt_h, gt_w = gt.shape[:2]
     pred_h, pred_w = pred.shape[:2]
-
-    if gt_h == pred_h and gt_w == pred_w:
+    method = classify_spatial_alignment(
+        gt_h, gt_w, pred_h, pred_w, mode=spatial_alignment
+    )
+    if method == "none":
         return gt
-
-    dh = gt_h - pred_h
-    dw = gt_w - pred_w
-
-    # Detect VAE multiple-of-8 crop: pred dims are multiples of 8 and
-    # the GT is at most 7 pixels larger on each axis.
-    if pred_h % 8 == 0 and pred_w % 8 == 0 and 0 <= dh < 8 and 0 <= dw < 8:
+    if method == "vae_crop":
         return gt[:pred_h, :pred_w]
 
-    # Fallback: resize GT to match prediction dimensions.
-    import warnings
+    _warn_aspect_ratio(gt.shape, pred.shape)
+    if gt.dtype == bool:
+        return resize_mask(gt, (pred_h, pred_w))
+    if gt.ndim == 2:
+        return resize_depth_gt(gt, (pred_h, pred_w), sparse=sparse)
 
     import cv2
 
-    # Warn when aspect ratio distortion is significant (>5%).
-    gt_ar = gt_w / gt_h
-    pred_ar = pred_w / pred_h
-    if abs(gt_ar - pred_ar) / max(gt_ar, pred_ar) > 0.05:
-        warnings.warn(
-            f"Significant aspect-ratio mismatch: GT {gt_w}x{gt_h} "
-            f"({gt_ar:.3f}) vs pred {pred_w}x{pred_h} ({pred_ar:.3f}). "
-            f"Metrics may not be directly comparable to native-resolution "
-            f"evaluations.",
-            stacklevel=2,
-        )
-
-    is_bool = gt.dtype == bool
+    # INTER_AREA averages source pixels when shrinking and avoids the
+    # aliasing INTER_LINEAR produces at large scale ratios.
     is_downscale = (pred_h * pred_w) < (gt_h * gt_w)
-    src = gt.astype(np.uint8) if is_bool else gt
+    interp = cv2.INTER_AREA if is_downscale else cv2.INTER_LINEAR
+    return cv2.resize(gt, (pred_w, pred_h), interpolation=interp)
 
-    # INTER_AREA properly averages source pixels when down-sampling and avoids
-    # aliasing artefacts that INTER_NEAREST/INTER_LINEAR produce at large
-    # scale ratios.  For up-sampling we keep INTER_NEAREST (depth/masks) or
-    # INTER_LINEAR (RGB) to preserve values / smoothness respectively.
-    if is_bool:
-        interp = cv2.INTER_NEAREST
-    elif is_downscale:
-        interp = cv2.INTER_AREA
-    elif src.ndim == 2:
-        interp = cv2.INTER_NEAREST
-    else:
-        interp = cv2.INTER_LINEAR
 
-    result = cv2.resize(src, (pred_w, pred_h), interpolation=interp)
-    return result.astype(bool) if is_bool else result
+def align_to_ground_truth(
+    pred: np.ndarray,
+    gt: np.ndarray,
+    *,
+    spatial_alignment: str = "auto",
+) -> tuple[np.ndarray, np.ndarray, str]:
+    """Put a dense prediction and its GT on the GT's pixel grid.
+
+    For a crop (:func:`classify_spatial_alignment`), the GT is cropped to the
+    top-left region the prediction covers. Otherwise the prediction is
+    resized onto the GT grid (:func:`resize_prediction`) and the GT stays as
+    measured: no GT value is interpolated, invalid pixels stay invalid, and
+    the GT's intrinsics describe the evaluated grid unchanged.
+
+    Returns:
+        ``(pred, gt, method)``, with *method* ``"none"``, ``"vae_crop"`` or
+        :data:`PREDICTION_RESIZE_METHOD`.
+    """
+    gt_h, gt_w = gt.shape[:2]
+    pred_h, pred_w = pred.shape[:2]
+    method = classify_spatial_alignment(
+        gt_h, gt_w, pred_h, pred_w, mode=spatial_alignment
+    )
+    if method == "vae_crop":
+        return pred, gt[:pred_h, :pred_w], method
+    if method == "resize":
+        _warn_aspect_ratio(gt.shape, pred.shape)
+        return resize_prediction(pred, (gt_h, gt_w)), gt, PREDICTION_RESIZE_METHOD
+    return pred, gt, method
 
 
 def classify_upscaling_alignment(
@@ -1278,16 +1503,25 @@ def count_ids_dropped_by(
     return len(set.intersection(*required) - set(lookups[modality]))
 
 
-def get_depth_metadata(dataset: MultiModalDataset) -> dict[str, Any]:
+def get_depth_metadata(
+    dataset: MultiModalDataset, modality: str = "gt"
+) -> dict[str, Any]:
     """Extract depth modality metadata from a dataset.
 
+    Args:
+        dataset: The dataset holding the depth modality.
+        modality: Its key in the dataset (``"gt_depth"`` beside RGB GT).
+
     Returns:
-        Dict with ``radial_depth`` (bool).
+        Dict with ``radial_depth`` (bool) and ``sparse`` (bool, the head's
+        ``"sparse"`` flag for lidar-like depth; selects the sparse mode of
+        :func:`resize_depth_gt`).
     """
-    meta = dataset.get_modality_metadata("gt")
+    meta = dataset.get_modality_metadata(modality)
 
     return {
         "radial_depth": bool(meta.get("radial_depth", True)),
+        "sparse": bool(meta.get("sparse", False)),
     }
 
 

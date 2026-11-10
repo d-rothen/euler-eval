@@ -406,11 +406,11 @@ def test_normal_consistency_receives_sample_intrinsics(monkeypatch):
         assert kwargs["is_radial"] is True
 
 
-def test_normal_consistency_intrinsics_follow_gt_resize(monkeypatch):
+def test_depth_is_scored_on_the_gt_grid_with_its_intrinsics(monkeypatch):
     _patch_depth_metrics(monkeypatch)
     calls = _capture_normal_angle_calls(monkeypatch)
 
-    eval_mod.evaluate_depth_samples(
+    results = eval_mod.evaluate_depth_samples(
         dataset=_make_calibrated_dataset(gt_shape=(16, 16), pred_shape=(8, 8)),
         is_radial=False,
         device="cpu",
@@ -419,9 +419,37 @@ def test_normal_consistency_intrinsics_follow_gt_resize(monkeypatch):
 
     assert calls
     for kwargs in calls:
-        # GT was halved onto the prediction plane; the camera must follow.
-        assert kwargs["intrinsics"][0, 0] == 8.0
-        assert kwargs["intrinsics"][0, 2] == 3.5
+        # The prediction was resized onto the GT grid, which the GT camera
+        # already describes.
+        assert kwargs["intrinsics"][0, 0] == 16.0
+        assert kwargs["intrinsics"][0, 2] == 7.5
+    si = results["spatial_info"]
+    assert si["method"] == "resize_prediction"
+    assert si["gt_dimensions"] == {"height": 16, "width": 16}
+    assert si["pred_dimensions"] == {"height": 8, "width": 8}
+    assert si["evaluated_dimensions"] == {"height": 16, "width": 16}
+
+
+def test_depth_crop_keeps_the_prediction_grid(monkeypatch):
+    _patch_depth_metrics(monkeypatch)
+    calls = _capture_normal_angle_calls(monkeypatch)
+
+    results = eval_mod.evaluate_depth_samples(
+        dataset=_make_calibrated_dataset(gt_shape=(13, 18), pred_shape=(8, 16)),
+        is_radial=False,
+        device="cpu",
+        alignment_mode="none",
+        spatial_alignment="crop",
+    )
+
+    assert calls
+    for kwargs in calls:
+        # A top-left crop keeps the pixel origin and so the camera.
+        assert kwargs["intrinsics"][0, 0] == 18.0
+        assert kwargs["intrinsics"][0, 2] == 8.5
+    si = results["spatial_info"]
+    assert si["method"] == "vae_crop"
+    assert si["evaluated_dimensions"] == {"height": 8, "width": 16}
 
 
 def test_normal_consistency_without_calibration_reports_planar_depth(monkeypatch):

@@ -166,6 +166,7 @@ would be ambiguous.
 | `sky_mask.path` | no | Auxiliary predicted sky mask for a dense depth entry; used with `--sky-depth`, `--mask-sky-prediction` and `--sky-iou` |
 | `rays.path` | no\* | Predicted ray direction map dataset |
 | `points_3d.path` | no\* | Predicted per-pixel 3D point map `(H,W,3)` |
+| `spatial_alignment` | no | How this entry's predictions reached a resolution other than the GT's: `crop`, `resize` or `auto` (default: `--spatial-alignment`); see [Resolution alignment](alignment.md#resolution-alignment) |
 | `output_file` | no | Custom results path for every modality of this entry, replacing the `.eval/` layout and `--eval-name` (default: `.eval/[<scope>/][split_<split>/]eval.json` in each prediction modality's dataset root; see [where results land](output.md#where-results-land)) |
 
 \* At least one prediction modality must be present.

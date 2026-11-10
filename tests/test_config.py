@@ -216,6 +216,22 @@ class TestValidateDatasetEntry:
                 "sky_mask": {"path": str(tmp_path)},
             }, 0)
 
+    @pytest.mark.parametrize("mode", ["auto", "crop", "resize"])
+    def test_spatial_alignment(self, tmp_path, mode):
+        validate_dataset_entry({
+            "name": "model_a",
+            "depth": {"path": str(tmp_path)},
+            "spatial_alignment": mode,
+        }, 0)
+
+    def test_unknown_spatial_alignment_is_rejected(self, tmp_path):
+        with pytest.raises(ValueError, match=r"datasets\[1\].spatial_alignment"):
+            validate_dataset_entry({
+                "name": "model_a",
+                "depth": {"path": str(tmp_path)},
+                "spatial_alignment": "stretch",
+            }, 1)
+
     def test_valid_depth_only(self, tmp_path):
         depth_path = tmp_path / "depth"
         depth_path.mkdir()

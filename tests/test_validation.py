@@ -123,15 +123,51 @@ class TestEvaluateDenseDepthSample:
                 benchmark_depth_range=depth_range,
             )
 
-    def test_gt_resolution_mismatch_is_aligned(self):
-        pytest.importorskip("cv2")  # align_to_prediction resize fallback
+    def test_gt_resolution_mismatch_is_scored_on_the_gt_grid(self):
+        pytest.importorskip("cv2")  # resize_prediction
         gt_full = _grid_depth(96, 128)
         pred = gt_full[::2, ::2]
         result = evaluate_dense_depth_sample(pred, gt_full)
         assert result is not None
-        assert result.valid_pixels == pred.size
-        # Downsampling artifacts only; must stay small.
+        # The prediction is resized onto the GT; every GT pixel is scored.
+        assert result.valid_pixels == gt_full.size
+        # Resampling artifacts only; must stay small.
         assert result.metrics["absrel"] < 0.03
+
+    def test_sparse_gt_is_not_blended_with_its_holes(self):
+        pytest.importorskip("cv2")
+        gt = np.zeros((32, 32), dtype=np.float32)
+        gt[1::4, 1::4] = 10.0  # one measurement per 4x4 block
+        pred = np.full((8, 8), 10.0, dtype=np.float32)
+        result = evaluate_dense_depth_sample(pred, gt, min_valid_pixels=1)
+        assert result is not None
+        # Scored at the 64 measurements only, each exactly matched; resizing
+        # the GT would have averaged them with zeros into 0.625 m.
+        assert result.valid_pixels == 64
+        assert result.metrics["absrel"] == pytest.approx(0.0, abs=1e-6)
+
+    def test_prediction_plane_mask_is_resized_with_the_prediction(self):
+        pytest.importorskip("cv2")
+        gt = _grid_depth(32, 32)
+        pred = gt[::2, ::2].copy()
+        mask = np.ones((16, 16), dtype=bool)
+        mask[:, :8] = False  # left half of the prediction plane
+        result = evaluate_dense_depth_sample(pred, gt, valid_mask=mask)
+        assert result is not None
+        assert result.valid_pixels == gt.size // 2
+
+    def test_explicit_resize_overrides_the_crop_guess(self):
+        pytest.importorskip("cv2")
+        gt_full = _grid_depth(53, 70)
+        pred = gt_full[:48, :64] * 1.02
+        cropped = evaluate_dense_depth_sample(pred, gt_full, spatial_alignment="crop")
+        resized = evaluate_dense_depth_sample(
+            pred, gt_full, spatial_alignment="resize"
+        )
+        assert cropped.valid_pixels == pred.size
+        assert resized.valid_pixels == gt_full.size
+        # Reading a crop as a resize misplaces every pixel but the origin.
+        assert resized.metrics["absrel"] > cropped.metrics["absrel"]
 
     def test_gt_vae_crop_mismatch_is_aligned(self):
         # Pred dims are multiples of 8 and GT is <8 px larger: top-left crop,

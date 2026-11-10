@@ -48,10 +48,13 @@ print(summary["standard"]["image_mean"]["absrel"])
 ## The pieces
 
 **`evaluate_dense_depth_sample(pred, gt, valid_mask=None, alignment=...,
-min_depth=..., max_depth=..., benchmark_depth_range=...)`** — one dense
-prediction against a dense GT map. GT at another resolution is aligned to the
-prediction plane. Returns the standard metric set plus pooled pixel statistics,
-or `None` when too few valid pixels remain.
+min_depth=..., max_depth=..., benchmark_depth_range=...,
+spatial_alignment="auto")`** — one dense prediction against a dense GT map,
+scored on the GT grid like the CLI: a GT at another resolution is cropped to
+the region the prediction covers, or the prediction is resized onto it
+([Resolution alignment](alignment.md#resolution-alignment)). `valid_mask` may
+be on either plane. Returns the standard metric set plus pooled pixel
+statistics, or `None` when too few valid pixels remain.
 
 **`evaluate_sparse_depth_sample(pred, point_cloud, intrinsics,
 camera_extrinsics, lidar_extrinsics=None, pred_is_radial=False, ...)`** —

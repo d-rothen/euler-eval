@@ -40,11 +40,13 @@ from .calibration import (
 from .config_paths import parse_modality_path
 from .data import (
     _modality,
+    align_to_ground_truth,
     align_to_prediction,
     compose_sensor_to_camera_extrinsics,
     compute_scale_and_shift,
     process_depth,
     project_point_cloud_to_depth_map,
+    resize_mask,
     to_numpy_depth,
     to_numpy_extrinsics,
     to_numpy_intrinsics,
@@ -154,13 +156,31 @@ def _as_optional_mask(valid_mask: Any, reference: np.ndarray) -> Optional[np.nda
     """Convert an optional mask to bool ``(H, W)`` aligned to ``reference``."""
     if valid_mask is None:
         return None
-    mask = to_numpy_mask(valid_mask)
+    mask = to_numpy_mask(valid_mask).astype(bool)
     if mask.shape != reference.shape:
-        aligned = align_to_prediction(
-            mask.astype(np.float32), reference
-        )
-        mask = aligned > 0.5
-    return mask.astype(bool)
+        mask = align_to_prediction(mask, reference)
+    return mask
+
+
+def _mask_on_gt_grid(
+    valid_mask: Any,
+    evaluated_shape: tuple[int, ...],
+    gt_shape: tuple[int, ...],
+    method: str,
+) -> Optional[np.ndarray]:
+    """Bring a prediction- or GT-plane mask onto the evaluated (GT) grid.
+
+    A GT-plane mask gets the GT's crop; any other mask is resized like the
+    prediction, by nearest pixel centre.
+    """
+    if valid_mask is None:
+        return None
+    mask = to_numpy_mask(valid_mask).astype(bool)
+    if mask.shape == evaluated_shape:
+        return mask
+    if method == "vae_crop" and mask.shape == gt_shape:
+        return mask[: evaluated_shape[0], : evaluated_shape[1]]
+    return resize_mask(mask, evaluated_shape)
 
 
 def _apply_depth_bounds(
@@ -278,6 +298,7 @@ def evaluate_dense_depth_sample(
     max_depth: Optional[float] = None,
     benchmark_depth_range: Optional[tuple[float, float]] = None,
     min_valid_pixels: int = 10,
+    spatial_alignment: str = "auto",
 ) -> Optional[DepthSampleEvaluation]:
     """Score one dense depth prediction against a dense GT depth map.
 
@@ -285,9 +306,11 @@ def evaluate_dense_depth_sample(
         depth_pred: Predicted depth, ``(H, W)`` / ``(1, H, W)`` / ``(H, W, 1)``
             torch tensor or numpy array.  Metres, unless ``alignment="affine"``
             calibrates an affine/relative prediction.
-        depth_gt: GT depth in metres, same accepted layouts.  A GT at a
-            different resolution is cropped/resized to the prediction plane
-            (:func:`~euler_eval.data.align_to_prediction`).
+        depth_gt: GT depth in metres, same accepted layouts.  Metrics run on
+            the GT grid: a GT at a different resolution is cropped to the
+            region the prediction covers, or the prediction is resized onto
+            it (:func:`~euler_eval.data.align_to_ground_truth`); GT depth is
+            never interpolated.
         valid_mask: Optional extra validity mask (prediction- or GT-plane).
         alignment: ``"none"`` scores as-is; ``"affine"`` fits least-squares
             scale+shift on the valid pixels first.
@@ -298,6 +321,9 @@ def evaluate_dense_depth_sample(
             the range and square-root-scaled near/mid/far bins.  The regular
             metrics are unchanged.
         min_valid_pixels: Minimum surviving pixels; fewer returns ``None``.
+        spatial_alignment: ``"auto"``, ``"crop"`` or ``"resize"``: whether a
+            prediction smaller than the GT is a crop of it or resized
+            (:func:`~euler_eval.data.classify_spatial_alignment`).
 
     Returns:
         A :class:`DepthSampleEvaluation`, or ``None`` when too few valid
@@ -307,8 +333,10 @@ def evaluate_dense_depth_sample(
     benchmark_depth_range = _validate_benchmark_depth_range(benchmark_depth_range)
     pred = to_numpy_depth(depth_pred)
     gt = to_numpy_depth(depth_gt)
-    if gt.shape != pred.shape:
-        gt = align_to_prediction(gt, pred)
+    gt_shape = gt.shape
+    pred, gt, spatial_method = align_to_ground_truth(
+        pred, gt, spatial_alignment=spatial_alignment
+    )
 
     valid = (
         (gt > 0)
@@ -322,7 +350,7 @@ def evaluate_dense_depth_sample(
         valid = (gt > 0) & np.isfinite(gt) & np.isfinite(pred)
     valid = _apply_depth_bounds(valid, gt, min_depth, max_depth)
 
-    extra_mask = _as_optional_mask(valid_mask, pred)
+    extra_mask = _mask_on_gt_grid(valid_mask, gt.shape, gt_shape, spatial_method)
     if extra_mask is not None:
         valid = valid & extra_mask
 

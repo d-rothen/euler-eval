@@ -59,6 +59,50 @@ The angular `error_decomposition` ray metrics and `rho_a` are computed on the
 the cloud into GT would erase exactly the camera error they measure.
 Radial/lateral and Euclidean metrics are reported per space.
 
+## Resolution alignment
+
+A prediction often comes at another resolution than its GT: the model ran on a
+resized input, or cropped it to a multiple of 8. Before scoring, both go onto
+one pixel grid.
+
+**Which grid.** Dense depth and `points_3d` are scored on the **GT grid**. The
+GT stays as measured and only the prediction is resampled (area average when
+shrinking, bilinear when enlarging, at pixel centres), so:
+
+- invalid GT pixels (`0` or non-finite) never blend into valid ones. Resizing
+  sparse, lidar-derived GT would average a 10 m measurement with three empty
+  neighbours into 2.5 m, which still counts as valid;
+- GT values are never interpolated across object edges;
+- the GT's intrinsics describe the evaluated grid unchanged, for the
+  planar-to-radial conversion and surface normals.
+
+RGB and rays are scored on the prediction grid as before, with the GT resized
+onto it. GT and predicted masks are resized by nearest pixel centre
+(`INTER_NEAREST_EXACT`), the convention of the image resize and of the
+intrinsics update. GT depth used beside RGB (depth-binned metrics) is resized
+without mixing in invalid pixels: valid pixels are area-averaged among
+themselves, or, when its dataset head declares `"sparse": true`, each
+measurement moves to its nearest target pixel and the nearest surface wins
+(euler-loading's `resize_raster(..., interpolation="sparse")`).
+
+**Crop or resize.** The shapes alone cannot tell whether a smaller prediction
+is a crop of the input or a resized copy of it, and reading one as the other
+misplaces pixels by up to the size difference. `--spatial-alignment`, or a
+`datasets[]` entry's `spatial_alignment`, says which:
+
+| Mode | Behaviour |
+|---|---|
+| `auto` *(default)* | A crop when the prediction's sides are multiples of 8 and at most 7 px shorter than the GT's (latent models that crop), else a resize |
+| `crop` | Always a top-left crop: the GT is trimmed to the region the prediction covers. A prediction larger than the GT is an error |
+| `resize` | Always a resize, even for the multiple-of-8 pattern |
+
+Set it whenever a model resizes its input to a multiple of 8: a 879 px wide
+DrivingStereo image resized to 872 px would otherwise be scored as a crop,
+misplacing pixels at the right edge by up to 7 px. The method that ran is
+recorded as `spatial_alignment.method` (`none`, `vae_crop`,
+`resize_prediction` or `resize`) and the evaluated grid as
+`population.evaluated_resolution`; see [Results & output](output.md).
+
 ## Benchmark depth bins
 
 `--benchmark-depth-range MIN MAX` filters valid GT depth pixels to `[MIN, MAX]`,

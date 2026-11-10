@@ -4,7 +4,7 @@
 |---|---|
 | [Configuration](configuration.md) | The config file, `gt` and `datasets` sections, paths and selectors, sparse-depth and points-3d ground truth, euler-train logging |
 | [CLI reference](cli.md) | Every flag, worked examples, device selection, offline cache warmup |
-| [Spaces & alignment](alignment.md) | Why `native` and `metric` exist, depth affine fitting, points-3d gauge alignment, benchmark depth bins |
+| [Spaces & alignment](alignment.md) | Why `native` and `metric` exist, depth affine fitting, points-3d gauge alignment, resolution alignment, benchmark depth bins |
 | [Metrics](metrics.md) | The full metric inventory per modality, with the key each one is written under |
 | [Error distributions](distributions.md) | Optional per-sample and pooled RMSE histograms, bin settings, axes and JSON layout |
 | [Results & output](output.md) | Where files land, the anatomy of `eval.json`, comparing evaluations, per-file metrics, the sanity-check report |
