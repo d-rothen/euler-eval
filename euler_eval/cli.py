@@ -2501,7 +2501,7 @@ def _evaluate(
                         ),
                     },
                     "spatial_alignment": {
-                        "mode": spatial_mode,
+                        "mode": depth_spatial.get("mode", spatial_mode),
                         "method": depth_spatial.get("method", "none"),
                         "evaluated_dimensions": depth_spatial.get(
                             "evaluated_dimensions"
@@ -2781,7 +2781,7 @@ def _evaluate(
                         "lidar_extrinsics_split": lidar_extrinsics_split,
                     },
                     "spatial_alignment": {
-                        "mode": spatial_mode,
+                        "mode": sparse_depth_spatial.get("mode", spatial_mode),
                         "method": sparse_depth_spatial.get(
                             "method", "pointcloud_projection"
                         ),
@@ -3070,7 +3070,7 @@ def _evaluate(
                         "dimensions": rgb_spatial.get("pred_dimensions"),
                     },
                     "spatial_alignment": {
-                        "mode": spatial_mode,
+                        "mode": rgb_spatial.get("mode", spatial_mode),
                         "method": (
                             rgb_spatial.get("method", "none")
                             if rgb_full_reference
@@ -3227,7 +3227,7 @@ def _evaluate(
                         "dimensions": rays_spatial.get("pred_dimensions"),
                     },
                     "spatial_alignment": {
-                        "mode": spatial_mode,
+                        "mode": rays_spatial.get("mode", spatial_mode),
                         "method": rays_spatial.get("method", "none"),
                         "evaluated_dimensions": rays_spatial.get(
                             "evaluated_dimensions"
@@ -3410,7 +3410,7 @@ def _evaluate(
                         "dimensions": p3_spatial.get("pred_dimensions"),
                     },
                     "spatial_alignment": {
-                        "mode": spatial_mode,
+                        "mode": p3_spatial.get("mode", spatial_mode),
                         "method": p3_spatial.get("method", "none"),
                         "evaluated_dimensions": p3_spatial.get(
                             "evaluated_dimensions"
@@ -3624,7 +3624,7 @@ def _evaluate(
                         "lidar_extrinsics_split": lidar_extrinsics_split,
                     },
                     "spatial_alignment": {
-                        "mode": spatial_mode,
+                        "mode": p3s_spatial.get("mode", spatial_mode),
                         "method": p3s_spatial.get("method", "pointcloud_projection"),
                         "evaluated_dimensions": p3s_spatial.get(
                             "evaluated_dimensions"

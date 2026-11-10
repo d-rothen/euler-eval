@@ -117,11 +117,15 @@ alignment mode that ran, whether sky masking was on, the benchmark range, and
 the exact paths and versions involved. `spatial_alignment.method` reports how a
 GT/prediction resolution mismatch was resolved — `none` when they already match,
 `vae_crop` when the GT was cropped to the top-left region the prediction covers,
-`resize_prediction` when dense depth or point maps were resized onto the GT
-grid, `resize` when RGB or rays GT was resized onto the prediction grid, and
+`crop` when it was cropped at the origin the prediction's recorded
+`source_grid` gives, `resize_prediction` when dense depth or point maps were
+resized onto the GT grid, `resize` when RGB or rays GT was resized onto the
+prediction grid, `warp_prediction` / `warp` when a recorded mapping that is
+neither (e.g. a resize, then a crop) resampled the prediction or the GT, and
 `pointcloud_projection` when GT was a sparse cloud. `spatial_alignment.mode` is
 the [`--spatial-alignment`](alignment.md#resolution-alignment) setting that
-chose between crop and resize.
+chose between crop and resize, or `source_grid` when the prediction's
+recorded grid did.
 
 ### Sky segmentation provenance
 
@@ -229,7 +233,7 @@ values differ say where. Nothing else in the file needs to be compared for that;
     "population.pred_sky_masking": false,
     "population.evaluated_resolution": [1024, 1920],
     "population.benchmark_depth_range_m": [0.01, 80.0],
-    "method.metrics_revision": 2,
+    "method.metrics_revision": 3,
     "method.depth_alignment": "auto_affine",
     "method.sky_depth_m": null,
     "method.pred_sky_mask": false

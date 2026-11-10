@@ -504,3 +504,168 @@ class TestComputeScaleAndShift:
         aligned, s, t = compute_scale_and_shift(pred, gt)
         assert aligned.shape == (375, 1242)
         np.testing.assert_allclose(aligned, gt, rtol=1e-4)
+
+
+class TestDepthMetadataSparse:
+    """``sparse`` comes from the head, else from the loader's annotation."""
+
+    @staticmethod
+    def _dataset(head, annotation):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            get_modality_metadata=lambda name: head,
+            get_loader_meta=lambda name: annotation,
+        )
+
+    def test_loader_annotation_fills_a_silent_head(self):
+        from euler_eval.data import get_depth_metadata
+
+        dataset = self._dataset({"radial_depth": False}, {"meta": {"sparse": True}})
+        assert get_depth_metadata(dataset, "gt_depth")["sparse"] is True
+
+    def test_head_wins(self):
+        from euler_eval.data import get_depth_metadata
+
+        dataset = self._dataset({"sparse": False}, {"meta": {"sparse": True}})
+        assert get_depth_metadata(dataset)["sparse"] is False
+
+    def test_datasets_without_loader_annotations(self):
+        from types import SimpleNamespace
+
+        from euler_eval.data import get_depth_metadata
+
+        dataset = SimpleNamespace(get_modality_metadata=lambda name: {})
+        assert get_depth_metadata(dataset)["sparse"] is False
+
+
+class TestSourceGrid:
+    """A prediction's recorded ``source_grid`` places it exactly on the GT grid."""
+
+    @staticmethod
+    def _grid(affine, size=(8, 12)):
+        from euler_eval.data import SourceGrid
+
+        return SourceGrid.from_value({"size": list(size), "affine": affine})
+
+    def test_parse_rejects_what_is_not_a_crop_or_resize(self):
+        from euler_eval.data import SourceGrid
+
+        for bad in ({"size": [8, 12]}, {"size": [8, 12], "affine": [[1, 0.2, 0], [0, 1, 0]]},
+                    {"size": [0, 12], "affine": [[1, 0, 0], [0, 1, 0]]}):
+            with pytest.raises(ValueError):
+                SourceGrid.from_value(bad)
+
+    def test_relation(self):
+        grid = self._grid([[1, 0, -2], [0, 1, -1]])
+        assert grid.relation((6, 8)) == ("crop", (1, 2))
+        assert self._grid([[1, 0, 0], [0, 1, 0]]).relation((8, 12)) == ("none", None)
+        assert self._grid([[0.5, 0, -0.25], [0, 0.5, -0.25]]).relation((4, 6)) == ("resize", None)
+        # Resize to 8x6 (s = 0.5 horizontally only after the crop) is neither.
+        assert self._grid([[0.5, 0, -1.25], [0, 0.5, -0.25]]).relation((4, 4))[0] == "warp"
+
+    def test_recorded_centre_crop_trims_the_gt_at_its_origin(self):
+        from euler_eval.data import align_to_ground_truth, align_to_prediction
+
+        gt = np.arange(96, dtype=np.float32).reshape(8, 12) + 1
+        pred = gt[1:7, 2:10].copy()
+        grid = self._grid([[1, 0, -2], [0, 1, -1]])
+        p, g, method = align_to_ground_truth(pred, gt, spatial_alignment=grid)
+        assert method == "crop"
+        np.testing.assert_array_equal(g, pred)
+        np.testing.assert_array_equal(align_to_prediction(gt, pred, spatial_alignment=grid), pred)
+        # The shapes alone would have called this a top-left crop.
+        _, guessed, _ = align_to_ground_truth(pred, gt, spatial_alignment="crop")
+        assert not np.array_equal(guessed, pred)
+
+    def test_resize_then_crop_is_warped_exactly(self):
+        import cv2
+
+        from euler_eval.data import align_to_ground_truth
+
+        # A linear ramp survives bilinear resampling exactly, away from edges.
+        yy, xx = np.mgrid[0:40, 0:60].astype(np.float32)
+        gt = 10 + 0.5 * xx + 0.25 * yy
+        resized = cv2.resize(gt, (30, 20), interpolation=cv2.INTER_LINEAR)  # s = 0.5
+        pred = resized[2:18, 3:27]  # then a crop at (2, 3)
+        # Composite source -> prediction mapping: crop @ resize.
+        grid = self._grid([[0.5, 0, -0.25 - 3], [0, 0.5, -0.25 - 2]], size=(40, 60))
+        warped, g, method = align_to_ground_truth(pred, gt, spatial_alignment=grid)
+        assert method == "warp_prediction"
+        covered = np.isfinite(warped)
+        assert covered[10:30, 10:50].all() and not covered[:2].any() and not covered[:, :4].any()
+        inner = (slice(8, 32), slice(10, 50))
+        np.testing.assert_allclose(warped[inner], gt[inner], atol=1e-3)
+
+    def test_sparse_gt_is_forward_mapped_through_the_grid(self):
+        from euler_eval.data import align_to_prediction
+
+        gt = np.zeros((8, 12), dtype=np.float32)
+        gt[2, 4], gt[3, 5], gt[6, 10] = 7.0, 3.0, 9.0
+        # A 2x shrink then a crop of one row and one column.
+        grid = self._grid([[0.5, 0, -0.25 - 1], [0, 0.5, -0.25 - 1]])
+        pred = np.zeros((3, 5), dtype=np.float32)
+        out = align_to_prediction(gt, pred, spatial_alignment=grid, sparse=True)
+        # (2,4) and (3,5) land on pixel (0,1); the nearer surface (3 m) wins.
+        assert out[0, 1] == 3.0 and out[2, 4] == 9.0
+        assert np.count_nonzero(out) == 2 and set(out[out > 0]) <= {3.0, 7.0, 9.0}
+
+    def test_intrinsics_move_with_the_grid(self):
+        from euler_eval.data import prediction_intrinsics
+
+        K = np.array([[100.0, 0, 5.5], [0, 100.0, 3.5], [0, 0, 1]])
+        grid = self._grid([[0.5, 0, -1.25], [0, 0.5, -1.25]])
+        np.testing.assert_allclose(
+            prediction_intrinsics(K, grid),
+            [[50, 0, 0.5 * 5.5 - 1.25], [0, 50, 0.5 * 3.5 - 1.25], [0, 0, 1]],
+        )
+        assert prediction_intrinsics(K, "auto") is K
+
+    def test_auto_reads_the_file_then_the_head_and_explicit_modes_win(self):
+        from euler_eval.data import SourceGrid, sample_spatial_alignment
+
+        head = self._grid([[1, 0, 0], [0, 1, 0]])
+        file_value = {"size": [8, 12], "affine": [[1, 0, -2], [0, 1, -1]]}
+        sample = {"attributes": {"pred": {"source_grid": file_value}}}
+        assert sample_spatial_alignment(sample, "auto", head) == SourceGrid.from_value(file_value)
+        assert sample_spatial_alignment({"attributes": {"pred": {}}}, "auto", head) is head
+        assert sample_spatial_alignment({}, "auto") == "auto"
+        assert sample_spatial_alignment(sample, "resize", head) == "resize"
+
+    def test_a_grid_for_another_source_size_falls_back_to_guessing(self):
+        from euler_eval.data import classify_spatial_alignment
+
+        grid = self._grid([[1, 0, 0], [0, 1, 0]], size=(20, 20))
+        with pytest.warns(UserWarning, match="source_grid"):
+            assert classify_spatial_alignment(8, 12, 8, 8, mode=grid) == "vae_crop"
+
+
+class TestInvalidSentinel:
+    def test_declared_sentinel_comes_from_the_head_then_the_loader(self):
+        from types import SimpleNamespace
+
+        from euler_eval.data import declared_invalid_sentinel
+
+        def dataset(head, annotation=None):
+            return SimpleNamespace(
+                get_modality_metadata=lambda name: head,
+                get_loader_meta=lambda name: annotation,
+            )
+
+        loader = {"meta": {"invalid": {"non_finite": False, "sentinel": 0}}}
+        assert declared_invalid_sentinel(dataset({}, loader), "gt") == 0.0
+        head = {"invalid": {"non_finite": True, "sentinel": None}}
+        assert declared_invalid_sentinel(dataset(head, loader), "gt") is None
+        assert declared_invalid_sentinel(dataset({"invalid": {"sentinel": 65535}}), "gt") == 65535.0
+        assert declared_invalid_sentinel(dataset({}), "gt") is None
+
+    def test_mask_invalid_sentinel(self):
+        from euler_eval.data import mask_invalid_sentinel
+
+        values = np.array([[1.0, 65535.0], [0.0, 2.0]], dtype=np.float32)
+        gt = mask_invalid_sentinel(values, 65535.0, fill=0.0)
+        np.testing.assert_array_equal(gt, [[1, 0], [0, 2]])
+        assert values[0, 1] == 65535.0  # the input is not modified
+        pred = mask_invalid_sentinel(values, 0.0, fill=np.nan)
+        assert np.isnan(pred[1, 0]) and np.isfinite(pred).sum() == 3
+        assert mask_invalid_sentinel(values, None, fill=0.0) is values

@@ -28,6 +28,7 @@ changing the regular metrics.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -39,7 +40,10 @@ from .calibration import (
 )
 from .config_paths import parse_modality_path
 from .data import (
+    SourceGrid,
+    _crop_origin,
     _modality,
+    _warp_nearest,
     align_to_ground_truth,
     align_to_prediction,
     compose_sensor_to_camera_extrinsics,
@@ -167,19 +171,26 @@ def _mask_on_gt_grid(
     evaluated_shape: tuple[int, ...],
     gt_shape: tuple[int, ...],
     method: str,
+    alignment: Any = "auto",
 ) -> Optional[np.ndarray]:
     """Bring a prediction- or GT-plane mask onto the evaluated (GT) grid.
 
-    A GT-plane mask gets the GT's crop; any other mask is resized like the
-    prediction, by nearest pixel centre.
+    A GT-plane mask gets the GT's crop; any other mask is moved like the
+    prediction: through a recorded :class:`~euler_eval.data.SourceGrid`, else
+    resized by nearest pixel centre.
     """
     if valid_mask is None:
         return None
     mask = to_numpy_mask(valid_mask).astype(bool)
     if mask.shape == evaluated_shape:
         return mask
-    if method == "vae_crop" and mask.shape == gt_shape:
-        return mask[: evaluated_shape[0], : evaluated_shape[1]]
+    if mask.shape == gt_shape:
+        origin = _crop_origin(method, alignment, evaluated_shape[:2])
+        if origin is not None:
+            top, left = origin
+            return mask[top : top + evaluated_shape[0], left : left + evaluated_shape[1]]
+    if isinstance(alignment, SourceGrid) and evaluated_shape[:2] == alignment.source_size:
+        return _warp_nearest(mask, alignment.to_source(), evaluated_shape[:2], fill=0)
     return resize_mask(mask, evaluated_shape)
 
 
@@ -298,7 +309,7 @@ def evaluate_dense_depth_sample(
     max_depth: Optional[float] = None,
     benchmark_depth_range: Optional[tuple[float, float]] = None,
     min_valid_pixels: int = 10,
-    spatial_alignment: str = "auto",
+    spatial_alignment: Any = "auto",
 ) -> Optional[DepthSampleEvaluation]:
     """Score one dense depth prediction against a dense GT depth map.
 
@@ -321,9 +332,11 @@ def evaluate_dense_depth_sample(
             the range and square-root-scaled near/mid/far bins.  The regular
             metrics are unchanged.
         min_valid_pixels: Minimum surviving pixels; fewer returns ``None``.
-        spatial_alignment: ``"auto"``, ``"crop"`` or ``"resize"``: whether a
-            prediction smaller than the GT is a crop of it or resized
-            (:func:`~euler_eval.data.classify_spatial_alignment`).
+        spatial_alignment: Whether a prediction smaller than the GT is a
+            crop of it or resized: ``"auto"``, ``"crop"``, ``"resize"``
+            (:func:`~euler_eval.data.classify_spatial_alignment`), or the
+            prediction's recorded ``source_grid`` (a mapping or
+            :class:`~euler_eval.data.SourceGrid`), which places it exactly.
 
     Returns:
         A :class:`DepthSampleEvaluation`, or ``None`` when too few valid
@@ -334,6 +347,8 @@ def evaluate_dense_depth_sample(
     pred = to_numpy_depth(depth_pred)
     gt = to_numpy_depth(depth_gt)
     gt_shape = gt.shape
+    if isinstance(spatial_alignment, Mapping):
+        spatial_alignment = SourceGrid.from_value(spatial_alignment)
     pred, gt, spatial_method = align_to_ground_truth(
         pred, gt, spatial_alignment=spatial_alignment
     )
@@ -350,7 +365,9 @@ def evaluate_dense_depth_sample(
         valid = (gt > 0) & np.isfinite(gt) & np.isfinite(pred)
     valid = _apply_depth_bounds(valid, gt, min_depth, max_depth)
 
-    extra_mask = _mask_on_gt_grid(valid_mask, gt.shape, gt_shape, spatial_method)
+    extra_mask = _mask_on_gt_grid(
+        valid_mask, gt.shape, gt_shape, spatial_method, spatial_alignment
+    )
     if extra_mask is not None:
         valid = valid & extra_mask
 

@@ -6,7 +6,8 @@ metrics for depth, RGB, rays, and points_3d.
 """
 
 from collections.abc import Mapping
-from typing import Any, Callable, Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Optional, Union
 
 import numpy as np
 import torch
@@ -490,6 +491,180 @@ SPATIAL_ALIGNMENT_MODES = ("auto", "crop", "resize")
 #: (dense depth and points_3d, see :func:`align_to_ground_truth`).
 PREDICTION_RESIZE_METHOD = "resize_prediction"
 
+#: ``spatial_alignment.mode`` when a prediction's recorded ``source_grid``
+#: decided the alignment (see :class:`SourceGrid`).
+SOURCE_GRID_MODE = "source_grid"
+
+#: ``spatial_alignment.method`` for a recorded crop, at any origin.
+RECORDED_CROP_METHOD = "crop"
+
+#: ``spatial_alignment.method`` for a recorded relation that is neither a crop
+#: nor a whole-image resize (e.g. a resize, then a crop): the prediction is
+#: resampled onto the GT grid (``warp_prediction``) or the GT onto the
+#: prediction's (``warp``) through the exact pixel mapping.
+PREDICTION_WARP_METHOD = "warp_prediction"
+WARP_METHOD = "warp"
+
+
+@dataclass(frozen=True)
+class SourceGrid:
+    """A prediction's recorded ``source_grid``: how its pixel grid derives from
+    the image it was computed from, which is the GT's grid.
+
+    The prediction pixel at ``(x', y')`` sits at source position
+    ``((x' - tx) / sx, (y' - ty) / sy)``; pixel centres are at integer
+    coordinates (euler-dataset-contract's ``source_grid``, written by
+    euler-inference). The camera on the prediction grid is :meth:`matrix`
+    ``@ K``.
+    """
+
+    source_size: tuple[int, int]
+    sx: float
+    tx: float
+    sy: float
+    ty: float
+
+    @classmethod
+    def from_value(cls, value: Any) -> "SourceGrid":
+        """Parse a ``source_grid`` mapping (or return a :class:`SourceGrid`)."""
+        if isinstance(value, SourceGrid):
+            return value
+        try:
+            height, width = (int(v) for v in value["size"])
+            (sx, sxy, tx), (syx, sy, ty) = value["affine"]
+            numbers = [float(v) for v in (sx, sxy, tx, syx, sy, ty)]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                "source_grid must have 'size' [height, width] and 'affine' "
+                f"[[sx, 0, tx], [0, sy, ty]], got {value!r}"
+            ) from exc
+        if (
+            height <= 0
+            or width <= 0
+            or not np.all(np.isfinite(numbers))
+            or numbers[1] != 0
+            or numbers[3] != 0
+            or numbers[0] <= 0
+            or numbers[4] <= 0
+        ):
+            raise ValueError(
+                "source_grid must record a crop or resize: a positive size and "
+                f"an affine [[sx, 0, tx], [0, sy, ty]] with sx, sy > 0, got {value!r}"
+            )
+        return cls((height, width), numbers[0], numbers[2], numbers[4], numbers[5])
+
+    def matrix(self) -> np.ndarray:
+        """``3x3`` pixel-grid transform from the source to the prediction grid."""
+        return np.array(
+            [[self.sx, 0.0, self.tx], [0.0, self.sy, self.ty], [0.0, 0.0, 1.0]]
+        )
+
+    def to_prediction(self) -> np.ndarray:
+        """``2x3`` affine from source to prediction pixel coordinates."""
+        return self.matrix()[:2]
+
+    def to_source(self) -> np.ndarray:
+        """``2x3`` affine from prediction to source pixel coordinates."""
+        return np.array(
+            [
+                [1.0 / self.sx, 0.0, -self.tx / self.sx],
+                [0.0, 1.0 / self.sy, -self.ty / self.sy],
+            ]
+        )
+
+    def relation(
+        self, pred_shape: tuple[int, int]
+    ) -> tuple[str, Optional[tuple[int, int]]]:
+        """Classify a prediction of *pred_shape* on this grid.
+
+        Returns ``("none" | "crop" | "resize" | "warp", origin)``: ``origin``
+        is the ``(top, left)`` source pixel of a crop, else ``None``.
+        ``resize`` is a whole-image resize to *pred_shape*.
+        """
+        height, width = self.source_size
+        pred_h, pred_w = int(pred_shape[0]), int(pred_shape[1])
+        if (
+            self.sx == 1
+            and self.sy == 1
+            and float(self.tx).is_integer()
+            and float(self.ty).is_integer()
+        ):
+            top, left = int(-self.ty), int(-self.tx)
+            if 0 <= top and 0 <= left and top + pred_h <= height and left + pred_w <= width:
+                if (top, left, pred_h, pred_w) == (0, 0, height, width):
+                    return "none", None
+                return "crop", (top, left)
+        sx, sy = pred_w / width, pred_h / height
+        if np.allclose(
+            [self.sx, self.tx, self.sy, self.ty],
+            [sx, 0.5 * sx - 0.5, sy, 0.5 * sy - 0.5],
+            rtol=1e-9,
+            atol=1e-9,
+        ):
+            return "resize", None
+        return "warp", None
+
+
+#: A run-wide mode (:data:`SPATIAL_ALIGNMENT_MODES`) or one sample's recorded grid.
+SpatialAlignment = Union[str, SourceGrid]
+
+
+def pred_head_source_grid(
+    dataset: Any, modality: str = "pred"
+) -> Optional[SourceGrid]:
+    """Return the ``source_grid`` a prediction dataset's head records, if any."""
+    lookup = getattr(dataset, "get_modality_metadata", None)
+    if not callable(lookup):
+        return None
+    try:
+        meta = lookup(modality)
+    except Exception:
+        return None
+    value = meta.get("source_grid") if isinstance(meta, Mapping) else None
+    return SourceGrid.from_value(value) if value is not None else None
+
+
+def sample_spatial_alignment(
+    sample: Mapping[str, Any],
+    mode: SpatialAlignment,
+    head_grid: Optional[SourceGrid] = None,
+    *,
+    modality: str = "pred",
+) -> SpatialAlignment:
+    """Return how one sample's prediction goes onto the GT grid.
+
+    An explicit ``crop`` or ``resize`` *mode* applies as configured. Under
+    ``auto`` the prediction's recorded ``source_grid`` decides: its file's
+    attributes, else its dataset head (*head_grid*); ``auto`` guesses from
+    the shapes only when neither records one.
+    """
+    if not isinstance(mode, str) or mode != "auto":
+        return mode
+    attributes = sample.get("attributes") if isinstance(sample, Mapping) else None
+    entry = attributes.get(modality) if isinstance(attributes, Mapping) else None
+    value = entry.get("source_grid") if isinstance(entry, Mapping) else None
+    if value is not None:
+        return SourceGrid.from_value(value)
+    return head_grid if head_grid is not None else mode
+
+
+def spatial_alignment_mode(alignment: SpatialAlignment) -> str:
+    """The ``spatial_alignment.mode`` to report for *alignment*."""
+    return SOURCE_GRID_MODE if isinstance(alignment, SourceGrid) else alignment
+
+
+def prediction_intrinsics(
+    intrinsics_K: Optional[np.ndarray], alignment: SpatialAlignment
+) -> Optional[np.ndarray]:
+    """The camera on the prediction grid: ``T @ K`` for a recorded grid.
+
+    Without a recorded grid the intrinsics are returned as they are, which is
+    right for an uncropped or top-left-cropped prediction.
+    """
+    if intrinsics_K is None or not isinstance(alignment, SourceGrid):
+        return intrinsics_K
+    return alignment.matrix() @ np.asarray(intrinsics_K, dtype=np.float64)
+
 
 def validate_spatial_alignment(mode: str) -> str:
     """Return *mode* when it is one of :data:`SPATIAL_ALIGNMENT_MODES`."""
@@ -502,7 +677,7 @@ def validate_spatial_alignment(mode: str) -> str:
 
 
 def classify_spatial_alignment(
-    gt_h: int, gt_w: int, pred_h: int, pred_w: int, *, mode: str = "auto"
+    gt_h: int, gt_w: int, pred_h: int, pred_w: int, *, mode: SpatialAlignment = "auto"
 ) -> str:
     """Classify how a GT and a prediction of these shapes go onto one grid.
 
@@ -519,7 +694,27 @@ def classify_spatial_alignment(
     - ``"crop"``: always a top-left crop. A prediction larger than the GT
       raises.
     - ``"resize"``: always a resize.
+    - a :class:`SourceGrid` (the prediction's recorded ``source_grid``) knows:
+      ``"none"``, ``"crop"`` at any origin, ``"resize"`` of the whole image,
+      or ``"warp"`` for anything else. A grid recorded for another source
+      size than the GT's cannot place the prediction, so the shapes are
+      guessed from as under ``"auto"``, with a warning.
     """
+    if isinstance(mode, SourceGrid):
+        if (gt_h, gt_w) == mode.source_size:
+            relation, _ = mode.relation((pred_h, pred_w))
+            return {"crop": RECORDED_CROP_METHOD, "warp": WARP_METHOD}.get(
+                relation, relation
+            )
+        import warnings
+
+        warnings.warn(
+            f"The prediction's source_grid describes a {mode.source_size[0]}x"
+            f"{mode.source_size[1]} source, but the GT is {gt_h}x{gt_w}; "
+            "guessing the alignment from the shapes instead.",
+            stacklevel=2,
+        )
+        mode = "auto"
     validate_spatial_alignment(mode)
     if gt_h == pred_h and gt_w == pred_w:
         return "none"
@@ -544,7 +739,7 @@ def align_intrinsics_to_prediction(
     gt_shape: tuple[int, int],
     pred_shape: tuple[int, int],
     *,
-    mode: str = "auto",
+    mode: SpatialAlignment = "auto",
 ) -> np.ndarray:
     """Adjust a camera matrix for the alignment :func:`align_to_prediction` did.
 
@@ -576,6 +771,9 @@ def align_intrinsics_to_prediction(
     gt_h, gt_w = int(gt_shape[0]), int(gt_shape[1])
     pred_h, pred_w = int(pred_shape[0]), int(pred_shape[1])
 
+    if isinstance(mode, SourceGrid) and (gt_h, gt_w) == mode.source_size:
+        # The recorded mapping moves the camera exactly, crops included.
+        return mode.matrix() @ K
     if classify_spatial_alignment(gt_h, gt_w, pred_h, pred_w, mode=mode) != "resize":
         return K
     if gt_h <= 0 or gt_w <= 0:
@@ -673,6 +871,156 @@ def _resize_dense(
     return out
 
 
+def _crop_origin(
+    method: str,
+    mode: SpatialAlignment,
+    pred_shape: tuple[int, int],
+) -> Optional[tuple[int, int]]:
+    """``(top, left)`` of the GT region a cropped prediction covers, or ``None``."""
+    if method == "vae_crop":
+        return 0, 0
+    if method == RECORDED_CROP_METHOD and isinstance(mode, SourceGrid):
+        return mode.relation(pred_shape)[1]
+    return None
+
+
+def _warp_dense(
+    values: np.ndarray,
+    affine: np.ndarray,
+    shape: tuple[int, int],
+    *,
+    valid: Optional[np.ndarray] = None,
+    fill: float = float("nan"),
+) -> np.ndarray:
+    """Resample ``(H, W)`` or ``(H, W, C)`` *values* onto a grid of *shape*.
+
+    *affine* (``2x3``) maps a pixel position of *values* to the target grid,
+    pixel centres at integer coordinates. Invalid pixels (non-finite, or
+    outside *valid*) carry no weight; a target pixel with none of the values
+    behind it gets *fill*. Where the target is coarser, values are first
+    area-averaged, as :func:`_resize_dense` does for a resize; the rest is
+    bilinear.
+    """
+    import cv2
+
+    values = np.asarray(values, dtype=np.float32)
+    matrix = np.asarray(affine, dtype=np.float64).copy()
+    if valid is None:
+        valid = (
+            np.isfinite(values) if values.ndim == 2 else np.isfinite(values).all(axis=-1)
+        )
+    src_h, src_w = values.shape[:2]
+    fx, fy = min(matrix[0, 0], 1.0), min(matrix[1, 1], 1.0)
+    new_w, new_h = max(1, int(round(src_w * fx))), max(1, int(round(src_h * fy)))
+    if (new_h, new_w) != (src_h, src_w):
+        values = _resize_dense(values, (new_h, new_w), valid=valid, fill=float("nan"))
+        valid = (
+            np.isfinite(values) if values.ndim == 2 else np.isfinite(values).all(axis=-1)
+        )
+        # Compose with the inverse of that resize: x = (x_r - 0.5 f + 0.5) / f.
+        rx, ry = new_w / src_w, new_h / src_h
+        matrix = np.array(
+            [
+                [matrix[0, 0] / rx, 0.0, matrix[0, 2] + matrix[0, 0] * (0.5 - 0.5 * rx) / rx],
+                [0.0, matrix[1, 1] / ry, matrix[1, 2] + matrix[1, 1] * (0.5 - 0.5 * ry) / ry],
+            ]
+        )
+    height, width = int(shape[0]), int(shape[1])
+    mask = valid if values.ndim == 2 else valid[..., None]
+    clean = np.ascontiguousarray(np.where(mask, values, 0), dtype=np.float32)
+    weight = np.ascontiguousarray(valid, dtype=np.float32)
+    options = dict(
+        flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0
+    )
+    numerator = cv2.warpAffine(clean, matrix, (width, height), **options)
+    support = cv2.warpAffine(weight, matrix, (width, height), **options)
+    if numerator.ndim == 2 and clean.ndim == 3:  # cv2 drops a single channel
+        numerator = numerator[..., None]
+    if numerator.ndim == 3:
+        support = support[..., None]
+    out = np.full_like(numerator, fill)
+    np.divide(numerator, support, out=out, where=support > 1e-6)
+    return out
+
+
+def _warp_nearest(
+    values: np.ndarray, affine: np.ndarray, shape: tuple[int, int], fill: Any
+) -> np.ndarray:
+    """Nearest-pixel counterpart of :func:`_warp_dense`, for masks and labels."""
+    import cv2
+
+    values = np.asarray(values)
+    source = values.astype(np.uint8) if values.dtype == bool else values
+    out = cv2.warpAffine(
+        np.ascontiguousarray(source),
+        np.asarray(affine, dtype=np.float64),
+        (int(shape[1]), int(shape[0])),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=fill,
+    )
+    return out.astype(bool) if values.dtype == bool else out
+
+
+def _forward_map_sparse(
+    depth: np.ndarray, affine: np.ndarray, shape: tuple[int, int]
+) -> np.ndarray:
+    """Move each valid depth sample to its nearest target pixel under *affine*.
+
+    The general-mapping counterpart of euler-loading's
+    ``resize_raster(interpolation="sparse")``: the nearest surface wins where
+    several land on one pixel, and every output value is a measurement.
+    """
+    depth = np.asarray(depth)
+    height, width = int(shape[0]), int(shape[1])
+    valid = np.isfinite(depth) & (depth > 0)
+    ys, xs = np.nonzero(valid)
+    tx = np.floor(affine[0][0] * xs + affine[0][2] + 0.5).astype(np.int64)
+    ty = np.floor(affine[1][1] * ys + affine[1][2] + 0.5).astype(np.int64)
+    keep = (tx >= 0) & (tx < width) & (ty >= 0) & (ty < height)
+    flat = np.full(height * width, np.inf)
+    np.minimum.at(flat, ty[keep] * width + tx[keep], depth[ys[keep], xs[keep]])
+    flat[~np.isfinite(flat)] = 0
+    dtype = depth.dtype if depth.dtype.kind == "f" else np.float32
+    return flat.reshape(height, width).astype(dtype)
+
+
+def warp_prediction(
+    pred: np.ndarray, grid: SourceGrid, shape: tuple[int, int]
+) -> np.ndarray:
+    """Resample a dense prediction onto its source grid of *shape*.
+
+    For depth ``(H, W)`` and point maps ``(H, W, C)`` with a recorded
+    :class:`SourceGrid`. GT pixels the prediction does not cover become NaN,
+    so they drop out of the metrics.
+    """
+    pred = np.asarray(pred)
+    resized = _warp_dense(pred, grid.to_source(), shape)
+    dtype = pred.dtype if pred.dtype.kind == "f" else np.float32
+    return resized.astype(dtype, copy=False)
+
+
+def _warp_gt_onto_prediction(
+    gt: np.ndarray, grid: SourceGrid, shape: tuple[int, int], *, sparse: bool
+) -> np.ndarray:
+    """Bring a GT array onto a prediction grid its recorded mapping describes."""
+    affine = grid.to_prediction()
+    if gt.dtype == bool:
+        return _warp_nearest(gt, affine, shape, fill=0)
+    if gt.ndim == 2:
+        if sparse:
+            return _forward_map_sparse(gt, affine, shape)
+        valid = np.isfinite(gt) & (gt > 0)
+        clean = np.where(valid, gt, 0).astype(np.float32)
+        dtype = gt.dtype if gt.dtype.kind == "f" else np.float32
+        if grid.sx >= 1 and grid.sy >= 1:
+            # Enlarging takes the nearest GT pixel, as resize_depth_gt does.
+            return _warp_nearest(clean, affine, shape, fill=0.0).astype(dtype)
+        return _warp_dense(clean, affine, shape, valid=valid, fill=0.0).astype(dtype)
+    warped = _warp_dense(gt, affine, shape)
+    return warped.astype(gt.dtype, copy=False) if gt.dtype.kind == "f" else warped
+
+
 def resize_prediction(pred: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
     """Resize a dense prediction onto the GT grid ``shape = (height, width)``.
 
@@ -756,7 +1104,7 @@ def align_to_prediction(
     gt: np.ndarray,
     pred: np.ndarray,
     *,
-    spatial_alignment: str = "auto",
+    spatial_alignment: SpatialAlignment = "auto",
     sparse: bool = False,
 ) -> np.ndarray:
     """Bring a GT array onto the prediction's grid.
@@ -770,6 +1118,10 @@ def align_to_prediction(
     - ``(H, W, C)`` images and direction maps: area average when shrinking,
       bilinear when enlarging.
 
+    A recorded :class:`SourceGrid` crops at its origin, resizes as above for a
+    whole-image resize, and otherwise resamples through its exact mapping
+    (sparse depth forward-mapped, nearest surface first).
+
     Dense depth and points_3d are evaluated on the GT grid instead
     (:func:`align_to_ground_truth`). This direction serves RGB, rays, GT
     masks and the projection plane of sparse GT.
@@ -777,7 +1129,8 @@ def align_to_prediction(
     Args:
         gt: Ground-truth array.
         pred: Prediction array whose spatial dimensions are the target.
-        spatial_alignment: ``auto``, ``crop`` or ``resize``.
+        spatial_alignment: ``auto``, ``crop``, ``resize`` or the sample's
+            recorded :class:`SourceGrid`.
         sparse: The GT is sparse depth.
 
     Returns:
@@ -790,8 +1143,14 @@ def align_to_prediction(
     )
     if method == "none":
         return gt
-    if method == "vae_crop":
-        return gt[:pred_h, :pred_w]
+    origin = _crop_origin(method, spatial_alignment, (pred_h, pred_w))
+    if origin is not None:
+        top, left = origin
+        return gt[top : top + pred_h, left : left + pred_w]
+    if method == WARP_METHOD:
+        return _warp_gt_onto_prediction(
+            gt, spatial_alignment, (pred_h, pred_w), sparse=sparse
+        )
 
     _warn_aspect_ratio(gt.shape, pred.shape)
     if gt.dtype == bool:
@@ -812,7 +1171,7 @@ def align_to_ground_truth(
     pred: np.ndarray,
     gt: np.ndarray,
     *,
-    spatial_alignment: str = "auto",
+    spatial_alignment: SpatialAlignment = "auto",
 ) -> tuple[np.ndarray, np.ndarray, str]:
     """Put a dense prediction and its GT on the GT's pixel grid.
 
@@ -822,20 +1181,34 @@ def align_to_ground_truth(
     measured: no GT value is interpolated, invalid pixels stay invalid, and
     the GT's intrinsics describe the evaluated grid unchanged.
 
+    A recorded :class:`SourceGrid` (*spatial_alignment*) crops the GT at its
+    origin, or resamples the prediction through its exact mapping
+    (:func:`warp_prediction`) when it is neither a crop nor a whole-image
+    resize.
+
     Returns:
-        ``(pred, gt, method)``, with *method* ``"none"``, ``"vae_crop"`` or
-        :data:`PREDICTION_RESIZE_METHOD`.
+        ``(pred, gt, method)``, with *method* ``"none"``, ``"vae_crop"``,
+        :data:`RECORDED_CROP_METHOD`, :data:`PREDICTION_RESIZE_METHOD` or
+        :data:`PREDICTION_WARP_METHOD`.
     """
     gt_h, gt_w = gt.shape[:2]
     pred_h, pred_w = pred.shape[:2]
     method = classify_spatial_alignment(
         gt_h, gt_w, pred_h, pred_w, mode=spatial_alignment
     )
-    if method == "vae_crop":
-        return pred, gt[:pred_h, :pred_w], method
+    origin = _crop_origin(method, spatial_alignment, (pred_h, pred_w))
+    if origin is not None:
+        top, left = origin
+        return pred, gt[top : top + pred_h, left : left + pred_w], method
     if method == "resize":
         _warn_aspect_ratio(gt.shape, pred.shape)
         return resize_prediction(pred, (gt_h, gt_w)), gt, PREDICTION_RESIZE_METHOD
+    if method == WARP_METHOD:
+        return (
+            warp_prediction(pred, spatial_alignment, (gt_h, gt_w)),
+            gt,
+            PREDICTION_WARP_METHOD,
+        )
     return pred, gt, method
 
 
@@ -1513,16 +1886,85 @@ def get_depth_metadata(
         modality: Its key in the dataset (``"gt_depth"`` beside RGB GT).
 
     Returns:
-        Dict with ``radial_depth`` (bool) and ``sparse`` (bool, the head's
+        Dict with ``radial_depth`` (bool) and ``sparse`` (bool, the
         ``"sparse"`` flag for lidar-like depth; selects the sparse mode of
-        :func:`resize_depth_gt`).
+        :func:`resize_depth_gt`). ``sparse`` comes from the head, else from
+        the loader's annotation, which states it for loaders that always
+        return sparse maps (DrivingStereo), as euler-loading's preprocessor
+        reads it. ``invalid_sentinel`` is the declared invalid value
+        (:func:`declared_invalid_sentinel`), or ``None``.
     """
     meta = dataset.get_modality_metadata(modality)
+    sparse = meta.get("sparse")
+    if sparse is None:
+        sparse = _loader_annotation_meta(dataset, modality).get("sparse", False)
 
     return {
         "radial_depth": bool(meta.get("radial_depth", True)),
-        "sparse": bool(meta.get("sparse", False)),
+        "sparse": sparse is True,
+        "invalid_sentinel": declared_invalid_sentinel(dataset, modality),
     }
+
+
+def declared_invalid_sentinel(dataset: Any, modality: str) -> Optional[float]:
+    """The finite value a modality declares for pixels without a valid value.
+
+    Reads euler-dataset-contract's ``invalid.sentinel`` from the head's meta,
+    else from the loader annotation's meta (as for ``sparse``). ``None`` when
+    neither declares one, or declares ``null``.
+    """
+    lookup = getattr(dataset, "get_modality_metadata", None)
+    try:
+        meta = lookup(modality) if callable(lookup) else None
+    except Exception:
+        meta = None
+    meta = meta if isinstance(meta, Mapping) else {}
+    invalid = (
+        meta["invalid"]
+        if "invalid" in meta
+        else _loader_annotation_meta(dataset, modality).get("invalid")
+    )
+    sentinel = invalid.get("sentinel") if isinstance(invalid, Mapping) else None
+    if (
+        isinstance(sentinel, bool)
+        or not isinstance(sentinel, (int, float))
+        or not np.isfinite(sentinel)
+    ):
+        return None
+    return float(sentinel)
+
+
+def mask_invalid_sentinel(
+    values: np.ndarray, sentinel: Optional[float], *, fill: float
+) -> np.ndarray:
+    """Replace the declared invalid *sentinel* in *values* with *fill*.
+
+    euler-eval treats GT depth that is non-finite or not positive as invalid
+    and drops non-finite predictions, so GT uses ``fill=0`` and predictions
+    ``fill=NaN``. A sentinel those rules already exclude costs nothing.
+    """
+    if sentinel is None:
+        return values
+    values = np.asarray(values)
+    hit = values == sentinel
+    if not hit.any() or (fill == sentinel):
+        return values
+    out = values.astype(values.dtype if values.dtype.kind == "f" else np.float32, copy=True)
+    out[hit] = fill
+    return out
+
+
+def _loader_annotation_meta(dataset: Any, modality: str) -> dict[str, Any]:
+    """Return the ``meta`` of a modality's loader annotation, or ``{}``."""
+    lookup = getattr(dataset, "get_loader_meta", None)
+    if not callable(lookup):
+        return {}
+    try:
+        annotation = lookup(modality)
+    except Exception:
+        return {}
+    meta = annotation.get("meta") if isinstance(annotation, dict) else None
+    return meta if isinstance(meta, dict) else {}
 
 
 def get_sparse_depth_metadata(dataset: MultiModalDataset) -> dict[str, Any]:

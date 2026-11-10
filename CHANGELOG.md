@@ -7,6 +7,19 @@ the git history for those.
 
 ### Changed
 
+- **Declared invalid sentinels are not scored; `metrics_revision` is now 3.**
+  A depth dataset's euler-dataset-contract `invalid.sentinel` (its head's,
+  else its loader annotation's) marks pixels without a value: GT depth equal
+  to it is invalid like non-positive depth, and a prediction equal to it is
+  dropped like a non-finite one. This applies to dense and sparse depth, the
+  GT depth of RGB depth bins and of `points_3d`, and depth predictions against
+  sparse `points_3d`. A GT sentinel such as 65535 used to count as a 65535 m
+  measurement, and a prediction written with `0` for "no prediction" (e.g.
+  through euler-loading's DrivingStereo writer, whose loader declares
+  `sentinel: 0`) as a 0 m one. Values change only for datasets that declare a
+  sentinel, but such datasets existed, so the revision moves.
+  `get_depth_metadata` reports `invalid_sentinel`; `declared_invalid_sentinel`
+  and `mask_invalid_sentinel` in `euler_eval.data`.
 - **Dense depth and `points_3d` are scored on the GT grid; `metrics_revision`
   is now 2.** When a prediction's resolution differs from the GT's and it is
   not a crop, the prediction is resized onto the GT (area average when
@@ -29,8 +42,9 @@ the git history for those.
   depth prediction that is a crop of it is cropped like the GT; masks of any
   other size are resized. GT depth that is still resized (beside RGB, for
   depth-binned metrics) keeps invalid pixels out of valid ones, and is
-  resampled as sparse when its dataset head declares `"sparse": true`, with
-  euler-loading's `resize_raster(interpolation="sparse")`.
+  resampled as sparse when its dataset head declares `"sparse": true` (or,
+  when the head is silent, its loader's annotation does, as DrivingStereo's
+  does), with euler-loading's `resize_raster(interpolation="sparse")`.
 - Require `euler-loading>=2.36`, the first release with
   `resize_raster(interpolation="sparse")`.
 - **`experiments[].modalities` selects prediction modalities only** (`depth`,
@@ -83,6 +97,22 @@ the git history for those.
 
 ### Added
 
+- **Predictions that record their `source_grid` are placed exactly.** Under
+  `--spatial-alignment auto`, a prediction's euler-dataset-contract
+  `source_grid` (its file's attributes, else its dataset head; euler-inference
+  writes it for outputs that declare `outputs[].source_grid`) decides how it
+  goes onto the GT grid instead of the shape guess: a crop at any origin,
+  centre crops included, trims the GT exactly; a whole-image resize runs as
+  `resize`; any other mapping (a resize, then a crop) resamples through it
+  (`spatial_alignment.method` `warp_prediction` or `warp`). Sparse
+  point-cloud GT is projected with the intrinsics moved onto the prediction
+  grid, which a resized prediction previously missed. An explicit `crop` or
+  `resize` still wins; the run reports `spatial_alignment.mode:
+  "source_grid"`. `evaluate_dense_depth_sample` accepts a `source_grid`
+  mapping as `spatial_alignment`. `SourceGrid`, `sample_spatial_alignment`,
+  `pred_head_source_grid`, `prediction_intrinsics` and `warp_prediction` in
+  `euler_eval.data`. See
+  [Resolution alignment](docs/alignment.md#resolution-alignment).
 - `--spatial-alignment {auto,crop,resize}` and a per-entry
   `datasets[].spatial_alignment` state whether predictions at another
   resolution were cropped or resized, instead of guessing from the shapes

@@ -31,7 +31,7 @@ validation exits with status `1` before any dataset is opened.
 | `--metrics-config` | `str` | auto-detect | Path to `metrics_config.json` for sanity checking |
 | `--depth-alignment` | `{none,auto_affine,affine}` | `auto_affine` | Depth calibration mode ([details](alignment.md#depth-alignment)) |
 | `--points-3d-alignment` | `{none,scale,similarity,auto}` | `auto` | points_3d gauge alignment ([details](alignment.md#points-3d-gauge-alignment)) |
-| `--spatial-alignment` | `{auto,crop,resize}` | `auto` | Whether predictions at another resolution than the GT were cropped or resized; a `datasets[]` entry's `spatial_alignment` overrides it ([details](alignment.md#resolution-alignment)) |
+| `--spatial-alignment` | `{auto,crop,resize}` | `auto` | Whether predictions at another resolution than the GT were cropped or resized; `auto` follows a prediction's recorded `source_grid` and guesses only without one; a `datasets[]` entry's `spatial_alignment` overrides it ([details](alignment.md#resolution-alignment)) |
 | `--rgb-fid-backend` | `{builtin,clean-fid}` | `builtin` | RGB FID backend; `clean-fid` requires the `[fid]` extra |
 | `--benchmark-depth-range` | `float float` | none | Depth range `[MIN, MAX]` (m) for near/mid/far benchmark bins ([details](alignment.md#benchmark-depth-bins)) |
 | `--distributions` | flag | off | Enable per-sample and pixel-pool RMSE error histograms for depth and point maps ([details](distributions.md)) |

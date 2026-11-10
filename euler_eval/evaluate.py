@@ -7,7 +7,7 @@ datasets loaded via euler_loading.
 import copy
 import tempfile
 from pathlib import Path
-from typing import Iterator, Optional, Tuple
+from typing import Any, Iterator, Optional, Tuple
 
 import numpy as np
 from euler_loading import MultiModalDataset
@@ -24,7 +24,15 @@ from .data import (
     align_to_ground_truth,
     align_to_prediction,
     apply_point_transform,
+    SourceGrid,
+    _warp_nearest,
     classify_spatial_alignment,
+    declared_invalid_sentinel,
+    mask_invalid_sentinel,
+    pred_head_source_grid,
+    prediction_intrinsics,
+    sample_spatial_alignment,
+    spatial_alignment_mode,
     classify_upscaling_alignment,
     compute_scale_and_shift,
     decompose_point_errors,
@@ -619,7 +627,7 @@ class _SkyMaskCoverage:
 
 
 def _get_prediction_sky_mask(
-    sample: dict, depth_pred: np.ndarray, spatial_alignment: str = "auto"
+    sample: dict, depth_pred: np.ndarray, spatial_alignment: Any = "auto"
 ) -> Optional[np.ndarray]:
     """Return the predicted sky mask on the evaluated depth grid (True = sky).
 
@@ -629,7 +637,9 @@ def _get_prediction_sky_mask(
     *spatial_alignment* calls the grid a top-left crop of the mask (a model
     that cropped its input to a multiple of 8, with the mask at input size),
     the mask is cropped. Any other size is resized by nearest pixel centre,
-    like a resized prediction.
+    like a resized prediction. With a recorded :class:`SourceGrid` the mask
+    follows its exact mapping: from the input's grid onto a cropped or warped
+    prediction's, or from the prediction's grid onto the input's.
     """
     mask_data = sample.get("pred_sky_mask")
     if mask_data is None:
@@ -639,6 +649,16 @@ def _get_prediction_sky_mask(
     mask_h, mask_w = mask.shape[:2]
     if (mask_h, mask_w) == (height, width):
         return mask
+    if isinstance(spatial_alignment, SourceGrid):
+        if (mask_h, mask_w) == spatial_alignment.source_size:
+            return align_to_prediction(
+                mask, depth_pred, spatial_alignment=spatial_alignment
+            )
+        if (height, width) == spatial_alignment.source_size:
+            return _warp_nearest(
+                mask, spatial_alignment.to_source(), (height, width), fill=0
+            )
+        return resize_mask(mask, (height, width))
     if (
         mask_h >= height
         and mask_w >= width
@@ -705,7 +725,7 @@ def _mask_predicted_sky(
     sample: dict,
     depth_pred: np.ndarray,
     sky_valid: Optional[np.ndarray],
-    spatial_alignment: str = "auto",
+    spatial_alignment: Any = "auto",
 ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """Fold the prediction's own sky into the validity mask for --mask-sky-prediction.
 
@@ -780,25 +800,29 @@ class _SkyIoU:
         return self.implicit_reason is None
 
     def add(
-        self, sample: dict, depth_pred: np.ndarray, implicit_depth: Optional[np.ndarray]
+        self,
+        sample: dict,
+        depth_pred: np.ndarray,
+        implicit_depth: Optional[np.ndarray],
+        alignment: Any = None,
     ) -> Optional[dict]:
         """Score one sample and return its per-image values by variant.
 
         ``depth_pred`` defines the evaluated grid; ``implicit_depth`` is the
         converted, uncalibrated, uncapped prediction (``None`` skips implicit).
+        *alignment* is this sample's (e.g. its recorded source grid), else
+        the run's ``spatial_alignment``.
         """
+        if alignment is None:
+            alignment = self.spatial_alignment
         self.samples += 1
-        pred_sky = _get_prediction_sky_mask(
-            sample, depth_pred, self.spatial_alignment
-        )
+        pred_sky = _get_prediction_sky_mask(sample, depth_pred, alignment)
         self.explicit_seen |= pred_sky is not None
         gt_sky = _get_gt_sky_mask(sample)
         if gt_sky is None:
             self.samples_without_gt += 1
             return None
-        gt_sky = align_to_prediction(
-            gt_sky, depth_pred, spatial_alignment=self.spatial_alignment
-        )
+        gt_sky = align_to_prediction(gt_sky, depth_pred, spatial_alignment=alignment)
         self.gt_sky_pixels += int(np.count_nonzero(gt_sky))
         self.gt_pixels += int(gt_sky.size)
 
@@ -1500,21 +1524,34 @@ def evaluate_depth_samples(
             pred_sky_masking = (
                 _PredictedSkyMasking() if pred_sky_mask_enabled else None
             )
+            head_grid = pred_head_source_grid(dataset)
+            # Declared invalid sentinels never count as measurements.
+            gt_sentinel = declared_invalid_sentinel(dataset, "gt")
+            pred_sentinel = declared_invalid_sentinel(dataset, "pred")
+            reported_mode = spatial_alignment
             for i, sample in tqdm(
                 depth_iter,
                 total=num_samples,
                 desc="Processing depth pairs",
             ):
+                # A prediction's recorded source_grid beats the shape guess of 'auto'.
+                alignment = sample_spatial_alignment(sample, spatial_alignment, head_grid)
+                if i == 0:
+                    reported_mode = spatial_alignment_mode(alignment)
                 hierarchy, entry_id = _extract_hierarchy(sample)
 
-                depth_gt = to_numpy_depth(sample["gt"])
-                depth_pred = to_numpy_depth(sample["pred"])
+                depth_gt = mask_invalid_sentinel(
+                    to_numpy_depth(sample["gt"]), gt_sentinel, fill=0.0
+                )
+                depth_pred = mask_invalid_sentinel(
+                    to_numpy_depth(sample["pred"]), pred_sentinel, fill=np.nan
+                )
 
                 gt_shape, pred_shape = depth_gt.shape[:2], depth_pred.shape[:2]
                 # The GT stays as measured: a crop trims it to the region the
                 # prediction covers, a resize moves the prediction onto it.
                 depth_pred, depth_gt, sample_method = align_to_ground_truth(
-                    depth_pred, depth_gt, spatial_alignment=spatial_alignment
+                    depth_pred, depth_gt, spatial_alignment=alignment
                 )
                 if i == 0:
                     gt_native_dims, pred_native_dims = gt_shape, pred_shape
@@ -1546,7 +1583,7 @@ def evaluate_depth_samples(
                         and sky_valid.shape[:2] != depth_pred.shape[:2]
                     ):
                         sky_valid = align_to_prediction(
-                            sky_valid, depth_pred, spatial_alignment=spatial_alignment
+                            sky_valid, depth_pred, spatial_alignment=alignment
                         )
 
                 if i == 0:
@@ -1578,7 +1615,7 @@ def evaluate_depth_samples(
                 depth_gt = process_depth(depth_gt, is_radial, intrinsics_K)
                 depth_pred_raw = process_depth(depth_pred, is_radial, intrinsics_K)
                 pred_sky_mask = (
-                    _get_prediction_sky_mask(sample, depth_pred, spatial_alignment)
+                    _get_prediction_sky_mask(sample, depth_pred, alignment)
                     if sky_depth is not None
                     else None
                 )
@@ -1591,11 +1628,11 @@ def evaluate_depth_samples(
                             normalized_predictions, input_space_detected
                         )
                     sky_iou_values = sky_iou_scores.add(
-                        sample, depth_pred, depth_pred_raw
+                        sample, depth_pred, depth_pred_raw, alignment
                     )
                 gt_sky_valid = sky_valid
                 sky_valid, masked_pred_sky = _mask_predicted_sky(
-                    pred_sky_masking, sample, depth_pred, sky_valid, spatial_alignment
+                    pred_sky_masking, sample, depth_pred, sky_valid, alignment
                 )
 
                 if alignment_mode == "none":
@@ -2080,6 +2117,7 @@ def evaluate_depth_samples(
                     "pred_dimensions": {"height": pred_native_dims[0], "width": pred_native_dims[1]}
                     if pred_native_dims
                     else None,
+                    "mode": reported_mode,
                     "method": spatial_method,
                     "evaluated_dimensions": {
                         "height": evaluated_dims[0],
@@ -2357,15 +2395,24 @@ def evaluate_sparse_depth_samples(
             pred_sky_masking = (
                 _PredictedSkyMasking() if pred_sky_mask_enabled else None
             )
+            head_grid = pred_head_source_grid(dataset)
+            pred_sentinel = declared_invalid_sentinel(dataset, "pred")
+            reported_mode = spatial_alignment
             for i, sample in tqdm(
                 depth_iter,
                 total=num_samples,
                 desc="Processing sparse depth pairs",
             ):
+                # A prediction's recorded source_grid beats the shape guess of 'auto'.
+                alignment = sample_spatial_alignment(sample, spatial_alignment, head_grid)
+                if i == 0:
+                    reported_mode = spatial_alignment_mode(alignment)
                 hierarchy, entry_id = _extract_hierarchy(sample)
 
                 point_cloud = to_numpy_point_cloud(sample["gt"])
-                depth_pred = to_numpy_depth(sample["pred"])
+                depth_pred = mask_invalid_sentinel(
+                    to_numpy_depth(sample["pred"]), pred_sentinel, fill=np.nan
+                )
                 intrinsics_K = _get_intrinsics_K(sample)
                 camera_extrinsics, extrinsics_source = (
                     _get_pointcloud_to_camera_extrinsics(sample)
@@ -2374,6 +2421,10 @@ def evaluate_sparse_depth_samples(
                     raise ValueError(
                         f"Sample {entry_id!r} is missing intrinsics for sparse depth projection."
                     )
+                # The intrinsics describe the input image; a recorded
+                # source_grid moves them onto the prediction grid the cloud is
+                # projected onto (and the prediction is converted on).
+                intrinsics_K = prediction_intrinsics(intrinsics_K, alignment)
                 if camera_extrinsics is None:
                     raise ValueError(
                         f"Sample {entry_id!r} is missing usable camera_extrinsics "
@@ -2427,14 +2478,14 @@ def evaluate_sparse_depth_samples(
                     sky_coverage.add(sky_valid)
                     if sky_valid is not None and sky_valid.shape[:2] != depth_pred.shape[:2]:
                         sky_valid = align_to_prediction(
-                            sky_valid, depth_pred, spatial_alignment=spatial_alignment
+                            sky_valid, depth_pred, spatial_alignment=alignment
                         )
 
                 depth_pred_raw = process_depth(
                     depth_pred, pred_is_radial, intrinsics_K
                 )
                 pred_sky_mask = (
-                    _get_prediction_sky_mask(sample, depth_pred, spatial_alignment)
+                    _get_prediction_sky_mask(sample, depth_pred, alignment)
                     if sky_depth is not None
                     else None
                 )
@@ -2445,11 +2496,11 @@ def evaluate_sparse_depth_samples(
                             normalized_predictions, input_space_detected
                         )
                     sky_iou_values = sky_iou_scores.add(
-                        sample, depth_pred, depth_pred_raw
+                        sample, depth_pred, depth_pred_raw, alignment
                     )
                 gt_sky_valid = sky_valid
                 sky_valid, masked_pred_sky = _mask_predicted_sky(
-                    pred_sky_masking, sample, depth_pred, sky_valid, spatial_alignment
+                    pred_sky_masking, sample, depth_pred, sky_valid, alignment
                 )
 
                 if alignment_mode == "none":
@@ -2721,6 +2772,7 @@ def evaluate_sparse_depth_samples(
                     }
                     if pred_native_dims
                     else None,
+                    "mode": reported_mode,
                     "method": "pointcloud_projection",
                     "extrinsics_source": projection_extrinsics_source,
                     "evaluated_dimensions": {
@@ -2983,11 +3035,17 @@ def evaluate_rgb_samples(
             print("Computing per-image RGB metrics...")
             rgb_iter = _prefetched_iter(dataset, num_workers)
             sky_coverage = _SkyMaskCoverage()
+            head_grid = pred_head_source_grid(dataset)
+            reported_mode = spatial_alignment
             for i, sample in tqdm(
                 rgb_iter,
                 total=num_samples,
                 desc="Processing RGB pairs",
             ):
+                # A prediction's recorded source_grid beats the shape guess of 'auto'.
+                alignment = sample_spatial_alignment(sample, spatial_alignment, head_grid)
+                if i == 0:
+                    reported_mode = spatial_alignment_mode(alignment)
                 hierarchy, entry_id = _extract_hierarchy(sample)
 
                 img_pred = to_numpy_rgb(sample["pred"])
@@ -3001,7 +3059,7 @@ def evaluate_rgb_samples(
                         spatial_method = classify_spatial_alignment(
                             *gt_native_dims,
                             *pred_native_dims,
-                            mode=spatial_alignment,
+                            mode=alignment,
                         )
                     if has_input:
                         input_native_dims = img_input.shape[:2]
@@ -3090,7 +3148,7 @@ def evaluate_rgb_samples(
                         )
                         logged_alignment = True
                     img_gt = align_to_prediction(
-                        img_gt, img_pred, spatial_alignment=spatial_alignment
+                        img_gt, img_pred, spatial_alignment=alignment
                     )
 
                 if not logged_stats:
@@ -3103,7 +3161,7 @@ def evaluate_rgb_samples(
                     sky_coverage.add(sky_valid)
                     if sky_valid is not None and sky_valid.shape[:2] != img_pred.shape[:2]:
                         sky_valid = align_to_prediction(
-                            sky_valid, img_pred, spatial_alignment=spatial_alignment
+                            sky_valid, img_pred, spatial_alignment=alignment
                         )
 
                 if sanity_checker is not None:
@@ -3166,7 +3224,11 @@ def evaluate_rgb_samples(
                 depth_binned_entry = None
                 if has_depth:
                     try:
-                        gt_depth_raw = to_numpy_depth(sample["gt_depth"])
+                        gt_depth_raw = mask_invalid_sentinel(
+                            to_numpy_depth(sample["gt_depth"]),
+                            depth_meta.get("invalid_sentinel"),
+                            fill=0.0,
+                        )
                         intrinsics_K = _get_intrinsics_K(sample)
                         gt_depth = process_depth(
                             gt_depth_raw,
@@ -3177,7 +3239,7 @@ def evaluate_rgb_samples(
                             gt_depth = align_to_prediction(
                                 gt_depth,
                                 img_pred,
-                                spatial_alignment=spatial_alignment,
+                                spatial_alignment=alignment,
                                 sparse=bool(depth_meta.get("sparse", False)),
                             )
                         depth_binned_entry = compute_depth_binned_photometric_error(
@@ -3472,6 +3534,7 @@ def evaluate_rgb_samples(
                     "pred_dimensions": {"height": pred_native_dims[0], "width": pred_native_dims[1]}
                     if pred_native_dims
                     else None,
+                    "mode": reported_mode,
                     "method": spatial_method,
                     "evaluated_dimensions": {
                         "height": pred_native_dims[0],
@@ -3572,11 +3635,17 @@ def evaluate_rays_samples(
 
     print("Computing per-image rays metrics...")
     rays_iter = _prefetched_iter(dataset, num_workers)
+    head_grid = pred_head_source_grid(dataset)
+    reported_mode = spatial_alignment
     for i, sample in tqdm(
         rays_iter,
         total=num_samples,
         desc="Processing rays pairs",
     ):
+        # A prediction's recorded source_grid beats the shape guess of 'auto'.
+        alignment = sample_spatial_alignment(sample, spatial_alignment, head_grid)
+        if i == 0:
+            reported_mode = spatial_alignment_mode(alignment)
         hierarchy, entry_id = _extract_hierarchy(sample)
 
         dirs_gt = to_numpy_directions(sample["gt"])
@@ -3587,7 +3656,7 @@ def evaluate_rays_samples(
             gt_native_dims = dirs_gt.shape[:2]
             pred_native_dims = dirs_pred.shape[:2]
             spatial_method = classify_spatial_alignment(
-                *gt_native_dims, *pred_native_dims, mode=spatial_alignment
+                *gt_native_dims, *pred_native_dims, mode=alignment
             )
 
         # Align GT to prediction dimensions if needed
@@ -3599,7 +3668,7 @@ def evaluate_rays_samples(
                 )
                 logged_alignment = True
             dirs_gt = align_to_prediction(
-                dirs_gt, dirs_pred, spatial_alignment=spatial_alignment
+                dirs_gt, dirs_pred, spatial_alignment=alignment
             )
 
         # Auto-detect FoV domain from intrinsics on first sample
@@ -3730,6 +3799,7 @@ def evaluate_rays_samples(
             "pred_dimensions": {"height": pred_native_dims[0], "width": pred_native_dims[1]}
             if pred_native_dims
             else None,
+            "mode": reported_mode,
             "method": spatial_method,
             "evaluated_dimensions": {"height": pred_native_dims[0], "width": pred_native_dims[1]}
             if pred_native_dims
@@ -3750,6 +3820,7 @@ def _points_3d_max_gt_depth(
     gt_depth_is_radial: bool,
 ) -> float:
     """Scan the GT once for the dataset maximum radial 3D depth."""
+    gt_sentinel = declared_invalid_sentinel(dataset, "gt") if gt_is_depth else None
     max_depth = 0.0
     for index in range(len(dataset)):
         sample = dataset[index]
@@ -3762,7 +3833,7 @@ def _points_3d_max_gt_depth(
                     "requires intrinsics (gt.intrinsics or gt.calibration)."
                 )
             gt_points = unproject_depth_to_points(
-                to_numpy_depth(sample["gt"]),
+                mask_invalid_sentinel(to_numpy_depth(sample["gt"]), gt_sentinel, fill=0.0),
                 intrinsics,
                 depth_is_radial=gt_depth_is_radial,
             )
@@ -3999,11 +4070,18 @@ def evaluate_points_3d_samples(
             print("Computing per-image points_3d metrics...")
             points_iter = _prefetched_iter(dataset, num_workers)
             sky_coverage = _SkyMaskCoverage()
+            head_grid = pred_head_source_grid(dataset)
+            gt_sentinel = declared_invalid_sentinel(dataset, "gt")
+            reported_mode = spatial_alignment
             for i, sample in tqdm(
                 points_iter,
                 total=num_samples,
                 desc="Processing points_3d pairs",
             ):
+                # A prediction's recorded source_grid beats the shape guess of 'auto'.
+                alignment = sample_spatial_alignment(sample, spatial_alignment, head_grid)
+                if i == 0:
+                    reported_mode = spatial_alignment_mode(alignment)
                 hierarchy, entry_id = _extract_hierarchy(sample)
                 pts_pred = to_numpy_points_3d(sample["pred"])
                 if gt_is_depth:
@@ -4015,7 +4093,9 @@ def evaluate_points_3d_samples(
                             "gt.calibration)."
                         )
                     pts_gt = unproject_depth_to_points(
-                        to_numpy_depth(sample["gt"]),
+                        mask_invalid_sentinel(
+                            to_numpy_depth(sample["gt"]), gt_sentinel, fill=0.0
+                        ),
                         intrinsics_gt,
                         depth_is_radial=gt_depth_is_radial,
                     )
@@ -4026,7 +4106,7 @@ def evaluate_points_3d_samples(
                 # As for dense depth, the GT stays as measured; invalid GT
                 # points never blend into valid ones.
                 pts_pred, pts_gt, sample_method = align_to_ground_truth(
-                    pts_pred, pts_gt, spatial_alignment=spatial_alignment
+                    pts_pred, pts_gt, spatial_alignment=alignment
                 )
                 if i == 0:
                     gt_native_dims, pred_native_dims = gt_shape, pred_shape
@@ -4062,7 +4142,7 @@ def evaluate_points_3d_samples(
                     if sky_valid is not None:
                         if sky_valid.shape[:2] != pts_pred.shape[:2]:
                             sky_valid = align_to_prediction(
-                                sky_valid, pts_pred, spatial_alignment=spatial_alignment
+                                sky_valid, pts_pred, spatial_alignment=alignment
                             )
                         valid = valid & sky_valid
 
@@ -4315,6 +4395,7 @@ def evaluate_points_3d_samples(
                     }
                     if pred_native_dims
                     else None,
+                    "mode": reported_mode,
                     "method": spatial_method,
                     "evaluated_dimensions": {
                         "height": evaluated_dims[0],
@@ -4659,16 +4740,25 @@ def evaluate_points_3d_sparse_samples(
             print("Computing sparse points_3d metrics...")
             points_iter = _prefetched_iter(dataset, num_workers)
             sky_coverage = _SkyMaskCoverage()
+            head_grid = pred_head_source_grid(dataset)
+            pred_sentinel = declared_invalid_sentinel(dataset, "pred")
+            reported_mode = spatial_alignment
             for i, sample in tqdm(
                 points_iter,
                 total=num_samples,
                 desc="Processing sparse points_3d pairs",
             ):
+                # A prediction's recorded source_grid beats the shape guess of 'auto'.
+                alignment = sample_spatial_alignment(sample, spatial_alignment, head_grid)
+                if i == 0:
+                    reported_mode = spatial_alignment_mode(alignment)
                 hierarchy, entry_id = _extract_hierarchy(sample)
 
                 point_cloud = to_numpy_point_cloud(sample["gt"])
                 if pred_is_depth:
-                    depth_pred = to_numpy_depth(sample["pred"])
+                    depth_pred = mask_invalid_sentinel(
+                        to_numpy_depth(sample["pred"]), pred_sentinel, fill=np.nan
+                    )
                     pred_shape = depth_pred.shape[:2]
                 else:
                     pts_pred = to_numpy_points_3d(sample["pred"])
@@ -4682,6 +4772,8 @@ def evaluate_points_3d_sparse_samples(
                         f"Sample {entry_id!r} is missing intrinsics for sparse "
                         "points_3d projection/unprojection."
                     )
+                # As for sparse depth: onto the prediction grid when recorded.
+                intrinsics_K = prediction_intrinsics(intrinsics_K, alignment)
                 if camera_extrinsics is None:
                     raise ValueError(
                         f"Sample {entry_id!r} is missing usable camera_extrinsics "
@@ -4741,7 +4833,7 @@ def evaluate_points_3d_sparse_samples(
                     if sky_valid is not None and sky_valid.shape[:2] != pred_shape:
                         ref = depth_pred if pred_is_depth else pts_pred
                         sky_valid = align_to_prediction(
-                            sky_valid, ref, spatial_alignment=spatial_alignment
+                            sky_valid, ref, spatial_alignment=alignment
                         )
 
                 gt_radial = np.linalg.norm(gt_point_map, axis=-1)
@@ -4764,7 +4856,7 @@ def evaluate_points_3d_sparse_samples(
                         depth_pred, pred_is_radial, intrinsics_K
                     )
                     pred_sky_mask = (
-                        _get_prediction_sky_mask(sample, depth_pred, spatial_alignment)
+                        _get_prediction_sky_mask(sample, depth_pred, alignment)
                         if sky_depth is not None
                         else None
                     )
@@ -5058,6 +5150,7 @@ def evaluate_points_3d_sparse_samples(
                     }
                     if pred_native_dims
                     else None,
+                    "mode": reported_mode,
                     "method": "pointcloud_projection",
                     "extrinsics_source": projection_extrinsics_source,
                     "evaluated_dimensions": {

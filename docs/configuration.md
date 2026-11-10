@@ -166,7 +166,7 @@ would be ambiguous.
 | `sky_mask.path` | no | Auxiliary predicted sky mask for a dense depth entry; used with `--sky-depth`, `--mask-sky-prediction` and `--sky-iou` |
 | `rays.path` | no\* | Predicted ray direction map dataset |
 | `points_3d.path` | no\* | Predicted per-pixel 3D point map `(H,W,3)` |
-| `spatial_alignment` | no | How this entry's predictions reached a resolution other than the GT's: `crop`, `resize` or `auto` (default: `--spatial-alignment`); see [Resolution alignment](alignment.md#resolution-alignment) |
+| `spatial_alignment` | no | How this entry's predictions reached a resolution other than the GT's: `crop`, `resize` or `auto` (default: `--spatial-alignment`; `auto` follows a recorded `source_grid`); see [Resolution alignment](alignment.md#resolution-alignment) |
 | `output_file` | no | Custom results path for every modality of this entry, replacing the `.eval/` layout and `--eval-name` (default: `.eval/[<scope>/][split_<split>/]eval.json` in each prediction modality's dataset root; see [where results land](output.md#where-results-land)) |
 
 \* At least one prediction modality must be present.
@@ -403,6 +403,17 @@ under `.ds_crawler/<modality>/` with a `.ds_crawler/scopes.json` manifest,
 letting a path like `/data/muses.zip:test` load `.ds_crawler/rgb/index.json`,
 `.ds_crawler/depth/index.json`, and so on from the same archive. GT and
 prediction datasets are matched by hierarchy path and file ID.
+
+**Invalid pixels.** GT depth that is non-finite or not positive is invalid, and
+a non-finite prediction is dropped. A depth dataset can also declare a value
+that marks missing data with euler-dataset-contract's `invalid` field, e.g.
+`"invalid": {"non_finite": false, "sentinel": 65535}` in its head's
+`modality.meta` (a loader's annotation may declare it too; the head wins).
+GT pixels equal to the sentinel are then invalid, and prediction pixels equal
+to it are dropped, so a model that writes `0` for "no prediction" is not
+scored as predicting 0 m. `"sparse": true` additionally keeps sparse GT from
+being interpolated when it has to be resized (see
+[Resolution alignment](alignment.md#resolution-alignment)).
 
 ### Multiple modalities from one archive
 

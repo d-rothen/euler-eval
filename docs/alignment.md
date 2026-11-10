@@ -30,7 +30,8 @@ map `d_aligned = s · d_pred + t` by least squares over valid pixels.
 | `auto_affine` *(default)* | Fit only when the first prediction looks normalized (roughly `[-1, 1]`) |
 | `affine` | Always fit |
 
-The fit uses pixels where GT and prediction are finite and GT > 0. With
+The fit uses pixels where GT and prediction are valid: finite, GT > 0, and
+neither equal to a declared `invalid.sentinel` ([details](configuration.md#loader-resolution--dataset-metadata)). With
 `--mask-sky`, sky pixels are excluded and the fit is trimmed to `gt ≤ P95(gt)`
 so residual sky outliers do not dominate. Pixels in a prediction's `sky_mask`
 are excluded from the fit with `--sky-depth` or `--mask-sky-prediction`.
@@ -87,21 +88,48 @@ measurement moves to its nearest target pixel and the nearest surface wins
 
 **Crop or resize.** The shapes alone cannot tell whether a smaller prediction
 is a crop of the input or a resized copy of it, and reading one as the other
-misplaces pixels by up to the size difference. `--spatial-alignment`, or a
-`datasets[]` entry's `spatial_alignment`, says which:
+misplaces pixels by up to the size difference.
+
+**Recorded: `source_grid`.** A prediction dataset can record exactly how its
+grid derives from the input image, as euler-dataset-contract's `source_grid`
+(the source `size` and an affine pixel mapping). euler-inference writes it for
+outputs that declare `outputs[].source_grid` (`resize`, `crop_top_left`,
+`crop_center`, `identity`): in each file's attributes, and in the dataset
+head when it is the same for every sample. Under `auto` it decides, per
+sample (the file's value over the head's):
+
+- a crop at any origin trims the GT to exactly the pixels the prediction
+  covers, centre crops included; nothing is resampled;
+- a whole-image resize goes through the same path as `resize` below;
+- anything else, such as a resize followed by a crop, resamples through the
+  exact mapping, onto the GT grid for dense depth and `points_3d` (GT pixels
+  the prediction does not cover drop out) and onto the prediction grid for
+  RGB, rays and GT masks (sparse GT depth moves sample by sample, nearest
+  surface first);
+- sparse point-cloud GT is projected with the intrinsics moved onto the
+  prediction grid (`T @ K`), as is the prediction's planar-to-radial
+  conversion.
+
+The run records `spatial_alignment.mode: "source_grid"`. A grid recorded for
+another source size than the GT's cannot place the prediction; the shapes are
+guessed from instead, with a warning.
+
+**Without a record**, `--spatial-alignment`, or a `datasets[]` entry's
+`spatial_alignment`, says which:
 
 | Mode | Behaviour |
 |---|---|
-| `auto` *(default)* | A crop when the prediction's sides are multiples of 8 and at most 7 px shorter than the GT's (latent models that crop), else a resize |
+| `auto` *(default)* | The recorded `source_grid` when there is one; else a crop when the prediction's sides are multiples of 8 and at most 7 px shorter than the GT's (latent models that crop), else a resize |
 | `crop` | Always a top-left crop: the GT is trimmed to the region the prediction covers. A prediction larger than the GT is an error |
 | `resize` | Always a resize, even for the multiple-of-8 pattern |
 
-Set it whenever a model resizes its input to a multiple of 8: a 879 px wide
+An explicit `crop` or `resize` overrides a recorded grid. Set one whenever a
+model resizes its input to a multiple of 8 without recording it: a 879 px wide
 DrivingStereo image resized to 872 px would otherwise be scored as a crop,
 misplacing pixels at the right edge by up to 7 px. The method that ran is
-recorded as `spatial_alignment.method` (`none`, `vae_crop`,
-`resize_prediction` or `resize`) and the evaluated grid as
-`population.evaluated_resolution`; see [Results & output](output.md).
+recorded as `spatial_alignment.method` (`none`, `vae_crop`, `crop`,
+`resize_prediction`, `resize`, `warp_prediction` or `warp`) and the evaluated
+grid as `population.evaluated_resolution`; see [Results & output](output.md).
 
 ## Benchmark depth bins
 
