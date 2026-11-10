@@ -619,17 +619,36 @@ class _SkyMaskCoverage:
 
 
 def _get_prediction_sky_mask(
-    sample: dict, depth_pred: np.ndarray
+    sample: dict, depth_pred: np.ndarray, spatial_alignment: str = "auto"
 ) -> Optional[np.ndarray]:
     """Return the predicted sky mask on the evaluated depth grid (True = sky).
 
-    The mask belongs to the prediction, so it is resized like the prediction
-    (nearest pixel centre) and never cropped.
+    The mask may come at the prediction's resolution or at the input's. It
+    goes onto the grid of *depth_pred* the way GT masks do: when
+    :func:`~euler_eval.data.classify_spatial_alignment` with
+    *spatial_alignment* calls the grid a top-left crop of the mask (a model
+    that cropped its input to a multiple of 8, with the mask at input size),
+    the mask is cropped. Any other size is resized by nearest pixel centre,
+    like a resized prediction.
     """
     mask_data = sample.get("pred_sky_mask")
     if mask_data is None:
         return None
-    return resize_mask(to_numpy_mask(mask_data), depth_pred.shape[:2])
+    mask = to_numpy_mask(mask_data).astype(bool, copy=False)
+    height, width = depth_pred.shape[:2]
+    mask_h, mask_w = mask.shape[:2]
+    if (mask_h, mask_w) == (height, width):
+        return mask
+    if (
+        mask_h >= height
+        and mask_w >= width
+        and classify_spatial_alignment(
+            mask_h, mask_w, height, width, mode=spatial_alignment
+        )
+        == "vae_crop"
+    ):
+        return mask[:height, :width]
+    return resize_mask(mask, (height, width))
 
 
 class _PredictedSkyMasking:
@@ -686,16 +705,19 @@ def _mask_predicted_sky(
     sample: dict,
     depth_pred: np.ndarray,
     sky_valid: Optional[np.ndarray],
+    spatial_alignment: str = "auto",
 ) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
     """Fold the prediction's own sky into the validity mask for --mask-sky-prediction.
 
     Returns ``(sky_valid, pred_sky)``: the combined mask (True = scored) that
     the metrics, benchmark bins and affine fit use, and the predicted sky it
     excluded. Without masking or a mask, *sky_valid* is returned unchanged.
+    *spatial_alignment* places a mask of another size, as in
+    :func:`_get_prediction_sky_mask`.
     """
     if masking is None:
         return sky_valid, None
-    pred_sky = _get_prediction_sky_mask(sample, depth_pred)
+    pred_sky = _get_prediction_sky_mask(sample, depth_pred, spatial_alignment)
     if pred_sky is None:
         return sky_valid, None
     return (~pred_sky if sky_valid is None else sky_valid & ~pred_sky), pred_sky
@@ -766,7 +788,9 @@ class _SkyIoU:
         converted, uncalibrated, uncapped prediction (``None`` skips implicit).
         """
         self.samples += 1
-        pred_sky = _get_prediction_sky_mask(sample, depth_pred)
+        pred_sky = _get_prediction_sky_mask(
+            sample, depth_pred, self.spatial_alignment
+        )
         self.explicit_seen |= pred_sky is not None
         gt_sky = _get_gt_sky_mask(sample)
         if gt_sky is None:
@@ -1554,7 +1578,7 @@ def evaluate_depth_samples(
                 depth_gt = process_depth(depth_gt, is_radial, intrinsics_K)
                 depth_pred_raw = process_depth(depth_pred, is_radial, intrinsics_K)
                 pred_sky_mask = (
-                    _get_prediction_sky_mask(sample, depth_pred)
+                    _get_prediction_sky_mask(sample, depth_pred, spatial_alignment)
                     if sky_depth is not None
                     else None
                 )
@@ -1571,7 +1595,7 @@ def evaluate_depth_samples(
                     )
                 gt_sky_valid = sky_valid
                 sky_valid, masked_pred_sky = _mask_predicted_sky(
-                    pred_sky_masking, sample, depth_pred, sky_valid
+                    pred_sky_masking, sample, depth_pred, sky_valid, spatial_alignment
                 )
 
                 if alignment_mode == "none":
@@ -2410,7 +2434,7 @@ def evaluate_sparse_depth_samples(
                     depth_pred, pred_is_radial, intrinsics_K
                 )
                 pred_sky_mask = (
-                    _get_prediction_sky_mask(sample, depth_pred)
+                    _get_prediction_sky_mask(sample, depth_pred, spatial_alignment)
                     if sky_depth is not None
                     else None
                 )
@@ -2425,7 +2449,7 @@ def evaluate_sparse_depth_samples(
                     )
                 gt_sky_valid = sky_valid
                 sky_valid, masked_pred_sky = _mask_predicted_sky(
-                    pred_sky_masking, sample, depth_pred, sky_valid
+                    pred_sky_masking, sample, depth_pred, sky_valid, spatial_alignment
                 )
 
                 if alignment_mode == "none":
@@ -4740,7 +4764,7 @@ def evaluate_points_3d_sparse_samples(
                         depth_pred, pred_is_radial, intrinsics_K
                     )
                     pred_sky_mask = (
-                        _get_prediction_sky_mask(sample, depth_pred)
+                        _get_prediction_sky_mask(sample, depth_pred, spatial_alignment)
                         if sky_depth is not None
                         else None
                     )

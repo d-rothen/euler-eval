@@ -1690,8 +1690,8 @@ wheels = [
 
 [[package]]
 name = "ds-crawler"
-version = "2.13.0"
-source = { git = "https://github.com/d-rothen/ds-crawler#7227aed88b1e31ef46427c77cd0e54f3df61ad95" }
+version = "2.14.0"
+source = { git = "https://github.com/d-rothen/ds-crawler#7ec9b60b88178e2c7e8e7fcafbf5b2c9e77c95b7" }
 dependencies = [
     { name = "euler-dataset-contract" },
 ]
@@ -1716,7 +1716,7 @@ wheels = [
 
 [[package]]
 name = "euler-eval"
-version = "2.35.0"
+version = "2.40.0"
 source = { editable = "." }
 dependencies = [
     { name = "ds-crawler" },
@@ -1792,8 +1792,8 @@ provides-extras = ["logging", "fid", "dehazing", "dev"]
 
 [[package]]
 name = "euler-loading"
-version = "2.30.0"
-source = { git = "https://github.com/d-rothen/euler-loading#f42574c50b97a568dfe9a0d7fef334596eec470c" }
+version = "2.36.0"
+source = { git = "https://github.com/d-rothen/euler-loading#8435a9d8d9c42f8bab0689e746cfd5efd9ba8069" }
 dependencies = [
     { name = "ds-crawler" },
     { name = "euler-dataset-contract" },

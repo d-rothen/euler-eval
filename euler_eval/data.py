@@ -704,8 +704,8 @@ def _sparse_resize_raster():
     ):
         raise RuntimeError(
             "Resizing sparse GT depth needs euler-loading's "
-            "resize_raster(interpolation='sparse'), added after euler-loading "
-            "2.35.0. Upgrade euler-loading, or evaluate at the GT resolution."
+            "resize_raster(interpolation='sparse') from euler-loading 2.36.0, "
+            "which euler-eval requires. Upgrade euler-loading."
         )
     return resize_raster
 

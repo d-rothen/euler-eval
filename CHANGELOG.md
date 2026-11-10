@@ -25,11 +25,14 @@ the git history for those.
 - GT and predicted masks are resized by nearest pixel centre
   (`INTER_NEAREST_EXACT`) instead of `INTER_NEAREST`, which floors `i / s` and
   shifted masks by up to half a source pixel against the image and the
-  rescaled intrinsics. GT depth that is still resized (beside RGB, for
+  rescaled intrinsics. A predicted `sky_mask` at the input's size beside a
+  depth prediction that is a crop of it is cropped like the GT; masks of any
+  other size are resized. GT depth that is still resized (beside RGB, for
   depth-binned metrics) keeps invalid pixels out of valid ones, and is
-  resampled as sparse when its dataset head declares `"sparse": true`. That
-  needs euler-loading's `resize_raster(interpolation="sparse")`, added after
-  euler-loading 2.35.0. Older versions raise a clear error for sparse GT only.
+  resampled as sparse when its dataset head declares `"sparse": true`, with
+  euler-loading's `resize_raster(interpolation="sparse")`.
+- Require `euler-loading>=2.36`, the first release with
+  `resize_raster(interpolation="sparse")`.
 - **`experiments[].modalities` selects prediction modalities only** (`depth`,
   `rgb`, `rays`, `points_3d`, `sky_mask`). It also filtered GT inputs in
   2.33.0, so e.g. `["depth"]` removed a `gt.sparse_depth` (the run stopped

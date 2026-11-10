@@ -250,6 +250,32 @@ def test_prediction_sky_mask_follows_depth_crop():
     assert result[7, 7]
 
 
+def test_prediction_sky_mask_is_resized_when_the_prediction_was_resized():
+    # Under --spatial-alignment resize the same shapes mean a resized input,
+    # so cropping the input-size mask would misplace it.
+    mask = np.zeros((9, 9), dtype=bool)
+    mask[:, -1] = True
+    result = _get_prediction_sky_mask(
+        {"pred_sky_mask": mask}, np.zeros((8, 8), dtype=np.float32), "resize"
+    )
+    assert result.shape == (8, 8)
+    assert result[:, -1].all()
+    assert result[:, :-1].sum() == 0
+
+
+def test_prediction_sky_mask_smaller_than_the_grid_is_resized_in_crop_mode():
+    # A prediction-size mask beside depth already on a larger grid is never a
+    # crop; 'crop' must not reject it.
+    mask = np.zeros((4, 4), dtype=bool)
+    mask[0, 0] = True
+    result = _get_prediction_sky_mask(
+        {"pred_sky_mask": mask}, np.zeros((8, 8), dtype=np.float32), "crop"
+    )
+    assert result.shape == (8, 8)
+    assert result[:2, :2].all()
+    assert result.sum() == 4
+
+
 def test_sky_depth_preserves_invalid_values_except_when_filling_predicted_sky():
     gt = np.array([[0, -1, np.nan, np.inf, 200, 10]], dtype=np.float32)
     pred = np.array([[np.nan, -1, 2, np.inf, 0, 10]], dtype=np.float32)
