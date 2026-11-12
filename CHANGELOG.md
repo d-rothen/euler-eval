@@ -256,6 +256,24 @@ the git history for those.
 
 - Require `euler-loading>=2.29`, the first release whose `sky_mask` loaders
   read the contract's `skyclass`.
+- **Results bound for a zip archive are written once per archive, at the
+  end.** Each result used to be written into the archive as it was saved:
+  a new entry rewrote the central directory, and a replaced one, on every
+  re-run, the whole archive. Results now wait in local temporary files and
+  each archive is written once when the invocation ends; a re-run of 30
+  splits into a 200 MB archive rewrites it once instead of 30 times (3.4 s
+  instead of about 115 s in a benchmark). Results of runs that finished are
+  written even when a later run fails; an archive that cannot be written
+  exits with `1` and keeps its results in the named temporary folder. A
+  rebuilt archive keeps its permissions and, behind a symlink, its link.
+  `save_json_to_zip`, `write_zip_entries` and `batched_zip_writes` in
+  `euler_eval.zip_results`.
+- **Jobs writing into the same zip archive take turns.** Each write holds an
+  `flock` lock on a hidden `.<archive>.lock` beside the archive, so a job
+  array of `--split` runs no longer loses results or corrupts the archive when
+  two jobs finish together; a job that finds the lock held waits for that
+  write. Where the filesystem has no `flock`, the run prints a note and writes
+  unlocked, as before. `zip_lock` in `euler_eval.zip_results`.
 
 ## 2.25.0
 

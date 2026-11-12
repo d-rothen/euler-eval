@@ -15,13 +15,11 @@ import platform
 import re
 import sys
 import traceback
-import zipfile
 from dataclasses import replace
 from pathlib import Path
 from typing import NamedTuple
 
 import torch
-from ds_crawler.zip_utils import get_zip_root_prefix
 
 from .config_paths import (
     GT_SEGMENTATION_KEYS,
@@ -73,6 +71,12 @@ from .split_sweep import (
     split_gt,
     split_output_file,
     validate_splits_config,
+)
+from .zip_results import (
+    ZipWriteError,
+    batched_zip_writes,
+    save_json_to_zip,
+    zip_writes_deferred,
 )
 
 try:
@@ -1378,30 +1382,6 @@ def _find_zip_ancestor(path: Path):
     return None, None
 
 
-def _save_json_to_zip(zip_path: Path, internal_name: str, data: dict) -> None:
-    """Write JSON *data* into an existing zip archive at *internal_name*.
-
-    If an entry with the same name already exists it is replaced.
-    """
-    json_bytes = json.dumps(data, indent=2).encode("utf-8")
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        needs_replace = internal_name in zf.namelist()
-
-    if needs_replace:
-        tmp = zip_path.with_suffix(".zip.tmp")
-        with zipfile.ZipFile(zip_path, "r") as zf_in:
-            with zipfile.ZipFile(tmp, "w", compression=zipfile.ZIP_DEFLATED) as zf_out:
-                for item in zf_in.infolist():
-                    if item.filename != internal_name:
-                        zf_out.writestr(item, zf_in.read(item.filename))
-                zf_out.writestr(internal_name, json_bytes)
-        tmp.replace(zip_path)
-    else:
-        with zipfile.ZipFile(zip_path, "a") as zf:
-            zf.writestr(internal_name, json_bytes)
-
-
 EVAL_DIR = ".eval"
 DEFAULT_EVAL_NAME = "eval"
 _EVAL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -1455,23 +1435,6 @@ def default_eval_path(
     return eval_dir / f"{eval_name}.json"
 
 
-def _zip_internal_name(zip_path: Path, internal_name: str) -> str:
-    """Place *internal_name* inside a zip's wrapper folder, if it has one.
-
-    ds-crawler treats a single top-level folder named after the archive
-    (``model.zip`` -> ``model/``) as the dataset root. Writing beside that
-    folder would end the single-root layout and hide ``.ds_crawler/``.
-    """
-    prefix = get_zip_root_prefix(zip_path)
-    if (
-        prefix
-        and prefix.rstrip("/") == zip_path.stem
-        and not internal_name.startswith(prefix)
-    ):
-        return prefix + internal_name
-    return internal_name
-
-
 def save_results(
     results: dict,
     dataset_config: dict,
@@ -1484,7 +1447,9 @@ def save_results(
 
     Handles both plain directories and zip archives.  When the resolved
     output path passes through a ``.zip`` file the results are written
-    into the archive instead of onto the filesystem.
+    into the archive instead of onto the filesystem. Inside
+    :func:`~euler_eval.zip_results.batched_zip_writes` that write waits for
+    the batch's end, which writes each archive once.
 
     Args:
         results: Results dictionary.
@@ -1537,15 +1502,23 @@ def save_results(
 
     zip_path, internal_name = _find_zip_ancestor(output_file)
     if zip_path is not None and internal_name:
-        _save_json_to_zip(
-            zip_path, _zip_internal_name(zip_path, internal_name), results
-        )
+        save_json_to_zip(zip_path, internal_name, results)
     else:
         output_file.parent.mkdir(parents=True, exist_ok=True)
         with open(output_file, "w") as f:
             json.dump(results, f, indent=2)
 
     return output_file
+
+
+def _print_saved(label: str, path: Path) -> None:
+    zip_path, _ = _find_zip_ancestor(Path(path))
+    action = (
+        "queued for"
+        if zip_path is not None and zip_writes_deferred()
+        else "saved to"
+    )
+    print(f"\n  {label} results {action}: {path}")
 
 
 def print_results(results: dict, title: str) -> None:
@@ -3781,7 +3754,7 @@ def _evaluate(
                 if _SPARSE_DEPTH_METRIC_ROOT in depth_save
                 else "Depth"
             )
-            print(f"\n  {depth_label} results saved to: {depth_out}")
+            _print_saved(depth_label, depth_out)
         if rgb_save:
             rgb_out = save_results(
                 rgb_save,
@@ -3790,7 +3763,7 @@ def _evaluate(
                 eval_name=args.eval_name,
                 split=run.split,
             )
-            print(f"\n  RGB results saved to: {rgb_out}")
+            _print_saved("RGB", rgb_out)
         if rays_save:
             rays_out = save_results(
                 rays_save,
@@ -3799,7 +3772,7 @@ def _evaluate(
                 eval_name=args.eval_name,
                 split=run.split,
             )
-            print(f"\n  Rays results saved to: {rays_out}")
+            _print_saved("Rays", rays_out)
         if points_3d_save:
             points_3d_out = save_results(
                 points_3d_save,
@@ -3808,7 +3781,7 @@ def _evaluate(
                 eval_name=args.eval_name,
                 split=run.split,
             )
-            print(f"\n  Points-3D results saved to: {points_3d_out}")
+            _print_saved("Points-3D", points_3d_out)
         if points_3d_sparse_save:
             points_3d_sparse_out = save_results(
                 points_3d_sparse_save,
@@ -3817,9 +3790,7 @@ def _evaluate(
                 eval_name=args.eval_name,
                 split=run.split,
             )
-            print(
-                f"\n  Points-3D (sparse GT) results saved to: {points_3d_sparse_out}"
-            )
+            _print_saved("Points-3D (sparse GT)", points_3d_sparse_out)
 
         # Log to euler_train
         if et_run is not None and et_eval_datasets:
@@ -3949,14 +3920,22 @@ def main():
 
     et_run, et_resuming = _start_euler_train(config)
     failed = []
-    if len(runs) == 1 and runs[0].label is None:
-        _evaluate(runs[0], package_metadata=package_metadata, et_run=et_run)
-    else:
-        failed = _evaluate_runs(
-            runs, package_metadata=package_metadata, et_run=et_run
-        )
+    unwritten = False
+    # Every result bound for a zip archive is written once per archive at
+    # the end, not once per run and modality.
+    try:
+        with batched_zip_writes():
+            if len(runs) == 1 and runs[0].label is None:
+                _evaluate(runs[0], package_metadata=package_metadata, et_run=et_run)
+            else:
+                failed = _evaluate_runs(
+                    runs, package_metadata=package_metadata, et_run=et_run
+                )
+    except ZipWriteError as e:
+        print(f"\nError: {e}", file=sys.stderr)
+        unwritten = True
     _finish_euler_train(et_run, et_resuming)
-    if failed:
+    if failed or unwritten:
         sys.exit(1)
 
 

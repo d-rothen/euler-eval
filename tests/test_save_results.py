@@ -9,11 +9,11 @@ import pytest
 from euler_eval import cli
 from euler_eval.cli import (
     _find_zip_ancestor,
-    _save_json_to_zip,
     default_eval_path,
     save_results,
     validate_eval_name,
 )
+from euler_eval.zip_results import save_json_to_zip
 from tests.test_depth_alignment_output import _patch_depth_metrics
 
 # ---------------------------------------------------------------------------
@@ -64,7 +64,7 @@ class TestFindZipAncestor:
 
 
 # ---------------------------------------------------------------------------
-# _save_json_to_zip
+# save_json_to_zip
 # ---------------------------------------------------------------------------
 
 
@@ -75,7 +75,7 @@ class TestSaveJsonToZip:
             zf.writestr("existing.txt", "keep me")
 
         data = {"score": 0.95}
-        _save_json_to_zip(zp, "eval.json", data)
+        save_json_to_zip(zp, "eval.json", data)
 
         with zipfile.ZipFile(zp, "r") as zf:
             assert "existing.txt" in zf.namelist()
@@ -90,7 +90,7 @@ class TestSaveJsonToZip:
             zf.writestr("eval.json", '{"old": true}')
 
         new_data = {"new": True, "score": 1.0}
-        _save_json_to_zip(zp, "eval.json", new_data)
+        save_json_to_zip(zp, "eval.json", new_data)
 
         with zipfile.ZipFile(zp, "r") as zf:
             names = zf.namelist()
@@ -107,7 +107,7 @@ class TestSaveJsonToZip:
             zf.writestr("b.txt", "bbb")
             zf.writestr("eval.json", '{"old": true}')
 
-        _save_json_to_zip(zp, "eval.json", {"replaced": True})
+        save_json_to_zip(zp, "eval.json", {"replaced": True})
 
         with zipfile.ZipFile(zp, "r") as zf:
             assert zf.read("a.txt") == b"aaa"

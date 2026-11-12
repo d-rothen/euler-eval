@@ -156,9 +156,10 @@ def test_depth_modality_writes_only_sparse_depth_metrics(tmp_path, monkeypatch, 
     points_3d_evaluator.assert_not_called()
 
     output = capsys.readouterr().out
-    assert f"Sparse depth results saved to: {pred_archive}/.eval/eval.json" in output
+    assert f"Sparse depth results queued for: {pred_archive}/.eval/eval.json" in output
+    assert f"Writing 1 result file into {pred_archive}" in output
     assert "[POINTS_3D · SPARSE]" not in output
-    assert "Points-3D (sparse GT) results saved" not in output
+    assert "Points-3D (sparse GT) results" not in output
 
 
 def test_points_3d_modality_writes_only_points_3d_metrics(
@@ -245,6 +246,6 @@ def test_points_3d_modality_writes_only_points_3d_metrics(
     assert "[SPARSE_DEPTH]" not in output
     assert "[POINTS_3D · SPARSE] Evaluating" in output
     assert (
-        f"Points-3D (sparse GT) results saved to: {pred_archive}/.eval/eval.json"
+        f"Points-3D (sparse GT) results queued for: {pred_archive}/.eval/eval.json"
         in output
     )

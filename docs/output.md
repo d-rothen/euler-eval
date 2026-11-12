@@ -34,6 +34,27 @@ each get their own file. If the root is a `.zip`, `.eval/` is written *into* the
 archive (inside its top-level folder when the archive wraps everything in one
 named after it), so zip-backed datasets stay self-contained.
 
+Results bound for an archive are written when the whole invocation ends, once
+per archive, not once per result: adding an entry rewrites the archive's
+central directory, and replacing one, as a re-run does, rewrites the whole
+archive. Until then they wait in local temporary files (under `$TMPDIR`), and
+the run reports them as `queued for` that path. Results of runs that finished
+are written even when a later run fails. If an archive cannot be written, the
+run exits with `1` and names the temporary folder holding its results. A job
+killed before the end (a time limit, `scancel`) writes none of its archive
+results.
+
+Jobs writing into the same archive at once, such as a job array of `--split`
+runs, take turns: each write holds an `flock` lock on a hidden
+`.<archive>.lock` file beside the archive, which is left in place. A job that
+finds it held prints `Waiting for another process writing into …` and waits
+for that write, which is the only time it waits. A job that dies releases its
+lock. Where the filesystem offers no `flock` (a Lustre mount without `flock`,
+NFS mounted `nolock`, Windows) or the lock file cannot be created, the run
+prints a note and writes unlocked, so overlapping writes can then corrupt the
+archive or lose results. A Lustre `localflock` mount locks only within one
+node, so jobs on different nodes are not kept apart there.
+
 `<name>` is `eval` unless the run is named with `--eval-name`:
 `--mask-sky --eval-name no_sky` writes `no_sky.json` next to an earlier
 `eval.json` instead of replacing it. Names use letters, digits, `.`, `-` and
