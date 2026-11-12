@@ -24,7 +24,7 @@ The folder below `.eval/` mirrors how the prediction was loaded:
 |---|---|
 | Metadata scope with its own `.ds_crawler/<scope>/` | `.eval/<scope>/<name>.json` |
 | Root-level `.ds_crawler/` metadata (no scope) | `.eval/<name>.json` |
-| A split is selected (`:test` or `split`) | `split_<split>/` is added before the file name |
+| A split is selected (`:test` or `split`), or evaluated by a [`splits`](configuration.md#splits-section-optional) sweep | `split_<split>/` is added before the file name |
 
 The scope is the path's `#scope=` selector, otherwise the config key (`depth`,
 `relative_depth`, `rgb`, `points_3d`, …). As in euler-loading, a scope without

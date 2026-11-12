@@ -176,11 +176,15 @@ def test_euler_train_logs_one_evaluation_per_experiment(
         ),
         (
             [{"name": "bad", "args": ["--eval-name", "other"]}],
-            "experiments[0] ('bad'): 'args' cannot set --eval-name or --experiment",
+            "experiments[0] ('bad'): 'args' cannot set --eval-name, --experiment or --split",
         ),
         (
             [{"name": "bad", "args": ["--experiment", "bad"]}],
-            "experiments[0] ('bad'): 'args' cannot set --eval-name or --experiment",
+            "experiments[0] ('bad'): 'args' cannot set --eval-name, --experiment or --split",
+        ),
+        (
+            [{"name": "bad", "args": ["--split", "test"]}],
+            "experiments[0] ('bad'): 'args' cannot set --eval-name, --experiment or --split",
         ),
         (
             [{"name": "bad", "args": ["stray"]}],

@@ -167,7 +167,7 @@ would be ambiguous.
 | `rays.path` | no\* | Predicted ray direction map dataset |
 | `points_3d.path` | no\* | Predicted per-pixel 3D point map `(H,W,3)` |
 | `spatial_alignment` | no | How this entry's predictions reached a resolution other than the GT's: `crop`, `resize` or `auto` (default: `--spatial-alignment`; `auto` follows a recorded `source_grid`); see [Resolution alignment](alignment.md#resolution-alignment) |
-| `output_file` | no | Custom results path for every modality of this entry, replacing the `.eval/` layout and `--eval-name` (default: `.eval/[<scope>/][split_<split>/]eval.json` in each prediction modality's dataset root; see [where results land](output.md#where-results-land)) |
+| `output_file` | no | Custom results path for every modality of this entry, replacing the `.eval/` layout and `--eval-name` (default: `.eval/[<scope>/][split_<split>/]eval.json` in each prediction modality's dataset root; see [where results land](output.md#where-results-land)). With a [`splits`](#splits-section-optional) sweep it must contain `{split}` |
 
 \* At least one prediction modality must be present.
 
@@ -371,6 +371,72 @@ and its name in `meta.eval_name`. With euler-train logging, each prediction
 dataset is logged once per experiment, as `<name>/<experiment>`; the
 sanity-check report is written per experiment as
 `sanity_check_report_<experiment>.json`.
+
+## `splits` section (optional)
+
+Evaluates the config once per ds-crawler split of the ground truth, for a
+dataset with many named subsets such as one split per fog level:
+
+```json
+{
+  "gt": {
+    "rgb":        { "path": "/data/cerema#scope=rgb" },
+    "depth":      { "path": "/data/cerema#scope=depth" },
+    "intrinsics": { "path": "/data/cerema#scope=intrinsics" }
+  },
+  "datasets": [{ "name": "model_a", "depth": { "path": "/data/model_a/depth" } }],
+  "splits": { "gt_modality": "depth", "match": "fog\\d+" }
+}
+```
+
+| Field | Required | Description |
+|---|---|---|
+| `gt_modality` | yes | The `gt` input whose splits are listed (any configured key, e.g. `depth`); they are read from the metadata scope it loads |
+| `match` | no | A regular expression a split name must match **in full** (default: every split). `fog\d+` matches `fog25` but not `fog` or `fog25_day` |
+
+The matching splits run in natural order (`fog20`, `fog25`, …, `fog100`), each
+as if every path selected it:
+
+- **GT inputs read the split where they define it.** ds-crawler stores splits
+  per metadata scope, so each input's own scope decides. The GT a prediction is
+  scored against (`depth` or `sparse_depth` for depth, `rgb` and `input_rgb`
+  for RGB, `rays`, and `points_3d` or the depth it is synthesized from) must
+  define every split, or the run stops before any work. Any other input,
+  such as calibration or a segmentation used for `--mask-sky`, is used whole
+  when it lacks the split. Pairing by file ID restricts it to the split's
+  frames anyway.
+- **Predictions are used as configured.** Pairing by file ID restricts them to
+  the split's frames, so a prediction needs no splits of its own.
+- **Results go to `split_<split>/`** below each prediction's `.eval/<scope>/`,
+  where they would land had the prediction been loaded with that split
+  ([where results land](output.md#where-results-land)). With the config
+  above, the fog-25 depth results are
+  `/data/model_a/depth/.eval/depth/split_fog25/eval.json`. Their
+  `meta.gt.split` and `protocol.parameters` `reference.gt.split` name the
+  split. A dataset's `output_file` must contain `{split}`, which is replaced
+  by the split name.
+- **No path may select a split itself**, in `gt` or `datasets`, inline or
+  with `split`: the sweep selects one per run. The exception, for path
+  templates that always write one, is `all` (`/data/gt.zip:all#scope=depth`
+  or `"split": "all"`): the sweep drops it, keeping the `#scope=`, and warns
+  with a `FutureWarning`. This is deprecated and will be an error in a future
+  release.
+- **With [`experiments`](#experiments-section-optional)**, every experiment
+  runs once per split, split by split: all experiments of `fog20`, then of
+  `fog25`. Results are `split_<split>/<experiment>.json`; with euler-train,
+  each prediction dataset is logged as `<name>/split_<split>/<experiment>`
+  (`<name>/split_<split>` without experiments), and sanity-check reports are
+  `sanity_check_report_split_<split>[_<experiment>].json`.
+- **Selecting splits.** `--split NAME` (repeatable) runs only the named ones
+  among those `match` selects, e.g. one per task of a job array.
+- **Checked before any work.** A `gt_modality` without splits, a `match` that
+  selects none, a GT reference that lacks a split and an unknown `--split` all
+  stop the run first, naming the splits that exist.
+- **Failures.** A split that fails is reported and the rest still run; the
+  exit status is then `1`.
+
+Each split loads and scores its data again. A sweep writes one result per
+split; it does not combine them into a summary.
 
 ## `euler_train` section (optional)
 

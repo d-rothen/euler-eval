@@ -25,6 +25,7 @@ from typing import Any, Mapping
 from .config_paths import (
     GT_SEGMENTATION_KEYS,
     dataset_identity,
+    gt_default_scope,
     resolve_gt_segmentation_path,
 )
 
@@ -50,10 +51,6 @@ REFERENCE_KEYS = (
     "camera_extrinsics",
     "lidar_extrinsics",
 )
-
-#: Metadata scope of a GT config key whose data is another modality's: the
-#: degraded input is RGB data, read from its ``rgb`` scope like gt.rgb.
-_MODALITY_KEY_OF = {"input_rgb": "rgb"}
 
 _NO_INPUT = {"dataset": None, "scope": None, "split": None}
 
@@ -83,7 +80,7 @@ def reference_identities(gt_config: Mapping[str, Any]) -> dict[str, dict]:
         if isinstance(entry, Mapping) and "path" in entry:
             identities[key] = dataset_identity(
                 entry["path"],
-                modality_key=_MODALITY_KEY_OF.get(key, key),
+                modality_key=gt_default_scope(key),
                 split=entry.get("split"),
             )
         else:

@@ -1716,7 +1716,7 @@ wheels = [
 
 [[package]]
 name = "euler-eval"
-version = "2.40.0"
+version = "2.42.0"
 source = { editable = "." }
 dependencies = [
     { name = "ds-crawler" },

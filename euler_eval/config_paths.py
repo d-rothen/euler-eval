@@ -19,6 +19,15 @@ from euler_loading import Modality
 #: Config keys that name the GT segmentation; ``segmentation`` is canonical.
 GT_SEGMENTATION_KEYS = ("segmentation", "semantic_segmentation")
 
+#: GT config keys whose default metadata scope is not the key itself: the
+#: degraded input is RGB data, read from its ``rgb`` scope like gt.rgb.
+_GT_DEFAULT_SCOPES = {"input_rgb": "rgb"}
+
+
+def gt_default_scope(key: str) -> str:
+    """Return the metadata scope a ``gt`` config key reads without ``#scope=``."""
+    return _GT_DEFAULT_SCOPES.get(key, key)
+
 
 @dataclass(frozen=True)
 class ModalityPath:
@@ -256,3 +265,22 @@ def resolve_gt_segmentation_path(path: str | Path, *, config_key: str) -> str:
             "'#scope=<metadata_scope>' to the path."
         )
     return f"{raw}#scope={scope}"
+
+
+def gt_input_location(key: str, entry: dict) -> tuple[Path, str | None, str | None]:
+    """Return ``(root, metadata scope, split)`` of one configured ``gt`` input.
+
+    Resolves the scope as loading does: GT segmentation through
+    :func:`resolve_gt_segmentation_path` (its raw path when that is
+    ambiguous, which only matters once the segmentation is read), every
+    other key through its default scope.
+    """
+    path = entry["path"]
+    if key in GT_SEGMENTATION_KEYS:
+        try:
+            path = resolve_gt_segmentation_path(path, config_key=key)
+        except ValueError:
+            pass
+    return resolve_dataset_location(
+        path, modality_key=gt_default_scope(key), split=entry.get("split")
+    )

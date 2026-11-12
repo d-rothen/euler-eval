@@ -135,6 +135,7 @@ metric is written under, is in [Metrics](docs/metrics.md).
 | **Sanity checks** | Results are validated against configurable thresholds; implausible ranges, degenerate inputs and scale mismatches are reported instead of quietly scored. |
 | **Structured metric names** | Each result carries a `metricSet` envelope declaring its namespace, axes, units and metric directions. |
 | **Composable domains** | `--domain dehazing` supplements the stable core set with prediction-only NIQE, FADE, MUSIQ and CLIP-IQA, and Hautière's e, r̄, σ against the hazy input; with only the hazy inputs configured, real-world sets without clear images can be scored. The registry is ready for additional domains. |
+| **Split sweeps** | A `splits` section evaluates once per ds-crawler split whose name matches a pattern (`fog\d+`), one `split_<split>/eval.json` each. |
 | **euler-train logging** | Optional: register each evaluation in an experiment run with full package provenance. |
 
 ## In-training validation

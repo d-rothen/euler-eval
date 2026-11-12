@@ -97,6 +97,17 @@ the git history for those.
 
 ### Added
 
+- **A config `splits` section evaluates one result per ds-crawler split.**
+  `"splits": {"gt_modality": "depth", "match": "fog\\d+"}` lists the splits
+  of `gt.depth` whose whole name matches and runs the config once per split,
+  in natural order (`fog20` before `fog100`): every GT input that defines the
+  split reads it, predictions are restricted by ID pairing, and results go to
+  each prediction's `.eval/[<scope>/]split_<split>/`. The GT a prediction is
+  scored against must define every split; a missing one, a pattern that
+  matches nothing and a path that selects its own split stop the run before
+  any work. Every experiment runs once per split; `--split NAME` runs a
+  subset, and a dataset's `output_file` takes a `{split}` placeholder. See
+  [`splits`](docs/configuration.md#splits-section-optional).
 - **Predictions that record their `source_grid` are placed exactly.** Under
   `--spatial-alignment auto`, a prediction's euler-dataset-contract
   `source_grid` (its file's attributes, else its dataset head; euler-inference
@@ -231,6 +242,15 @@ the git history for those.
   predicted RGB images. The official LIVE natural-scene model parameters are
   bundled for deterministic offline evaluation and recorded in the output
   metadata.
+
+### Deprecated
+
+- **A path selecting the `all` split alongside `splits`.** euler-view's path
+  templates write `:all` (or `"split": "all"`) for the whole dataset, so a
+  sweep accepts it on any `gt` or `datasets` path: the selection is dropped
+  (a `#scope=` is kept) and each run selects its own split, with a
+  `FutureWarning` naming the paths. Any other split on a path stops the run,
+  and `all` will too in a future release.
 
 ### Changed
 

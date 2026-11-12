@@ -7,6 +7,7 @@ Parses config.json and runs evaluation using euler_loading datasets.
 from __future__ import annotations
 
 import argparse
+import copy
 import importlib.metadata
 import json
 import math
@@ -64,6 +65,15 @@ from .metric_sets import (
 )
 from .protocol import build_protocol, evaluated_resolution, reference_identities
 from .sanity_checker import SanityChecker
+from .split_sweep import (
+    SplitSweep,
+    ignore_all_split,
+    natural_order,
+    resolve_split_sweep,
+    split_gt,
+    split_output_file,
+    validate_splits_config,
+)
 
 try:
     import euler_train as _euler_train
@@ -1343,6 +1353,10 @@ def load_config(config_path: str) -> dict:
     if "experiments" in config:
         validate_experiments_config(config["experiments"])
 
+    if "splits" in config:
+        config = ignore_all_split(config)
+        validate_splits_config(config["splits"], config)
+
     DistributionConfig.from_config(config.get("distributions"))
 
     return config
@@ -1464,6 +1478,7 @@ def save_results(
     modality: str | None = None,
     *,
     eval_name: str = DEFAULT_EVAL_NAME,
+    split: str | None = None,
 ) -> Path:
     """Save results to output file.
 
@@ -1481,11 +1496,14 @@ def save_results(
             as ``<eval_name>.json`` in the dataset's ``.eval/`` layout, see
             :func:`default_eval_path`.  A dataset's explicit ``output_file``
             takes precedence over the whole layout.
+        split: The split a config ``splits`` sweep evaluated: results go to
+            ``split_<split>/`` (the prediction itself selects no split in a
+            sweep), and it fills ``{split}`` in ``output_file``.
 
     Returns:
         Path where results were saved.
     """
-    output_file = dataset_config.get("output_file")
+    output_file = split_output_file(dataset_config.get("output_file"), split)
     if output_file is None:
         selected_modality = modality
         if selected_modality == "depth" and "depth" not in dataset_config:
@@ -1509,7 +1527,7 @@ def save_results(
             output_file = default_eval_path(
                 entry["path"],
                 modality_key=selected_modality,
-                split=entry.get("split"),
+                split=split if split is not None else entry.get("split"),
                 eval_name=eval_name,
             )
         else:
@@ -1698,7 +1716,11 @@ class _ArgumentParser(argparse.ArgumentParser):
 
 
 class _Run(NamedTuple):
-    """One evaluation pass: parsed arguments plus what they resolve to."""
+    """One evaluation pass: parsed arguments plus what they resolve to.
+
+    ``name`` is the experiment, ``split`` the split of a ``splits`` sweep;
+    each is ``None`` without that config section.
+    """
 
     name: str | None
     args: argparse.Namespace
@@ -1706,6 +1728,13 @@ class _Run(NamedTuple):
     distribution_config: DistributionConfig | None
     metric_sets: tuple
     extra_args: tuple = ()
+    split: str | None = None
+
+    @property
+    def label(self) -> str | None:
+        """Name of this run, laid out like its results: ``split_<s>/<name>``."""
+        parts = [f"split_{self.split}" if self.split else None, self.name]
+        return "/".join(part for part in parts if part) or None
 
 
 def _finish_args(args: argparse.Namespace) -> None:
@@ -1792,10 +1821,11 @@ def _experiment_runs(
             if (
                 run_args.eval_name != base.eval_name
                 or run_args.experiments != base.experiments
+                or run_args.splits != base.splits
             ):
                 raise ValueError(
-                    "'args' cannot set --eval-name or --experiment; the "
-                    "experiment's 'name' names its results"
+                    "'args' cannot set --eval-name, --experiment or --split; "
+                    "the experiment's 'name' names its results"
                 )
             run_args.eval_name = name
             _finish_args(run_args)
@@ -1869,6 +1899,61 @@ def _check_experiment_gt(
         )
 
 
+def _check_split_coverage(run: _Run, sweep: SplitSweep, splits: tuple) -> None:
+    """Check that the GT a run scores its predictions against defines *splits*.
+
+    Other GT inputs read a split only where they define it: pairing by ID
+    already restricts them to the split's frames. A reference left whole
+    would score its predictions on every frame, under a split's name.
+
+    Raises:
+        ValueError: Naming the reference and the splits it lacks.
+    """
+    gt = run.config["gt"]
+    for modality in sorted(_configured_modalities(run.config) & set(_GT_FOR_PREDICTION)):
+        if getattr(run.args, f"skip_{modality}", False):
+            continue
+        for key in _GT_FOR_PREDICTION[modality]:
+            if key not in gt or "path" not in gt[key]:
+                continue
+            missing = [split for split in splits if not sweep.defines(key, split)]
+            if missing:
+                defined = ", ".join(natural_order(sweep.available[key])) or "none"
+                raise ValueError(
+                    f"gt.{key}, which {modality} predictions are scored against, "
+                    f"has no split {', '.join(missing)} (its splits: {defined}). "
+                    "ds-crawler splits are stored per metadata scope: create "
+                    "them for this scope as well, or leave it out with an "
+                    "experiment's 'gt_modalities' or the predictions with "
+                    "'modalities'"
+                )
+
+
+def _split_runs(runs: list[_Run], sweep: SplitSweep, splits: tuple) -> list[_Run]:
+    """Repeat every run once per split, split by split.
+
+    Raises:
+        ValueError: When a run's GT references lack a split.
+    """
+    for run in runs:
+        try:
+            _check_split_coverage(run, sweep, splits)
+        except ValueError as e:
+            if run.name is None:
+                raise
+            raise ValueError(f"experiment {run.name!r}: {e}") from e
+    return [
+        run._replace(
+            # _evaluate resolves some arguments in place.
+            args=copy.deepcopy(run.args),
+            config={**run.config, "gt": split_gt(run.config["gt"], sweep, split)},
+            split=split,
+        )
+        for split in splits
+        for run in runs
+    ]
+
+
 def _start_euler_train(config: dict):
     """Initialize euler-train logging if configured; once for all experiments."""
     et_config = config.get("euler_train")
@@ -1892,35 +1977,35 @@ def _finish_euler_train(et_run, et_resuming: bool) -> None:
         print(f"\neuler_train run finished: {et_run.run_id}")
 
 
-def _evaluate_experiments(
+def _evaluate_runs(
     runs: list[_Run], *, package_metadata: dict, et_run=None
 ) -> list[str]:
-    """Run each experiment in turn; a failing one does not stop the rest.
+    """Run each experiment or split in turn; a failing one does not stop the rest.
 
     Returns:
-        Names of the experiments that failed.
+        Labels of the runs that failed.
     """
+    kind = "Run" if any(run.split is not None for run in runs) else "Experiment"
     failed = []
     for number, run in enumerate(runs, 1):
-        print(f"\n{'#' * 60}\nExperiment {number}/{len(runs)}: {run.name}")
-        print(f"  args: {' '.join(run.extra_args) or '(none)'}\n{'#' * 60}")
+        print(f"\n{'#' * 60}\n{kind} {number}/{len(runs)}: {run.label}")
+        if run.split is not None:
+            print(f"  split: {run.split}")
+        if run.name is not None:
+            print(f"  args: {' '.join(run.extra_args) or '(none)'}")
+        print("#" * 60)
         try:
-            _evaluate(
-                run,
-                package_metadata=package_metadata,
-                et_run=et_run,
-                experiment=run.name,
-            )
+            _evaluate(run, package_metadata=package_metadata, et_run=et_run)
         except SystemExit as e:
             if e.code not in (None, 0):
-                failed.append(run.name)
+                failed.append(run.label)
         except Exception:
             traceback.print_exc()
-            failed.append(run.name)
-        if failed and failed[-1] == run.name:
-            print(f"\nExperiment {run.name!r} failed.", file=sys.stderr)
+            failed.append(run.label)
+        if failed and failed[-1] == run.label:
+            print(f"\n{kind} {run.label!r} failed.", file=sys.stderr)
 
-    print(f"\nExperiments: {len(runs) - len(failed)} of {len(runs)} succeeded")
+    print(f"\n{kind}s: {len(runs) - len(failed)} of {len(runs)} succeeded")
     if failed:
         print(f"Failed: {', '.join(failed)}", file=sys.stderr)
     return failed
@@ -2146,6 +2231,17 @@ def _build_parser() -> argparse.ArgumentParser:
             "repeatable (default: every experiment)"
         ),
     )
+    parser.add_argument(
+        "--split",
+        dest="splits",
+        action="append",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Run only this split of the config's 'splits' sweep; repeatable "
+            "(default: every split it matches)"
+        ),
+    )
     return parser
 
 
@@ -2154,13 +2250,12 @@ def _evaluate(
     *,
     package_metadata: dict,
     et_run=None,
-    experiment: str | None = None,
 ) -> None:
     """Evaluate every configured prediction dataset with one set of arguments.
 
-    *experiment* is the experiment name when the config defines
-    ``experiments``; it keys the euler-train evaluations and the sanity-check
-    report so experiments do not overwrite each other.
+    The run's label (its experiment and split, if the config has
+    ``experiments`` or ``splits``) keys the euler-train evaluations and the
+    sanity-check report so runs do not overwrite each other.
     """
     args = run.args
     config = run.config
@@ -2283,7 +2378,7 @@ def _evaluate(
     # Evaluate each prediction dataset
     for dataset_config in config["datasets"]:
         ds_name = dataset_config["name"]
-        et_key = ds_name if experiment is None else f"{ds_name}/{experiment}"
+        et_key = ds_name if run.label is None else f"{ds_name}/{run.label}"
         # How this prediction was made beats the run-wide default.
         spatial_mode = dataset_config.get("spatial_alignment", args.spatial_alignment)
         if spatial_mode != args.spatial_alignment:
@@ -3679,6 +3774,7 @@ def _evaluate(
                 dataset_config,
                 modality=pred_depth_key or "depth",
                 eval_name=args.eval_name,
+                split=run.split,
             )
             depth_label = (
                 "Sparse depth"
@@ -3692,6 +3788,7 @@ def _evaluate(
                 dataset_config,
                 modality="rgb",
                 eval_name=args.eval_name,
+                split=run.split,
             )
             print(f"\n  RGB results saved to: {rgb_out}")
         if rays_save:
@@ -3700,6 +3797,7 @@ def _evaluate(
                 dataset_config,
                 modality="rays",
                 eval_name=args.eval_name,
+                split=run.split,
             )
             print(f"\n  Rays results saved to: {rays_out}")
         if points_3d_save:
@@ -3708,6 +3806,7 @@ def _evaluate(
                 dataset_config,
                 modality="points_3d",
                 eval_name=args.eval_name,
+                split=run.split,
             )
             print(f"\n  Points-3D results saved to: {points_3d_out}")
         if points_3d_sparse_save:
@@ -3716,6 +3815,7 @@ def _evaluate(
                 dataset_config,
                 modality="points_3d",
                 eval_name=args.eval_name,
+                split=run.split,
             )
             print(
                 f"\n  Points-3D (sparse GT) results saved to: {points_3d_sparse_out}"
@@ -3744,12 +3844,47 @@ def _evaluate(
         report = sanity_checker.get_full_report()
         report_path = Path(
             "sanity_check_report.json"
-            if experiment is None
-            else f"sanity_check_report_{experiment}.json"
+            if run.label is None
+            else f"sanity_check_report_{run.label.replace('/', '_')}.json"
         )
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2)
         print(f"\nSanity check report saved to: {report_path}")
+
+
+def _sweep_splits(
+    parser: _ArgumentParser, args: argparse.Namespace, config: dict, runs: list[_Run]
+) -> list[_Run]:
+    """Resolve the config's ``splits`` sweep and repeat *runs* per split.
+
+    Exits like a config error when the sweep matches nothing or a GT
+    reference lacks a split, and like a usage error for an unknown
+    ``--split``, all before any work.
+    """
+    try:
+        sweep = resolve_split_sweep(config["splits"], config["gt"])
+    except ValueError as e:
+        print(f"Error loading config: {e}", file=sys.stderr)
+        sys.exit(1)
+    unknown = [name for name in args.splits or [] if name not in sweep.splits]
+    if unknown:
+        parser.error(
+            f"--split {', '.join(map(repr, unknown))} is not among the splits "
+            f"the config's 'splits' sweep matches ({', '.join(sweep.splits)})"
+        )
+    selected = tuple(
+        name for name in sweep.splits if not args.splits or name in args.splits
+    )
+    pattern = "" if sweep.match is None else f" matching {sweep.match!r}"
+    print(
+        f"Split sweep: {len(selected)} of gt.{sweep.gt_modality}'s splits"
+        f"{pattern}: {', '.join(selected)}"
+    )
+    try:
+        return _split_runs(runs, sweep, selected)
+    except ValueError as e:
+        print(f"Error loading config: splits: {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main():
@@ -3803,12 +3938,21 @@ def main():
             print(f"Error loading config: {e}", file=sys.stderr)
             sys.exit(1)
 
+    if "splits" not in config:
+        if args.splits:
+            parser.error(
+                "--split selects from the config's 'splits' sweep, which this "
+                "config does not have"
+            )
+    else:
+        runs = _sweep_splits(parser, args, config, runs)
+
     et_run, et_resuming = _start_euler_train(config)
     failed = []
-    if experiments is None:
+    if len(runs) == 1 and runs[0].label is None:
         _evaluate(runs[0], package_metadata=package_metadata, et_run=et_run)
     else:
-        failed = _evaluate_experiments(
+        failed = _evaluate_runs(
             runs, package_metadata=package_metadata, et_run=et_run
         )
     _finish_euler_train(et_run, et_resuming)

@@ -41,6 +41,7 @@ validation exits with status `1` before any dataset is opened.
 | `--distribution-range` | `float float` | `0.001 100` | Finite error range `[MIN, MAX)` in evaluated space units; zero/small-error and overflow bins retain the tails |
 | `--eval-name` | `str` | `eval` | Name this evaluation: results are written as `<name>.json` in each prediction dataset's `.eval/` folder, so differently named runs sit side by side; a dataset's `output_file` still wins ([details](output.md#where-results-land)) |
 | `--experiment` | `str` | all | Run only this experiment from the config's [`experiments`](configuration.md#experiments-section-optional) section; repeatable |
+| `--split` | `str` | all matched | Run only this split of the config's [`splits`](configuration.md#splits-section-optional) sweep; repeatable |
 
 Histogram settings can also be specified in the config's `distributions`
 section. A bin, scale or range flag enables histograms and overrides that
@@ -82,6 +83,10 @@ euler-eval config.json --mask-sky --eval-name no_sky
 # Run every experiment in the config's "experiments" section, or just one
 euler-eval config.json --device cuda --batch-size 32
 euler-eval config.json --experiment no_sky
+
+# Evaluate every split the config's "splits" sweep matches, or just one
+euler-eval config.json
+euler-eval config.json --split fog25
 
 # Force affine scale+shift alignment on all depth predictions
 euler-eval config.json --depth-alignment affine
