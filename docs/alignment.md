@@ -114,6 +114,17 @@ The run records `spatial_alignment.mode: "source_grid"`. A grid recorded for
 another source size than the GT's cannot place the prediction; the shapes are
 guessed from instead, with a warning.
 
+Recording it takes one key per output in the model's euler-inference config
+(model card `outputs`, or the model's `OUTPUTS` when the config lists none).
+For a model that crops its input to a multiple of 8:
+
+```json
+{"key": "depth", "type": "npy", "source_grid": "crop_top_left"}
+```
+
+Declare it only on outputs on the image's pixel grid, not on per-image values
+such as a 3×3 intrinsics matrix.
+
 **Without a record**, `--spatial-alignment`, or a `datasets[]` entry's
 `spatial_alignment`, says which:
 
@@ -130,6 +141,13 @@ misplacing pixels at the right edge by up to 7 px. The method that ran is
 recorded as `spatial_alignment.method` (`none`, `vae_crop`, `crop`,
 `resize_prediction`, `resize`, `warp_prediction` or `warp`) and the evaluated
 grid as `population.evaluated_resolution`; see [Results & output](output.md).
+
+**The degraded input.** `gt.input_rgb` is the image the prediction was
+computed from, so the same decision places the prediction on it for the
+input-referenced metrics: a crop is compared with exactly the input pixels it
+covers, a resize upscales the smaller of the two, and any other recorded
+mapping resamples the input onto the prediction grid. That holds with or
+without `gt.rgb`; see [RGB references](configuration.md#rgb-references).
 
 ## Benchmark depth bins
 

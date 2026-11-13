@@ -20,28 +20,28 @@ from .calibration import (
     get_sample_pointcloud_to_camera_extrinsics as _get_pointcloud_to_camera_extrinsics,
 )
 from .data import (
-    align_by_upscaling,
-    align_to_ground_truth,
-    align_to_prediction,
-    apply_point_transform,
     SourceGrid,
     _warp_nearest,
+    align_to_ground_truth,
+    align_to_prediction,
+    align_with_input,
+    apply_point_transform,
+    classify_input_alignment,
     classify_spatial_alignment,
-    declared_invalid_sentinel,
-    mask_invalid_sentinel,
-    pred_head_source_grid,
-    prediction_intrinsics,
-    sample_spatial_alignment,
-    spatial_alignment_mode,
-    classify_upscaling_alignment,
     compute_scale_and_shift,
+    declared_invalid_sentinel,
     decompose_point_errors,
     fit_scale_transform,
     fit_similarity_transform,
+    mask_invalid_sentinel,
+    pred_head_source_grid,
+    prediction_intrinsics,
     process_depth,
     project_point_cloud_to_depth_map,
     project_point_cloud_to_point_map,
     resize_mask,
+    sample_spatial_alignment,
+    spatial_alignment_mode,
     to_numpy_depth,
     to_numpy_directions,
     to_numpy_mask,
@@ -2864,7 +2864,9 @@ def evaluate_rgb_samples(
             prediction-only NIQE, FADE, MUSIQ and CLIP-IQA metrics.
         spatial_alignment: How a GT/prediction resolution mismatch is
             reconciled: ``auto``, ``crop`` or ``resize``
-            (:func:`~euler_eval.data.classify_spatial_alignment`).
+            (:func:`~euler_eval.data.classify_spatial_alignment`). The
+            input goes onto the prediction the same way
+            (:func:`~euler_eval.data.align_with_input`).
 
     Returns:
         Dictionary containing aggregate and per-file metrics, and
@@ -3063,8 +3065,10 @@ def evaluate_rgb_samples(
                         )
                     if has_input:
                         input_native_dims = img_input.shape[:2]
-                        input_alignment = classify_upscaling_alignment(
-                            pred_native_dims, input_native_dims
+                        input_alignment = classify_input_alignment(
+                            pred_native_dims,
+                            input_native_dims,
+                            spatial_alignment=alignment,
                         )
 
                 # Domain metrics score the prediction itself, or against its
@@ -3072,26 +3076,29 @@ def evaluate_rgb_samples(
                 # prediction: filling a masked region would add artificial
                 # edges and flat areas that change the image statistics and
                 # perceived quality these metrics measure. Input-referenced
-                # metrics compare pixels, so the smaller of the prediction and
-                # its input is upscaled onto the other's grid first.
+                # metrics compare pixels, so the prediction first goes onto
+                # its input the way it goes onto the GT: a crop is compared
+                # with the input pixels it covers, and a resize upscales the
+                # smaller of the two onto the other's grid.
                 input_pair = None
                 if scores_input:
-                    if (
-                        img_input.shape[:2] != img_pred.shape[:2]
-                        and not logged_input_alignment
-                    ):
-                        print(
-                            f"  Aligning input {img_input.shape[:2]} and pred "
-                            f"{img_pred.shape[:2]} by upscaling the smaller one"
-                        )
-                        logged_input_alignment = True
-                    input_pair = _safe_compute(
+                    aligned = _safe_compute(
                         "input_alignment",
                         entry_id,
-                        align_by_upscaling,
+                        align_with_input,
                         img_pred,
                         img_input,
+                        spatial_alignment=alignment,
                     )
+                    if aligned is not None:
+                        aligned_pred, aligned_input, method = aligned
+                        input_pair = (aligned_pred, aligned_input)
+                        if method != "none" and not logged_input_alignment:
+                            print(
+                                f"  Aligning input {img_input.shape[:2]} and pred "
+                                f"{img_pred.shape[:2]}: {method}"
+                            )
+                            logged_input_alignment = True
                 domain_metrics = {}
                 for metric_set in domain_metric_sets:
                     category = metric_set.category

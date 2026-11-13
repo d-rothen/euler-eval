@@ -233,9 +233,14 @@ some details open, and this implementation fixes them as follows:
 
 Values are comparable between euler-eval evaluations; other implementations of
 these descriptors make different choices, so published numbers may not match.
-The prediction and its input must be on one pixel grid; when their sizes
-differ, the smaller one is upscaled bilinearly onto the other's
-(`protocol.parameters["method.input_alignment"]` records which). Scoring the
+The prediction and its input must be on one pixel grid. When their sizes
+differ, the prediction is placed on its input as on the GT: a crop is compared
+with exactly the input pixels it covers, and a resize upscales the smaller one
+bilinearly onto the other's grid (`protocol.parameters["method.input_alignment"]`
+records which; see [RGB references](configuration.md#rgb-references)).
+Upscaling a crop instead would shift its content against the input by up to
+the size difference, and these descriptors compare edges pixel by pixel: an
+unchanged image cropped to a multiple of 8 then scores r̄ well above 1. Scoring the
 input itself as a prediction gives e = 0, r̄ = 1, σ = 0, a useful check of a
 configuration. e and r̄ reward any contrast gain, including amplified noise
 and halos, and σ only partly counters that: read them next to FADE and NIQE,

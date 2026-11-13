@@ -2125,9 +2125,11 @@ def _build_parser() -> argparse.ArgumentParser:
             "How predictions whose resolution differs from the GT's were made: "
             "auto (default) treats a prediction whose sides are multiples of 8 "
             "and up to 7 px shorter as a top-left crop and anything else as "
-            "resized; crop and resize state it. A datasets[] entry's "
-            "spatial_alignment overrides it. Dense depth and points_3d are "
-            "scored on the GT grid, RGB and rays on the prediction's."
+            "resized; crop and resize state it. A recorded source_grid "
+            "decides under auto. A datasets[] entry's spatial_alignment "
+            "overrides it. Dense depth and points_3d are scored on the GT "
+            "grid, RGB and rays on the prediction's; gt.input_rgb is aligned "
+            "the same way."
         ),
     )
     parser.add_argument(

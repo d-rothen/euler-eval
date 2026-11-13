@@ -254,7 +254,7 @@ values differ say where. Nothing else in the file needs to be compared for that;
     "population.pred_sky_masking": false,
     "population.evaluated_resolution": [1024, 1920],
     "population.benchmark_depth_range_m": [0.01, 80.0],
-    "method.metrics_revision": 3,
+    "method.metrics_revision": 4,
     "method.depth_alignment": "auto_affine",
     "method.sky_depth_m": null,
     "method.pred_sky_mask": false
@@ -289,8 +289,9 @@ recorded as off: `reference.gt`, `reference.depth`, `reference.calibration` and
 `reference.segmentation` are `null`, as are `population.missing_segmentation`,
 `population.benchmark_depth_range_m`, `method.fid_backend` and
 `method.spatial_alignment`, and `population.gt_sky_masking` is `false`.
-`method.input_alignment` is `none`, `upscale_input` or `upscale_prediction`
-when `gt.input_rgb` is configured, else `null`.
+`method.input_alignment` is `none`, `crop_input`, `upscale_input`,
+`upscale_prediction` or `warp_input` when `gt.input_rgb` is configured, else
+`null` ([how the input is aligned](configuration.md#rgb-references)).
 
 Rules that keep comparisons a plain map comparison:
 

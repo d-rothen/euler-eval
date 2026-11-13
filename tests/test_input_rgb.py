@@ -88,6 +88,137 @@ def _no_warning():
         yield
 
 
+def _ramp(height: int, width: int) -> np.ndarray:
+    """An RGB image that is linear in x and y, every pixel distinct."""
+    yy, xx = np.mgrid[0:height, 0:width].astype(np.float32)
+    return np.stack([xx / width, yy / height, (xx + 2 * yy) / 200.0], axis=-1)
+
+
+def _grid(size, affine) -> data.SourceGrid:
+    return data.SourceGrid.from_value({"size": list(size), "affine": affine})
+
+
+def test_a_cropped_prediction_meets_the_input_pixels_it_covers():
+    # 21x30 input, prediction cropped to the multiple of 8 below each side,
+    # as a latent model does: auto takes it for the top-left crop it is.
+    hazy = _ramp(21, 30)
+    pred = hazy[:16, :24].copy()
+
+    assert data.classify_input_alignment(pred.shape, hazy.shape) == "crop_input"
+    with _no_warning():
+        aligned_pred, aligned_input, method = data.align_with_input(pred, hazy)
+
+    assert method == data.INPUT_CROP_METHOD == "crop_input"
+    assert aligned_pred is pred
+    np.testing.assert_array_equal(aligned_input, pred)
+
+
+def test_a_recorded_crop_meets_the_input_at_its_origin():
+    hazy = _ramp(21, 30)
+    pred = hazy[2:18, 3:27].copy()  # a crop off the top-left corner
+    grid = _grid((21, 30), [[1, 0, -3], [0, 1, -2]])
+
+    # Without the record, auto can only guess the top-left corner.
+    _, guessed, _ = data.align_with_input(pred, hazy)
+    assert not np.array_equal(guessed, pred)
+
+    assert (
+        data.classify_input_alignment(pred.shape, hazy.shape, spatial_alignment=grid)
+        == "crop_input"
+    )
+    _, aligned_input, method = data.align_with_input(
+        pred, hazy, spatial_alignment=grid
+    )
+
+    assert method == "crop_input"
+    np.testing.assert_array_equal(aligned_input, pred)
+
+
+@pytest.mark.parametrize(
+    "spatial_alignment",
+    [
+        "resize",
+        # A recorded whole-image resize of 21x30 to 16x24, pixel centres aligned.
+        _grid((21, 30), [[0.8, 0, -0.1], [0, 16 / 21, 8 / 21 - 0.5]]),
+    ],
+    ids=["explicit", "recorded"],
+)
+def test_a_resized_prediction_still_upscales_the_smaller_image(spatial_alignment):
+    hazy = _ramp(21, 30)
+    pred = _ramp(16, 24)
+
+    assert (
+        data.classify_input_alignment(
+            pred.shape, hazy.shape, spatial_alignment=spatial_alignment
+        )
+        == "upscale_prediction"
+    )
+    aligned_pred, aligned_input, method = data.align_with_input(
+        pred, hazy, spatial_alignment=spatial_alignment
+    )
+
+    assert method == "upscale_prediction"
+    expected_pred, expected_input = align_by_upscaling(pred, hazy)
+    np.testing.assert_array_equal(aligned_pred, expected_pred)
+    assert aligned_input is hazy and expected_input is hazy
+
+
+def test_a_recorded_warp_resamples_the_input_onto_the_prediction_grid():
+    # Halve 20x40 to 10x20, then keep the top-left 8x16: neither a crop nor a
+    # whole-image resize of the input.
+    hazy = _ramp(20, 40)
+    grid = _grid((20, 40), [[0.5, 0, -0.25], [0, 0.5, -0.25]])
+
+    _, aligned_input, method = data.align_with_input(
+        np.zeros((8, 16, 3), np.float32), hazy, spatial_alignment=grid
+    )
+
+    assert method == data.INPUT_WARP_METHOD == "warp_input"
+    # Prediction pixel (x', y') covers input pixels 2x'..2x'+1; on a linear
+    # image their average is the ramp at the block centre.
+    yy, xx = np.mgrid[0:8, 0:16].astype(np.float32)
+    expected = np.stack(
+        [(2 * xx + 0.5) / 40, (2 * yy + 0.5) / 20, (2 * xx + 0.5 + 2 * (2 * yy + 0.5)) / 200.0],
+        axis=-1,
+    )
+    np.testing.assert_allclose(aligned_input, expected, atol=1e-5)
+
+
+def test_an_explicit_crop_cannot_be_larger_than_the_input():
+    with pytest.raises(ValueError, match="no larger than the input"):
+        data.align_with_input(
+            _ramp(24, 32), _ramp(21, 30), spatial_alignment="crop"
+        )
+
+
+def test_a_grid_for_another_source_falls_back_to_the_shape_guess():
+    hazy = _ramp(21, 30)
+    grid = _grid((40, 60), [[1, 0, -3], [0, 1, -2]])
+
+    with pytest.warns(UserWarning, match=r"source, but the input is 21x30"):
+        _, aligned_input, method = data.align_with_input(
+            hazy[:16, :24], hazy, spatial_alignment=grid
+        )
+
+    assert method == "crop_input"
+    np.testing.assert_array_equal(aligned_input, hazy[:16, :24])
+
+
+def test_an_unchanged_crop_scores_no_change_on_hautiere():
+    """Scoring the input itself is the documented e = 0, r = 1, σ = 0 check;
+    it must hold for a model that crops its input to a multiple of 8, which
+    stretched by upscaling used to read as a large gradient gain."""
+    from tests.test_hautiere import _pattern_rgb
+
+    hazy = (_pattern_rgb(52, 70) * 0.4 + 0.5).astype(np.float32)
+    pred = hazy[:48, :64].copy()
+
+    aligned_pred, aligned_input, _ = data.align_with_input(pred, hazy)
+    scores = load_hautiere("cpu")(aligned_pred, aligned_input)
+
+    assert scores == {"hautiere_e": 0.0, "hautiere_r": 1.0, "hautiere_sigma": 0.0}
+
+
 # ---------------------------------------------------------------------------
 # Evaluator
 # ---------------------------------------------------------------------------
@@ -252,6 +383,129 @@ def test_input_referenced_metrics_see_the_upscaled_pair(monkeypatch, domain):
     assert {call[1:] for call in domain} == {((16, 16, 3), (16, 16, 3))}
     assert result["spatial_info"]["input_alignment"] == "upscale_prediction"
     assert result["spatial_info"]["evaluated_dimensions"] == {"height": 8, "width": 8}
+
+
+def _cropped_samples(top: int, left: int, *, record: bool) -> list[dict]:
+    """Input-only samples whose prediction is the input's 16x24 crop at
+    ``(top, left)``, unchanged, optionally recording that as its source_grid."""
+    samples = []
+    for index in (1, 2):
+        hazy = _ramp(21, 30) * (0.5 + 0.25 * index)
+        sample = {
+            "id": f"{index:05d}",
+            "full_id": f"/scene/{index:05d}",
+            "pred": hazy[top : top + 16, left : left + 24].copy(),
+            "input": hazy,
+        }
+        if record:
+            grid = {"size": [21, 30], "affine": [[1, 0, -left], [0, 1, -top]]}
+            sample["attributes"] = {"pred": {"source_grid": grid}}
+        samples.append(sample)
+    return samples
+
+
+def test_input_referenced_metrics_see_the_input_pixels_a_crop_covers(domain):
+    result = eval_mod.evaluate_rgb_samples(
+        _Dataset(_cropped_samples(0, 0, record=False), ("input", "pred")),
+        device="cpu",
+        domains=("dehazing",),
+    )
+
+    assert {call[1:] for call in domain} == {((16, 24, 3), (16, 24, 3))}
+    # The prediction is the input's pixels, unchanged.
+    assert result["rgb"]["dehazing"]["gain"] == pytest.approx(1.0, abs=1e-6)
+    assert result["rgb"]["dehazing"]["loss"] == pytest.approx(0.0, abs=1e-6)
+    assert result["spatial_info"]["mode"] == "auto"
+    assert result["spatial_info"]["input_alignment"] == "crop_input"
+
+
+def test_input_referenced_metrics_follow_a_recorded_source_grid(domain):
+    recorded = eval_mod.evaluate_rgb_samples(
+        _Dataset(_cropped_samples(2, 3, record=True), ("input", "pred")),
+        device="cpu",
+        domains=("dehazing",),
+    )
+
+    assert recorded["spatial_info"]["mode"] == "source_grid"
+    assert recorded["spatial_info"]["input_alignment"] == "crop_input"
+    assert recorded["rgb"]["dehazing"]["loss"] == pytest.approx(0.0, abs=1e-6)
+
+    # An explicit mode still wins, and its top-left crop misplaces these.
+    guessed = eval_mod.evaluate_rgb_samples(
+        _Dataset(_cropped_samples(2, 3, record=True), ("input", "pred")),
+        device="cpu",
+        domains=("dehazing",),
+        spatial_alignment="crop",
+    )
+
+    assert guessed["spatial_info"]["mode"] == "crop"
+    assert guessed["spatial_info"]["input_alignment"] == "crop_input"
+    assert abs(guessed["rgb"]["dehazing"]["loss"]) > 0.01
+
+
+def test_a_source_grid_written_with_the_prediction_reaches_the_input_alignment(
+    tmp_path, domain
+):
+    """End to end: a dataset head's ``source_grid``, and one file's overriding
+    it, as euler-inference writes them, are read through euler-loading."""
+    ds_crawler = pytest.importorskip("ds_crawler")
+    from PIL import Image
+
+    from tests.test_hautiere import _pattern_rgb
+
+    def writer(root, meta):
+        return ds_crawler.DatasetWriter(
+            root, name=root.name, type="rgb", separator=None,
+            euler_train={"used_as": "target", "modality_type": "rgb"},
+            meta={"range": [0, 255], **meta},
+            euler_loading={"loader": "generic_dense_depth", "function": "rgb"},
+        )
+
+    def crop_grid(top, left):
+        affine = [[1, 0, -left], [0, 1, -top]]
+        return {"source": "rgb", "size": [40, 60], "affine": affine}
+
+    # 24x40 crops of 40x60 inputs, which the shapes alone would call a resize.
+    hazy_writer = writer(tmp_path / "hazy", {})
+    pred_writer = writer(tmp_path / "pred", {"source_grid": crop_grid(8, 10)})
+    for k, (top, left) in enumerate([(8, 10), (4, 6)]):
+        hazy = (_pattern_rgb(40, 60) * (100 + 50 * k)).astype(np.uint8)
+        Image.fromarray(hazy).save(hazy_writer.get_path(f"seq/{k:04d}", f"{k:04d}.png"))
+        attributes = {"source_grid": crop_grid(top, left)} if k == 1 else None
+        path = pred_writer.get_path(f"seq/{k:04d}", f"{k:04d}.png", attributes=attributes)
+        Image.fromarray(hazy[top : top + 24, left : left + 40]).save(path)
+    hazy_writer.save_index()
+    pred_writer.save_index()
+
+    dataset = data.build_rgb_eval_dataset(
+        gt_rgb_path=None,
+        pred_rgb_path=str(tmp_path / "pred"),
+        input_rgb_path=str(tmp_path / "hazy"),
+    )
+    result = eval_mod.evaluate_rgb_samples(
+        dataset, device="cpu", num_workers=0, domains=("dehazing",)
+    )
+
+    assert result["spatial_info"]["mode"] == "source_grid"
+    assert result["spatial_info"]["input_alignment"] == "crop_input"
+    assert {call[1:] for call in domain} == {((24, 40, 3), (24, 40, 3))}
+    losses = _metric_values(result["per_file_metrics"], "loss")
+    assert len(losses) == 2 and max(abs(value) for value in losses) == 0.0
+
+
+def _metric_values(tree, name: str) -> list[float]:
+    """Every per-file value of metric *name* under ``per_file_metrics``."""
+    if isinstance(tree, dict):
+        found = [float(tree[name])] if isinstance(tree.get(name), (int, float)) else []
+        return found + [
+            value
+            for key, child in tree.items()
+            if key != name
+            for value in _metric_values(child, name)
+        ]
+    if isinstance(tree, list):
+        return [value for child in tree for value in _metric_values(child, name)]
+    return []
 
 
 def test_evaluation_needs_a_reference(domain):

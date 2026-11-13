@@ -36,7 +36,7 @@ SCHEMA_VERSION = "1.3"
 #: Bump whenever a release changes metric values for identical inputs and
 #: settings, and say so in the CHANGELOG. Evaluations with different revisions
 #: are not comparable.
-METRICS_REVISION = 3
+METRICS_REVISION = 4
 
 #: GT config keys a modality may read as reference inputs.
 REFERENCE_KEYS = (

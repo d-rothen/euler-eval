@@ -104,9 +104,19 @@ full-reference metrics, so RGB does not read them without `gt.rgb`, and
 like `gt.rgb`, unless the path selects another with `#scope=`. Its frames are
 paired with the prediction by hierarchy path and file ID; with both references
 configured, a frame needs both, and the run prints how many pairs the input
-lacked. When the input and the prediction differ in size, input-referenced
-metrics upscale the smaller one onto the other's grid with bilinear
-interpolation (the prediction's grid wins a tie of pixel counts); the other
+lacked.
+
+The input is the image the prediction was computed from, so when the two
+differ in size, input-referenced metrics place the prediction on it the way
+it is placed on the GT ([Resolution alignment](alignment.md#resolution-alignment)):
+the prediction's recorded `source_grid`, else `spatial_alignment`, decides.
+A crop — e.g. a latent model that cropped its input to a multiple of 8 — is
+compared with exactly the input pixels it covers (`crop_input`); a resize
+upscales the smaller of the two onto the other's grid with bilinear
+interpolation (`upscale_input` or `upscale_prediction`; the prediction's grid
+wins a tie of pixel counts); any other recorded mapping resamples the input
+onto the prediction's grid through it (`warp_input`).
+`protocol.parameters["method.input_alignment"]` records which. The other
 metrics are unaffected.
 
 ### GT segmentation
@@ -166,7 +176,7 @@ would be ambiguous.
 | `sky_mask.path` | no | Auxiliary predicted sky mask for a dense depth entry; used with `--sky-depth`, `--mask-sky-prediction` and `--sky-iou` |
 | `rays.path` | no\* | Predicted ray direction map dataset |
 | `points_3d.path` | no\* | Predicted per-pixel 3D point map `(H,W,3)` |
-| `spatial_alignment` | no | How this entry's predictions reached a resolution other than the GT's: `crop`, `resize` or `auto` (default: `--spatial-alignment`; `auto` follows a recorded `source_grid`); see [Resolution alignment](alignment.md#resolution-alignment) |
+| `spatial_alignment` | no | How this entry's predictions reached a resolution other than the GT's (and `gt.input_rgb`'s): `crop`, `resize` or `auto` (default: `--spatial-alignment`; `auto` follows a recorded `source_grid`); see [Resolution alignment](alignment.md#resolution-alignment) |
 | `output_file` | no | Custom results path for every modality of this entry, replacing the `.eval/` layout and `--eval-name` (default: `.eval/[<scope>/][split_<split>/]eval.json` in each prediction modality's dataset root; see [where results land](output.md#where-results-land)). With a [`splits`](#splits-section-optional) sweep it must contain `{split}` |
 
 \* At least one prediction modality must be present.

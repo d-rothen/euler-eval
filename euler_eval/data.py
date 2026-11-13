@@ -677,7 +677,13 @@ def validate_spatial_alignment(mode: str) -> str:
 
 
 def classify_spatial_alignment(
-    gt_h: int, gt_w: int, pred_h: int, pred_w: int, *, mode: SpatialAlignment = "auto"
+    gt_h: int,
+    gt_w: int,
+    pred_h: int,
+    pred_w: int,
+    *,
+    mode: SpatialAlignment = "auto",
+    reference: str = "GT",
 ) -> str:
     """Classify how a GT and a prediction of these shapes go onto one grid.
 
@@ -699,6 +705,9 @@ def classify_spatial_alignment(
       or ``"warp"`` for anything else. A grid recorded for another source
       size than the GT's cannot place the prediction, so the shapes are
       guessed from as under ``"auto"``, with a warning.
+
+    *reference* names the image in the GT's place in messages, e.g.
+    ``"input"`` for the degraded input (:func:`align_with_input`).
     """
     if isinstance(mode, SourceGrid):
         if (gt_h, gt_w) == mode.source_size:
@@ -710,7 +719,7 @@ def classify_spatial_alignment(
 
         warnings.warn(
             f"The prediction's source_grid describes a {mode.source_size[0]}x"
-            f"{mode.source_size[1]} source, but the GT is {gt_h}x{gt_w}; "
+            f"{mode.source_size[1]} source, but the {reference} is {gt_h}x{gt_w}; "
             "guessing the alignment from the shapes instead.",
             stacklevel=2,
         )
@@ -724,7 +733,8 @@ def classify_spatial_alignment(
         if dh < 0 or dw < 0:
             raise ValueError(
                 "spatial_alignment 'crop' needs a prediction no larger than "
-                f"the GT, got prediction {pred_h}x{pred_w} for GT {gt_h}x{gt_w}"
+                f"the {reference}, got prediction {pred_h}x{pred_w} for "
+                f"{reference} {gt_h}x{gt_w}"
             )
         return "vae_crop"
     if mode == "resize":
@@ -1272,6 +1282,97 @@ def align_by_upscaling(
     if method == "upscale_input":
         return pred, resized
     return resized, input_image
+
+
+#: ``method.input_alignment`` when the degraded input was cropped to the
+#: pixels a cropped prediction covers (:func:`align_with_input`).
+INPUT_CROP_METHOD = "crop_input"
+
+#: ``method.input_alignment`` when the input was resampled onto the prediction
+#: grid through a recorded mapping that is neither a crop nor a whole-image
+#: resize (:func:`align_with_input`).
+INPUT_WARP_METHOD = "warp_input"
+
+
+def _input_method(
+    spatial_method: str, pred_shape: tuple[int, ...], input_shape: tuple[int, ...]
+) -> str:
+    """The ``input_alignment`` for a :func:`classify_spatial_alignment` result."""
+    if spatial_method == "none":
+        return "none"
+    if spatial_method in ("vae_crop", RECORDED_CROP_METHOD):
+        return INPUT_CROP_METHOD
+    if spatial_method == WARP_METHOD:
+        return INPUT_WARP_METHOD
+    return classify_upscaling_alignment(pred_shape, input_shape)
+
+
+def classify_input_alignment(
+    pred_shape: tuple[int, ...],
+    input_shape: tuple[int, ...],
+    *,
+    spatial_alignment: SpatialAlignment = "auto",
+) -> str:
+    """Name what :func:`align_with_input` does to a prediction and its input.
+
+    Returns ``"none"``, :data:`INPUT_CROP_METHOD`, ``"upscale_input"``,
+    ``"upscale_prediction"`` or :data:`INPUT_WARP_METHOD`.
+    """
+    in_h, in_w = (int(n) for n in input_shape[:2])
+    pred_h, pred_w = (int(n) for n in pred_shape[:2])
+    spatial_method = classify_spatial_alignment(
+        in_h, in_w, pred_h, pred_w, mode=spatial_alignment, reference="input"
+    )
+    return _input_method(spatial_method, pred_shape, input_shape)
+
+
+def align_with_input(
+    pred: np.ndarray,
+    input_image: np.ndarray,
+    *,
+    spatial_alignment: SpatialAlignment = "auto",
+) -> tuple[np.ndarray, np.ndarray, str]:
+    """Bring a prediction and the degraded input it restores onto one grid.
+
+    The input is the image the prediction was computed from, so it goes
+    where the GT goes in :func:`classify_spatial_alignment`: the prediction's
+    recorded ``source_grid`` (*spatial_alignment* a :class:`SourceGrid`), an
+    explicit ``crop`` or ``resize``, or ``auto``'s guess from the shapes
+    decides, the same for both references.
+
+    - A crop (top-left for ``vae_crop``, at its recorded origin otherwise) is
+      compared with exactly the input pixels it covers: the input is cropped
+      (:data:`INPUT_CROP_METHOD`) and nothing is resampled. Upscaling the
+      prediction instead would stretch it over pixels it never saw, shifting
+      its content by up to the size difference.
+    - A resize upscales the smaller image onto the other's grid
+      (:func:`align_by_upscaling`).
+    - A recorded mapping that is neither, such as a resize followed by a
+      crop, resamples the input onto the prediction grid through it
+      (:data:`INPUT_WARP_METHOD`).
+
+    Returns:
+        ``(pred, input_image, method)``: both images with equal spatial
+        dimensions, and *method* as :func:`classify_input_alignment` names it.
+    """
+    in_h, in_w = input_image.shape[:2]
+    pred_h, pred_w = pred.shape[:2]
+    spatial_method = classify_spatial_alignment(
+        in_h, in_w, pred_h, pred_w, mode=spatial_alignment, reference="input"
+    )
+    method = _input_method(spatial_method, pred.shape, input_image.shape)
+    if method == "none":
+        return pred, input_image, method
+    if method == INPUT_CROP_METHOD:
+        top, left = _crop_origin(spatial_method, spatial_alignment, (pred_h, pred_w))
+        return pred, input_image[top : top + pred_h, left : left + pred_w], method
+    if method == INPUT_WARP_METHOD:
+        warped = _warp_dense(
+            input_image, spatial_alignment.to_prediction(), (pred_h, pred_w)
+        )
+        return pred, warped, method
+    aligned_pred, aligned_input = align_by_upscaling(pred, input_image)
+    return aligned_pred, aligned_input, method
 
 
 def validate_sky_depth(sky_depth: Optional[float]) -> None:

@@ -7,6 +7,26 @@ the git history for those.
 
 ### Changed
 
+- **Input-referenced metrics place a prediction on its input as on the GT;
+  `metrics_revision` is now 4.** With `gt.input_rgb`, Hautière's e, r̄ and σ
+  (`--domain dehazing`) compared a prediction smaller than its input after
+  upscaling it onto the input's grid, even when it was a crop: a latent model
+  that crops its input to a multiple of 8, or a prediction whose recorded
+  `source_grid` says so. That shifted its content against the input by up to
+  the size difference, and these descriptors compare edges pixel by pixel: an
+  unchanged image cropped to a multiple of 8 scored r̄ far above 1 and e
+  below 0, instead of 1 and 0. The input now follows the decision the GT
+  follows — the prediction's recorded `source_grid`, else
+  `--spatial-alignment` or `datasets[].spatial_alignment`, else `auto`'s guess
+  — with or without `gt.rgb`: a crop is compared with exactly the input pixels
+  it covers (`method.input_alignment: "crop_input"`), a resize still upscales
+  the smaller image (`upscale_input`, `upscale_prediction`), and any other
+  recorded mapping resamples the input onto the prediction grid
+  (`warp_input`). Values move for predictions that are, or are recorded or
+  declared as, crops of their input; the no-reference and full-reference
+  metrics are unchanged. `align_with_input` and `classify_input_alignment`
+  in `euler_eval.data`. See
+  [RGB references](docs/configuration.md#rgb-references).
 - **Declared invalid sentinels are not scored; `metrics_revision` is now 3.**
   A depth dataset's euler-dataset-contract `invalid.sentinel` (its head's,
   else its loader annotation's) marks pixels without a value: GT depth equal
