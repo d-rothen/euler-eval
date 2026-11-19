@@ -50,6 +50,7 @@ dependencies = [
     "euler-loading>=2.36",
     "ds-crawler>=2.10",
     "euler-metric-naming>=0.2",
+    "euler-connector>=0.1",
 ]
 
 [project.urls]

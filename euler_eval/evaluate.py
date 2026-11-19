@@ -13,7 +13,8 @@ import numpy as np
 from euler_loading import MultiModalDataset
 from PIL import Image
 from torch.utils.data import DataLoader, Subset
-from tqdm import tqdm
+# A tqdm that is also euler-view's progress record (scope "task": one modality pass).
+from euler_connector.progress import tqdm
 
 from .calibration import (
     get_sample_intrinsics as _get_intrinsics_K,

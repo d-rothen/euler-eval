@@ -117,6 +117,13 @@ the git history for those.
 
 ### Added
 
+- **Progress for euler-view, through euler-connector.** Inside an euler-view
+  launch, an evaluation reports where it is: run i of n and dataset j of m,
+  then one task per modality pass (`depth`, `sparse_depth`, `rgb`, `rays`,
+  `points_3d`, `points_3d_sparse`; their count is known only as they start),
+  with each pass's sample bar inside it. euler-view shows the overall progress
+  and an ETA. Outside a launch nothing is sent. New dependency:
+  `euler-connector>=0.1` (standard library only).
 - **A config `splits` section evaluates one result per ds-crawler split.**
   `"splits": {"gt_modality": "depth", "match": "fog\\d+"}` lists the splits
   of `gt.depth` whose whole name matches and runs the config once per split,

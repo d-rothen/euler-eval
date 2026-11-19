@@ -85,6 +85,7 @@ except ImportError:
     _euler_train = None
 
 from euler_metric_naming import AxisDeclaration, MetricDescription, MetricNamespace
+from euler_connector import progress as euler_progress
 
 # ── Eval namespace ──────────────────────────────────────────────────────────
 # MetricNamespace subclass for eval context with custom axis declarations,
@@ -1961,6 +1962,7 @@ def _evaluate_runs(
     kind = "Run" if any(run.split is not None for run in runs) else "Experiment"
     failed = []
     for number, run in enumerate(runs, 1):
+        euler_progress.current().set_level("run", number, len(runs), run.label)
         print(f"\n{'#' * 60}\n{kind} {number}/{len(runs)}: {run.label}")
         if run.split is not None:
             print(f"  split: {run.split}")
@@ -2351,8 +2353,13 @@ def _evaluate(
     )
 
     # Evaluate each prediction dataset
-    for dataset_config in config["datasets"]:
+    for dataset_number, dataset_config in enumerate(config["datasets"], 1):
         ds_name = dataset_config["name"]
+        # euler-view progress: dataset j of m, then one task per modality pass
+        # (their count is only known as they start: task i of an unknown n).
+        progress = euler_progress.current()
+        progress.set_level("dataset", dataset_number, len(config["datasets"]), ds_name)
+        modality_pass = 0
         et_key = ds_name if run.label is None else f"{ds_name}/{run.label}"
         # How this prediction was made beats the run-wide default.
         spatial_mode = dataset_config.get("spatial_alignment", args.spatial_alignment)
@@ -2416,6 +2423,8 @@ def _evaluate(
         ):
             pred_depth_path = pred_depth_config["path"]
             pred_depth_split = pred_depth_config.get("split")
+            modality_pass += 1
+            progress.set_task(modality_pass, None, "depth")
             print(f"\n[DEPTH] Evaluating: '{ds_name}'")
             print(f"  GT:   {gt_depth_path}")
             print(f"  Pred: {pred_depth_path}")
@@ -2681,6 +2690,8 @@ def _evaluate(
         if has_depth and gt_sparse_depth_path and not args.skip_depth:
             pred_depth_path = pred_depth_config["path"]
             pred_depth_split = pred_depth_config.get("split")
+            modality_pass += 1
+            progress.set_task(modality_pass, None, "sparse_depth")
             print(f"\n[SPARSE_DEPTH] Evaluating: '{ds_name}'")
             print(f"  GT sparse pointcloud: {gt_sparse_depth_path}")
             print(f"  Pred dense depth:     {pred_depth_path}")
@@ -2978,6 +2989,8 @@ def _evaluate(
         ):
             pred_rgb_path = dataset_config["rgb"]["path"]
             pred_rgb_split = dataset_config["rgb"].get("split")
+            modality_pass += 1
+            progress.set_task(modality_pass, None, "rgb")
             print(f"\n[RGB] Evaluating: '{ds_name}'")
             if rgb_full_reference:
                 print(f"  GT:    {gt_rgb_path}")
@@ -3218,6 +3231,8 @@ def _evaluate(
         if has_rays and gt_rays_path and not args.skip_rays:
             pred_rays_path = dataset_config["rays"]["path"]
             pred_rays_split = dataset_config["rays"].get("split")
+            modality_pass += 1
+            progress.set_task(modality_pass, None, "rays")
             print(f"\n[RAYS] Evaluating: '{ds_name}'")
             print(f"  GT:   {gt_rays_path}")
             print(f"  Pred: {pred_rays_path}")
@@ -3354,6 +3369,8 @@ def _evaluate(
             p3d_gt_is_depth = gt_points_3d_path is None
             p3d_gt_path = gt_depth_path if p3d_gt_is_depth else gt_points_3d_path
             p3d_gt_split = gt_depth_split if p3d_gt_is_depth else gt_points_3d_split
+            modality_pass += 1
+            progress.set_task(modality_pass, None, "points_3d")
             print(f"\n[POINTS_3D] Evaluating: '{ds_name}'")
             if p3d_gt_is_depth:
                 print(f"  GT:   {gt_depth_path} (synthesized from depth + intrinsics)")
@@ -3558,6 +3575,8 @@ def _evaluate(
             and has_points_3d
             and not args.skip_points_3d
         ):
+            modality_pass += 1
+            progress.set_task(modality_pass, None, "points_3d_sparse")
             print(f"\n[POINTS_3D · SPARSE] Evaluating: '{ds_name}'")
             print(f"  GT sparse pointcloud: {gt_sparse_depth_path}")
             p3s_pred_path = dataset_config["points_3d"]["path"]
@@ -3920,6 +3939,7 @@ def main():
     else:
         runs = _sweep_splits(parser, args, config, runs)
 
+    progress = euler_progress.start("eval")
     et_run, et_resuming = _start_euler_train(config)
     failed = []
     unwritten = False
@@ -3937,6 +3957,7 @@ def main():
         print(f"\nError: {e}", file=sys.stderr)
         unwritten = True
     _finish_euler_train(et_run, et_resuming)
+    progress.close(done=not (failed or unwritten))
     if failed or unwritten:
         sys.exit(1)
 
