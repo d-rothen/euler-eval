@@ -23,7 +23,8 @@ def compute_depth_binned_mae(
         far_threshold: Depth threshold for far bin.
 
     Returns:
-        Dictionary with MAE for 'near', 'mid', 'far', and 'all' regions.
+        Dictionary with MAE for 'near', 'mid', 'far', and 'all' regions;
+        ``NaN`` for a region without valid depth (no observation, not 0).
     """
     bins = get_depth_bins(depth, near_threshold, far_threshold)
 
@@ -33,19 +34,24 @@ def compute_depth_binned_mae(
     results = {}
 
     for bin_name, mask in bins.items():
-        if mask.any():
-            results[bin_name] = float(np.mean(abs_error[mask]))
-        else:
-            results[bin_name] = 0.0
+        results[bin_name] = _masked_mean(abs_error, mask)
 
     # Overall MAE
     valid_mask = bins["near"] | bins["mid"] | bins["far"]
-    if valid_mask.any():
-        results["all"] = float(np.mean(abs_error[valid_mask]))
-    else:
-        results["all"] = 0.0
+    results["all"] = _masked_mean(abs_error, valid_mask)
 
     return results
+
+
+def _masked_mean(values: np.ndarray, mask: np.ndarray) -> float:
+    """Mean of *values* under *mask*; ``NaN`` for an empty mask.
+
+    An empty bin has no observation. It used to score ``0.0``, which entered
+    the dataset mean as a perfect value (``rgb.depth_bins.policy`` ``v3``).
+    """
+    if mask.any():
+        return float(np.mean(values[mask]))
+    return float("nan")
 
 
 def compute_depth_binned_mse(
@@ -65,7 +71,8 @@ def compute_depth_binned_mse(
         far_threshold: Depth threshold for far bin.
 
     Returns:
-        Dictionary with MSE for 'near', 'mid', 'far', and 'all' regions.
+        Dictionary with MSE for 'near', 'mid', 'far', and 'all' regions;
+        ``NaN`` for a region without valid depth (no observation, not 0).
     """
     bins = get_depth_bins(depth, near_threshold, far_threshold)
 
@@ -75,17 +82,11 @@ def compute_depth_binned_mse(
     results = {}
 
     for bin_name, mask in bins.items():
-        if mask.any():
-            results[bin_name] = float(np.mean(sq_error[mask]))
-        else:
-            results[bin_name] = 0.0
+        results[bin_name] = _masked_mean(sq_error, mask)
 
     # Overall MSE
     valid_mask = bins["near"] | bins["mid"] | bins["far"]
-    if valid_mask.any():
-        results["all"] = float(np.mean(sq_error[valid_mask]))
-    else:
-        results["all"] = 0.0
+    results["all"] = _masked_mean(sq_error, valid_mask)
 
     return results
 

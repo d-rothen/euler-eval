@@ -3275,6 +3275,8 @@ def evaluate_rgb_samples(
                                 )
                                 ** 2
                             ).mean(axis=-1)
+                            # An empty bin has no value: it is left out of
+                            # the per-file entry and of the bin's mean.
                             bm_entry = {"mae": {}, "mse": {}}
                             for bn in _BENCHMARK_BIN_NAMES:
                                 bm_mask = bm_bins[bn]
@@ -3287,9 +3289,6 @@ def evaluate_rgb_samples(
                                     bm_entry["mse"][bn] = float(
                                         np.mean(sq_error[bm_mask])
                                     )
-                                else:
-                                    bm_entry["mae"][bn] = 0.0
-                                    bm_entry["mse"][bn] = 0.0
                             benchmark_rgb_results.append(bm_entry)
                     except Exception as exc:
                         _warn_metric_failure("depth_binned_photometric", entry_id, exc)
