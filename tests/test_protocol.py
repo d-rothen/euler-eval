@@ -307,7 +307,7 @@ def test_depth_protocol(monkeypatch, tmp_path, depth_paths):
     assert_valid_protocol(protocol)
     assert protocol["task"] == "depth.dense"
     assert protocol["vocabularies"] == {
-        "euler.core": "1.0", "euler.depth": "1.0", "euler.sky": "1.0",
+        "euler.core": "1.0", "euler.depth": "1.1", "euler.sky": "1.0",
     }
     parameters = protocol["parameters"]
     assert set(parameters) == EXPECTED_KEYS["depth"]

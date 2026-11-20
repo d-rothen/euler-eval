@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "euler-eval"
-version = "3.1.0"
+version = "3.2.0"
 description = "Evaluation toolkit for depth, RGB, ray and 3D point-map predictions"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -49,7 +49,7 @@ dependencies = [
     "tqdm>=4.62.0",
     "euler-loading>=2.36",
     "ds-crawler>=2.10",
-    "euler-metric-naming>=0.3",
+    "euler-metric-naming>=0.4",
     "euler-connector>=0.1",
 ]
 
@@ -91,6 +91,13 @@ euler_eval = ["THIRD_PARTY_NOTICES.md", "schemas/*.schema.json"]
 ds-crawler = { git = "https://github.com/d-rothen/ds-crawler" }
 euler-loading = { git = "https://github.com/d-rothen/euler-loading" }
 euler-train = { git = "https://github.com/d-rothen/euler-train" }
+# Validation sets (euler_metric_naming.contract training and validation-set
+# functions, ProtocolBuilder.describe, the euler.depth 1.1 terms) need
+# euler-metric-naming 0.4, which lives on its training-naming-v2 branch until
+# it is released. Temporary: that branch is not pushed yet, so `uv lock`
+# cannot resolve it until it is; replace this with the PyPI release (and
+# re-lock) before merging.
+euler-metric-naming = { git = "https://github.com/d-rothen/euler-metric-naming", branch = "training-naming-v2" }
 
 [tool.setuptools.packages.find]
 where = ["."]

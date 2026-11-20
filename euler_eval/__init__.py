@@ -5,7 +5,8 @@ cheap; heavy metric backends only load on first use):
 
 * :mod:`euler_eval.validation` — in-training/programmatic depth validation
   (``evaluate_dense_depth_sample``, ``evaluate_sparse_depth_sample``,
-  ``DepthValidationAggregator``, ``build_validation_gt_dataset``).
+  ``DepthValidationAggregator``, ``build_validation_gt_dataset``, and
+  validation sets: ``DepthValidationSet``, ``DepthValidationPass``).
 * :mod:`euler_eval.calibration` — calibration extraction from euler-loading
   samples.
 * :mod:`euler_eval.metrics` — pure-array metric functions.
@@ -22,6 +23,8 @@ _VALIDATION_EXPORTS = (
     "DepthBenchmarkEvaluation",
     "DepthSampleEvaluation",
     "DepthValidationAggregator",
+    "DepthValidationPass",
+    "DepthValidationSet",
     "VALIDATION_ALIGNMENT_MODES",
     "build_validation_gt_dataset",
     "evaluate_dense_depth_sample",
@@ -46,6 +49,8 @@ if TYPE_CHECKING:  # pragma: no cover - static import surface for type checkers
         DepthBenchmarkEvaluation,
         DepthSampleEvaluation,
         DepthValidationAggregator,
+        DepthValidationPass,
+        DepthValidationSet,
         build_validation_gt_dataset,
         evaluate_dense_depth_sample,
         evaluate_sparse_depth_sample,

@@ -16,6 +16,10 @@ the same metric semantics for that use case:
 * :func:`build_validation_gt_dataset` — resolve a GT-only
   :class:`~euler_loading.MultiModalDataset` from euler-loading compatible
   paths (``.ds_crawler`` indexed roots, inline ``:split#scope=`` selectors).
+* :class:`DepthValidationSet` — a validation set: the in-training
+  validation as a contract-v2 evaluation, declared once and recorded per
+  pass with the CLI's names, so a validation curve can be judged against the
+  CLI's evaluation (``docs/validation.md``).
 
 All ``evaluate_*_sample`` inputs accept torch tensors or numpy arrays; every
 computation runs on CPU numpy.  Predictions and GT are expected in metres
@@ -68,9 +72,13 @@ from .metrics.utils import get_benchmark_depth_bins
 
 __all__ = [
     "BENCHMARK_DEPTH_BIN_NAMES",
+    "PER_ITEM_DEFAULT_LIMIT",
+    "VALIDATION_SET_ALIGNMENT_MODES",
     "DepthBenchmarkEvaluation",
     "DepthSampleEvaluation",
     "DepthValidationAggregator",
+    "DepthValidationPass",
+    "DepthValidationSet",
     "VALIDATION_ALIGNMENT_MODES",
     "build_validation_gt_dataset",
     "evaluate_dense_depth_sample",
@@ -726,3 +734,13 @@ def build_validation_gt_dataset(
         hierarchical_modalities=hierarchical if hierarchical else None,
         transforms=transforms,
     )
+
+
+# Validation sets (contract-v2 evaluations of the live model) build on the
+# sample functions above; imported last because they use them.
+from .validation_set import (  # noqa: E402
+    PER_ITEM_DEFAULT_LIMIT,
+    VALIDATION_SET_ALIGNMENT_MODES,
+    DepthValidationPass,
+    DepthValidationSet,
+)
