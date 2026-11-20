@@ -110,3 +110,88 @@ them across ranks and dividing once gives exactly the single-process answer.
 versions. Only the mean-based reducers can be rebuilt this way; a global median
 is not recoverable from summed statistics, so `summarize_reduced_state` omits
 `image_median`.
+
+## Validation sets: validation curves that compare with the CLI
+
+The functions above give numbers; a **validation set** also says what they
+mean. It is an evaluation of the live model on a fixed population, in the
+terms of euler-metric-naming's evaluation-protocol contract
+([training.md](https://github.com/d-rothen/euler-metric-naming/blob/main/docs/training.md)):
+declared once with the protocol the CLI would write for the same GT and
+settings, and recorded per validation pass with the CLI's own metric names,
+per-item values and per-item pixel counts. A consumer (euler-view, or
+`euler_metric_naming.contract`) then judges a pass against any CLI
+evaluation with the same engine it uses for two evaluations:
+
+- the same predictions under the same settings read **`same protocol`**,
+  with equal values;
+- a pass on some of an evaluation's items reads **`compared on N shared
+  files`**, and both aggregates are recomputed on the shared items;
+- a difference in settings is named: `not comparable · depth cap differs`,
+  `comparable · domain differs by 3.7 %`, and so on.
+
+```python
+import euler_train
+from euler_eval.validation import DepthValidationSet
+
+muses = DepthValidationSet(
+    "muses",
+    sparse_depth_path="/data/muses.zip:val#scope=lidar",
+    intrinsics_path="/data/muses.zip:val#scope=intrinsics",
+    camera_extrinsics_path="/data/muses.zip:val#scope=extrinsics",
+    indices=range(64),                       # a fixed subset; its ids are the population
+    sky_depth=240, benchmark_depth_range=(0.01, 200),
+)
+run = euler_train.init(...)
+run.declare_validation_set(muses.key, muses.declaration())   # once
+
+for epoch in range(epochs):
+    ...
+    validation = muses.new_pass()
+    for index in muses.indices:
+        sample = muses.dataset[index]
+        validation.add(sample, model(sample), intrinsics=K_of_the_prediction_plane)
+    run.log_validation(muses.key, validation.record(step=step, epoch=epoch))
+```
+
+| Setting | Meaning | CLI counterpart |
+|---|---|---|
+| `depth_path` / `sparse_depth_path` (+ `intrinsics_path`, `camera_extrinsics_path`, `lidar_extrinsics_path`), `split` | The GT; the references are read from these paths as the CLI reads its `gt` config | `gt.depth` / `gt.sparse_depth`, … |
+| `indices` | The items the set evaluates (default: all); their item ids are the population | the paired files |
+| `alignment` | `none`, `affine`, `auto_affine` | `--depth-alignment` |
+| `input_space_hint` | `relative` / `affine` forces `auto_affine` to fit | the prediction's declared space |
+| `sky_depth` | depth cap in metres | `--sky-depth` |
+| `benchmark_depth_range` | `(min, max)` of the benchmark bins | `--benchmark-depth-range` |
+| `spatial_alignment` | `auto`, `crop`, `resize`, or a recorded source grid | `--spatial-alignment` |
+| `valid_depth_range` | GT validity bounds; **in-loop only**, recorded as `depth.gt.valid_range_m` | none: such a pass is not comparable with a CLI evaluation |
+| `per_item` | write per-item values and counts (default: sets of at most 1000 items) | per-file metrics |
+
+`add(sample, prediction, valid_mask=None, intrinsics=None, …)` scores one
+dataset sample (its GT as loaded, its `id` / `full_id`) against an in-memory
+prediction exactly as the CLI scores the same pair: the prediction is put on
+the GT grid (dense), alignment, cap, benchmark bins and the standard depth
+metrics follow the CLI's code. A `valid_mask` removes more pixels and is
+recorded (`depth.extra_mask`), so it never passes for an unmasked evaluation.
+`record(step=..., epoch=...)` returns the pass record: the aggregates
+(`depth.eval.metric.standard.image_mean.absrel`, …), the parameters and
+observations resolved in this pass (spatial method, whether a fit ran, the
+scored region, how much the cap clipped), the ids when the pass scored other
+items than the set lists, and the per-item values.
+
+`DepthValidationSet.from_protocol(key, "pred/.eval/depth/eval.json",
+depth_path=...)` takes the alignment, cap, benchmark range and spatial policy
+of an existing evaluation, so a validation set matches the evaluation it is
+meant to predict by construction. Settings an in-loop pass cannot apply (GT
+or predicted sky masking) raise `ValueError`.
+
+For multi-process validation, every process scores its share into its own
+pass; gather `validation.state()` (JSON-ready) and `merge` them into one
+before `record()`.
+
+What is checked: `tests/test_validation_set.py` runs the CLI and a validation
+set over the same synthetic GT and predictions and requires `same protocol`
+with equal values for every cell a pass writes (no alignment with benchmark
+bins, affine alignment, a depth cap), and `compared on N shared files` with
+equal recomputed values for a pass on a subset. Sparse GT is built from the
+same helpers and tested on its own; an end-to-end comparison with the CLI on a
+sparse GT fixture is still to be added.

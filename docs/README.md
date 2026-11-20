@@ -8,7 +8,7 @@
 | [Metrics](metrics.md) | The full metric inventory per modality, with the key each one is written under |
 | [Error distributions](distributions.md) | Optional per-sample and pooled RMSE histograms, bin settings, axes and JSON layout |
 | [Results & output](output.md) | Where files land, the anatomy of `eval.json`, comparing evaluations, per-file metrics, the sanity-check report |
-| [In-training validation](validation.md) | The programmatic API for scoring in-memory predictions during training |
+| [In-training validation](validation.md) | The programmatic API for scoring in-memory predictions during training, and validation sets that compare with the CLI's evaluations |
 
 ## Proposed features
 

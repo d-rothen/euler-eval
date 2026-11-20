@@ -544,3 +544,10 @@ When the config carries a [`euler_train`](configuration.md#euler_train-section-o
 section, each prediction dataset is registered as an evaluation in the run —
 first as `running`, then completed with its aggregate metrics and package
 provenance attached. Per-file metrics are not sent; they stay in `eval.json`.
+`metadata.results_files` names the results files written for the dataset, by
+metric namespace (`{"depth.eval": "/data/model_a/.eval/depth/eval.json"}`), so
+the run points at the protocol of its own evaluation instead of copying it
+into `meta.json`, which euler-train rewrites often.
+
+For validation curves that compare with these evaluations, see
+[validation sets](validation.md#validation-sets-validation-curves-that-compare-with-the-cli).

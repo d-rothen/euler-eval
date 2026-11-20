@@ -3,6 +3,44 @@
 Notable changes to euler-eval. Releases before 2.25.0 predate this file; see
 the git history for those.
 
+## 3.2.0
+
+### Added
+
+- **Validation sets** (`euler_eval.validation.DepthValidationSet`,
+  `DepthValidationPass`): in-training depth validation as an evaluation of
+  euler-metric-naming's contract (training.md there). A set is declared once
+  with the protocol the CLI would write for the same GT and settings; each
+  pass scores in-memory predictions the way the CLI scores the same pairs and
+  records the CLI's metric names, per-item values and pixel counts. A pass
+  read against the CLI's `eval.json` of the same predictions is `same
+  protocol` with equal values, and `compared on N shared files` on a subset.
+  Dense and sparse GT; alignment none / affine / auto_affine, depth cap,
+  benchmark bins, spatial alignment. In-loop-only masking (a GT validity
+  range, an extra mask) is recorded (`depth.gt.valid_range_m`,
+  `depth.extra_mask`) so it is never taken for an unmasked evaluation.
+  `DepthValidationSet.from_protocol` takes the settings of an existing
+  evaluation. See [docs/validation.md](docs/validation.md).
+- The euler-train payload of an evaluation names the results files it wrote,
+  by metric namespace (`metadata.results_files`).
+
+### Changed
+
+- Protocols snapshot `euler.depth@1.1` (vocabulary tags only; verdicts and
+  values unchanged).
+- The depth naming (eval namespace, axes, descriptions) moved to
+  `euler_eval.naming`, and the depth protocol helpers to public functions of
+  `euler_eval.protocol` (`depth_parameters`, `spatial_parameters`,
+  `sky_gt_parameters`, `reference_input`, `sparse_reference_inputs`,
+  `qualified_statistics`, `protocol_block`), shared by the CLI and validation
+  sets. CLI output is unchanged.
+- Requires `euler-metric-naming>=0.4`. Until 0.4 is released, the dependency
+  resolves from its `training-naming-v2` branch (`[tool.uv.sources]`);
+  `uv.lock` still records 0.3.0 and is re-locked once 0.4.0 is on PyPI.
+- `requirements.txt` mirrors `[project.dependencies]` again (it lagged on
+  euler-loading, euler-metric-naming and euler-connector);
+  `tests/test_packaging.py` keeps them equal.
+
 ## 3.0.0
 
 ### Changed

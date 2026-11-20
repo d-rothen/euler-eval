@@ -460,7 +460,8 @@ only supported key.
 Each prediction dataset is registered as an evaluation named after its config
 `name` (`<name>/<experiment>` with [`experiments`](#experiments-section-optional)),
 first as `running` and then with its metrics attached, alongside package
-provenance (euler-eval version, Python, torch, CUDA).
+provenance (euler-eval version, Python, torch, CUDA) and the paths of the
+results files it wrote (`results_files`).
 
 ## Loader resolution & dataset metadata
 
