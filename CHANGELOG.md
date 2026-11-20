@@ -3,6 +3,100 @@
 Notable changes to euler-eval. Releases before 2.25.0 predate this file; see
 the git history for those.
 
+## 3.0.0
+
+### Changed
+
+- **`protocol` is the evaluation-protocol contract, schema 2.0.** Every
+  modality (dense and sparse depth, RGB, rays, dense and sparse `points_3d`)
+  writes euler-metric-naming's contract v2 (`euler_metric_naming.contract`,
+  built with its `ProtocolBuilder` and vocabularies) instead of the flat 1.3
+  map. A consumer judges any two evaluations, per metric, with one generic
+  algorithm: `same protocol`, `compared on N shared files`,
+  `comparable · <reason>` or `not comparable · <reason>`. What changes:
+  - GT inputs are identified by content: `references.<role>.identity` hashes
+    the dataset (id, variant, scope, split), the manifest of its sample ids
+    and its dataset head without paths and timestamps. Two crops of one
+    dataset (cerema `cropped`, `full_crop`) no longer share an identity; a
+    head that records an euler-preprocess crop gives the reference a `view`
+    (source frame and region), so crops of one source compare as
+    `comparable · GT region differs by x %`. Only inputs the evaluation read
+    are references (GT segmentation only with `--mask-sky`/`--sky-iou`).
+  - `population` records the manifest hash of the evaluated item ids (the
+    per-file tree paths joined with `~`), not a count, and the pairing
+    accounting (`reference`, `prediction`, `paired`, pairs `dropped` per
+    optional input) that 2.x only printed.
+  - `method.metrics_revision` is replaced by one parameter per revised rule
+    (`spatial.resize_target`, `spatial.mask_resample`,
+    `depth.invalid.policy`, `rgb.input.alignment_policy`, `rays.fov_policy`,
+    `rgb.depth_bins.policy`), so a rule change makes only the metrics it
+    affects incomparable.
+  - Resolved choices are recorded next to the settings: whether a depth or
+    point-map alignment actually ran (`depth.alignment.applied`,
+    `points3d.alignment.applied`), the ρ_A threshold, F_A's threshold, the
+    spatial method.
+  - Measured properties are observations: the scored region in the GT's
+    source frame (`domain.region`, dense depth and `points_3d`) or grid
+    (`domain.grid`), prediction and GT resampling factors, the fraction of
+    scored pixels the depth cap changed (`depth.cap.clipped`; a cap that
+    clipped nothing is inert), excluded predicted sky, frames without
+    segmentation.
+  - `spatial.uniform` says whether every sample was scored with the same
+    method on the same grid; `spatial.method` and the domain observations
+    still describe the first sample.
+  - The benchmark bins are the stratification `depth.gt_range`; metric
+    definitions (`rev`, direction, pool form and weight), reducers and axis
+    roles travel in the file.
+
+  Everything new is inside `protocol`; no top-level block, per-file entry
+  property or existing metric path changed, so euler-view before its v2
+  importer keeps reading these files. See
+  [Comparing evaluations](docs/output.md#comparing-evaluations).
+  `euler_eval.protocol.build_protocol` has a new signature and
+  `METRICS_REVISION` is gone; `reference_identities` (the 1.x identities)
+  remains. Requires `euler-metric-naming>=0.3`.
+- Per-file trees are written in Unicode NFC (hierarchy keys and file ids), as
+  the contract's item ids are. Ids that were already NFC, all ASCII ids among
+  them, are unchanged.
+
+### Added
+
+- Per-file values of the benchmark bins: dense and sparse depth write the
+  `standard` metrics of every bin per file
+  (`depth.eval.<space>.standard.<bin>.<metric>`), RGB its benchmark bins
+  (`rgb.eval.<bin>.mae`, `.mse`). With the per-file pixel and point counts in
+  `protocol.items.series` (`depth.eval.<space>.standard[.<bin>].count`,
+  `points3d.eval.<space>.point_error.count`), consumers recompute
+  `image_mean`, `image_median` and `pixel_pool` aggregates on any subset of
+  files, so evaluations of different file sets compare on their shared files.
+- Evaluator results carry `item_statistics` (those counts), `depth_cap`
+  (`clipped_fraction`) and, in `spatial_info`, `uniform`, `crop_origin`,
+  `prediction_resample` (dense depth, `points_3d`) and `gt_resample` (RGB,
+  rays).
+
+### Fixed
+
+- **An empty depth bin of an RGB evaluation has no value instead of 0.0
+  (`rgb.depth_bins.policy: "v3"`).** The fixed bins of
+  `depth_binned_photometric` (near ≤ 1 m, mid ≤ 5 m, far) and the benchmark
+  bins (`rgb.eval.<bin>.mae`, `.mse`) scored `0.0` for an image without
+  pixels in a bin, and that perfect score entered the dataset mean. Such an
+  image now has no value for the bin, which is left out of the bin's mean.
+  **Values change** for every RGB evaluation where some image lacks pixels in
+  a bin; the new policy value keeps 3.0 results from looking comparable with
+  older ones.
+
+### Known issues
+
+- RGB `--mask-sky` zero-fills sky pixels of prediction and GT instead of
+  excluding them, so masked pixels count as perfect matches in PSNR, SSIM,
+  LPIPS, FID and the depth-binned errors.
+- Dense and sparse `points_3d` evaluations of one prediction (a config with
+  `gt.points_3d` or synthesizable GT and `gt.sparse_depth`) write the same
+  results file; the sparse one overwrites the dense one.
+- An intrinsics dataset configured as a depth prediction is scored as depth
+  (seen in euler-view data with an evaluated grid of 3×3).
+
 ## Unreleased
 
 ### Changed

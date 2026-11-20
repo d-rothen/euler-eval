@@ -236,7 +236,7 @@ these descriptors make different choices, so published numbers may not match.
 The prediction and its input must be on one pixel grid. When their sizes
 differ, the prediction is placed on its input as on the GT: a crop is compared
 with exactly the input pixels it covers, and a resize upscales the smaller one
-bilinearly onto the other's grid (`protocol.parameters["method.input_alignment"]`
+bilinearly onto the other's grid (`protocol.parameters["rgb.input.alignment"]`
 records which; see [RGB references](configuration.md#rgb-references)).
 Upscaling a crop instead would shift its content against the input by up to
 the size difference, and these descriptors compare edges pixel by pixel: an

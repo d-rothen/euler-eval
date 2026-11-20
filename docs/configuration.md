@@ -116,7 +116,7 @@ upscales the smaller of the two onto the other's grid with bilinear
 interpolation (`upscale_input` or `upscale_prediction`; the prediction's grid
 wins a tie of pixel counts); any other recorded mapping resamples the input
 onto the prediction's grid through it (`warp_input`).
-`protocol.parameters["method.input_alignment"]` records which. The other
+`protocol.parameters["rgb.input.alignment"]` records which. The other
 metrics are unaffected.
 
 ### GT segmentation
@@ -146,8 +146,8 @@ When a split has segmentation for only some frames (MUSES lacks some), pass
 without GT sky masking and left out of the sky IoU, while frames with
 segmentation are scored exactly as before. The metrics then mix masked and
 unmasked frames, so `meta.gt_sky_masking` records how many frames had no
-segmentation, and `protocol.parameters` records the policy
-(`population.missing_segmentation`). Unmasked frames score their sky wherever
+segmentation (`protocol.observations["sky.gt.unsegmented"]`), and
+`protocol.parameters` records the policy (`sky.gt.missing_policy`). Unmasked frames score their sky wherever
 the GT has valid depth there: little for a lidar GT, which has few returns in
 the sky, but possibly a lot for a dense GT with sky depth. The default,
 `drop`, leaves those frames out.
@@ -349,8 +349,8 @@ command-line flags and under its own name:
   prints a warning, so one experiment list can serve several generated
   configs.
 - **GT modalities.** An experiment with `gt_modalities` runs as if the
-  unlisted `gt` inputs were not configured, so its `protocol.parameters`
-  records them as `null`. One config with both RGB references can then score
+  unlisted `gt` inputs were not configured, so its `protocol.references`
+  leaves them out. One config with both RGB references can then score
   a dehazer with and without the clear images:
 
   ```json
@@ -376,7 +376,7 @@ command-line flags and under its own name:
   the exit status is then `1`.
 
 Each experiment loads and scores the data again, and its results carry the
-settings it ran with in [`protocol.parameters`](output.md#comparing-evaluations)
+settings it ran with in [`protocol`](output.md#comparing-evaluations)
 and its name in `meta.eval_name`. With euler-train logging, each prediction
 dataset is logged once per experiment, as `<name>/<experiment>`; the
 sanity-check report is written per experiment as
@@ -422,7 +422,7 @@ as if every path selected it:
   ([where results land](output.md#where-results-land)). With the config
   above, the fog-25 depth results are
   `/data/model_a/depth/.eval/depth/split_fog25/eval.json`. Their
-  `meta.gt.split` and `protocol.parameters` `reference.gt.split` name the
+  `meta.gt.split` and `protocol.references.gt.dataset.split` name the
   split. A dataset's `output_file` must contain `{split}`, which is replaced
   by the split name.
 - **No path may select a split itself**, in `gt` or `datasets`, inline or

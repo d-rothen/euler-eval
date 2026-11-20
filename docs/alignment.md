@@ -139,8 +139,10 @@ model resizes its input to a multiple of 8 without recording it: a 879 px wide
 DrivingStereo image resized to 872 px would otherwise be scored as a crop,
 misplacing pixels at the right edge by up to 7 px. The method that ran is
 recorded as `spatial_alignment.method` (`none`, `vae_crop`, `crop`,
-`resize_prediction`, `resize`, `warp_prediction` or `warp`) and the evaluated
-grid as `population.evaluated_resolution`; see [Results & output](output.md).
+`resize_prediction`, `resize`, `warp_prediction` or `warp`), and in the
+protocol as `spatial.method` with the scored region (`domain.region`, or
+`domain.grid`) and any resampling factor; see
+[Comparing evaluations](output.md#comparing-evaluations).
 
 **The degraded input.** `gt.input_rgb` is the image the prediction was
 computed from, so the same decision places the prediction on it for the

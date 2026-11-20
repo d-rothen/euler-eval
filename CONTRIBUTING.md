@@ -82,9 +82,12 @@ every flag, every metric key, every config field — belongs in
 2. Add a [`CHANGELOG.md`](CHANGELOG.md) entry. Call out anything that moves
    metric values explicitly — results are compared across runs and releases.
    If the release changes metric values for identical inputs and settings,
-   also bump `METRICS_REVISION` in `euler_eval/protocol.py` and name the new
-   revision in that entry. A new value-changing setting instead gets its own
-   `protocol.parameters` key ([Comparing evaluations](docs/output.md#comparing-evaluations)).
+   record it in the protocol so old and new results never look comparable:
+   bump the policy parameter of the changed rule (`POLICIES` in
+   `euler_eval/protocol.py`), or a metric's `rev` in the euler-metric-naming
+   vocabulary when its definition changed, and name it in that entry. A new
+   value-changing setting gets its own parameter, a vocabulary term
+   ([Comparing evaluations](docs/output.md#comparing-evaluations)).
 3. Tag the commit `v<version>` and push the tag.
 
 Pushing a `v*` tag runs

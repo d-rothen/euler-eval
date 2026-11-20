@@ -95,8 +95,12 @@ set.
     "metricDescriptions": { "absrel": { "…": "…" } }
   },
   "protocol": {
-    "schemaVersion": "1.3",
-    "parameters": { "reference.gt.dataset": "muses", "method.depth_alignment": "auto_affine", "…": "…" }
+    "schemaVersion": "2.0",
+    "task": "depth.dense",
+    "parameters": { "depth.alignment.mode": "auto_affine", "spatial.method": "resize_prediction", "…": "…" },
+    "references": { "gt": { "dataset": { "id": "muses", "…": "…" }, "identity": "sha256:…" } },
+    "population": { "count": 500, "manifest": "sha256:…" },
+    "…": "…"
   },
   "dataset_info": { "num_pairs": 500, "gt_name": "GT", "pred_name": "model_a" },
   "meta": {
@@ -117,7 +121,7 @@ set.
 | Block | What it is for |
 |---|---|
 | `metricSet` | The euler-metric-naming envelope: producer, namespace, axis declarations and per-metric descriptions (unit, direction, bounds), plus how the spaces were resolved |
-| `protocol` | The comparison keys: every setting that changes metric values, as a flat map ([Comparing evaluations](#comparing-evaluations)) |
+| `protocol` | The evaluation-protocol contract: references, settings, the evaluated items and how to compare and recompute every metric ([Comparing evaluations](#comparing-evaluations)) |
 | `dataset_info` | How many pairs were actually matched, and the display names of both sides |
 | `meta` | Full provenance: package version, device, both source paths and their resolved dimensions, modality metadata, and the effective evaluation flags |
 | *metric tree* | The metrics themselves, under the modality root (`depth`, `rgb`, `rays`, `sparsedepth`, `points3d`) |
@@ -222,101 +226,217 @@ decomposes exactly as before.
 
 ## Comparing evaluations
 
-`protocol.parameters` says how an evaluation was set up, as one flat map of
-dotted keys. Its keys are the comparison keys: two evaluations of the same
-modality were set up the same way when their maps are equal, and the keys whose
-values differ say where. Nothing else in the file needs to be compared for that;
-`meta` stays the full record of the run, paths and device included.
+`protocol` describes how an evaluation was set up and what it scored, so a
+consumer can tell whether two evaluations can be compared, and how. Since
+euler-eval 3.0 it is the **evaluation-protocol contract, schema 2**, defined by
+[euler-metric-naming](https://github.com/d-rothen/euler-metric-naming)
+(`docs/contract.md` there; Python API `euler_metric_naming.contract`). A
+consumer judges every modality with one generic algorithm: everything it needs
+— what each key means, how it is compared, how metric names decompose and how
+aggregates are recomputed — travels in the file. `meta` stays the full record
+of the run, paths and device included; nothing else needs to be compared.
+
+```python
+from euler_metric_naming.contract import compare_files, load_eval_file
+
+a, b = load_eval_file("a/eval.json"), load_eval_file("b/eval.json")
+verdict = compare_files(a, b, "depth.eval.metric.standard.image_mean.absrel")
+verdict.label   # "same protocol", "compared on 680 shared files",
+                # "comparable · domain differs by 3.7 %", "not comparable · GT differs"
+```
+
+A verdict is computed per metric: two evaluations can be comparable for
+`native` metrics and not for `metric` ones (a different alignment), or paired
+for `image_mean` but only partially comparable for FID.
+
+### The block
+
+A dense depth evaluation of a cropped GT (trimmed):
 
 ```json
 "protocol": {
-  "schemaVersion": "1.3",
+  "schemaVersion": "2.0",
+  "task": "depth.dense",
+  "vocabularies": { "euler.core": "1.0", "euler.depth": "1.0", "euler.sky": "1.0" },
   "parameters": {
-    "reference.gt.modality": "sparse_depth",
-    "reference.gt.dataset": "seeingthroughfog",
-    "reference.gt.scope": "sparse_depth",
-    "reference.gt.split": "test",
-    "reference.intrinsics.dataset": "seeingthroughfog",
-    "reference.intrinsics.scope": "intrinsics",
-    "reference.intrinsics.split": "test",
-    "reference.camera_extrinsics.dataset": "seeingthroughfog",
-    "reference.camera_extrinsics.scope": "camera_extrinsics",
-    "reference.camera_extrinsics.split": "test",
-    "reference.lidar_extrinsics.dataset": null,
-    "reference.lidar_extrinsics.scope": null,
-    "reference.lidar_extrinsics.split": null,
-    "reference.segmentation.dataset": null,
-    "reference.segmentation.scope": null,
-    "reference.segmentation.split": null,
-    "population.samples": 943,
-    "population.gt_sky_masking": false,
-    "population.missing_segmentation": null,
-    "population.pred_sky_masking": false,
-    "population.evaluated_resolution": [1024, 1920],
-    "population.benchmark_depth_range_m": [0.01, 80.0],
-    "method.metrics_revision": 4,
-    "method.depth_alignment": "auto_affine",
-    "method.sky_depth_m": null,
-    "method.pred_sky_mask": false
+    "depth.alignment.mode": "none",
+    "depth.alignment.applied": false,
+    "depth.cap.max_m": 60.0,
+    "depth.benchmark.range_m": [1.0, 80.0],
+    "depth.invalid.policy": "exclude_sentinel",
+    "sky.gt.masking": false,
+    "sky.pred.masking": true,
+    "spatial.policy": "auto",
+    "spatial.method": "vae_crop",
+    "spatial.uniform": true,
+    "spatial.resize_target": "gt_grid",
+    "spatial.mask_resample": "nearest_exact",
+    "…": "…"
+  },
+  "descriptors": { "depth.cap.max_m": { "role": "definition", "inertIf": { "…": "…" } }, "…": "…" },
+  "references": {
+    "gt": {
+      "modality": "depth",
+      "dataset": { "id": "cerema", "variant": "full_crop", "split": null, "scope": "depth" },
+      "identity": "sha256:4fbc81…",
+      "manifest": { "hash": "sha256:2df47b…", "count": 1600 },
+      "view": { "source": "cerema/rgb_left@1024x1920", "region": [270, 170, 707, 1730] }
+    }
+  },
+  "observations": {
+    "domain.region": { "frame": "cerema/rgb_left@1024x1920", "box": [270, 170, 704, 1728] },
+    "prediction.resample": [1, 1],
+    "depth.cap.clipped": 0.0123,
+    "sky.pred.excluded": 0.08
+  },
+  "population": {
+    "unit": "image", "idScheme": "euler.item_id/1", "count": 680,
+    "manifest": "sha256:69922b…",
+    "accounting": { "reference": 1600, "prediction": 680, "paired": 680, "dropped": { "sky_mask": 0 } }
+  },
+  "stratifications": {
+    "depth.gt_range": {
+      "label": "GT depth", "variable": "gt_depth_m", "unit": "m",
+      "edges": [1.0, 13.3086, 39.6419, 80.0], "labels": ["near", "mid", "far"],
+      "closed": "left", "lastClosed": true, "total": "all",
+      "scheme": "sqrt_equal_width", "after": ["depth.cap.max_m"]
+    }
+  },
+  "axes": {
+    "space": { "role": "space" }, "category": { "role": "family" },
+    "reduction": { "role": "reduction" },
+    "bin": { "role": "stratum", "stratification": "depth.gt_range" }
+  },
+  "reducers": { "image_mean": { "recompute": "mean" }, "image_median": { "recompute": "median" }, "pixel_pool": { "recompute": "pool" } },
+  "metrics": { "absrel": { "id": "depth.absrel", "rev": 1, "pool": { "form": "mean", "weight": "count" }, "…": "…" }, "…": "…" },
+  "items": {
+    "ids": ["1~day~fog100~0001", "…"],
+    "series": {
+      "depth.eval.metric.standard.count": [1000, "…"],
+      "depth.eval.metric.standard.near.count": [312, "…"]
+    }
   }
 }
 ```
 
-The first segment of a key is its section:
-
-| Section | Holds |
+| Property | What it records |
 |---|---|
-| `reference` | The GT the prediction is scored against (`gt`, with its config key as `modality`) and every other GT input the modality reads, each identified by `dataset` (the `dataset.id` of its `dataset-head.json`), metadata `scope` and `split` — not by file path, so the same data on another machine matches |
-| `population` | Which samples and pixels were scored: the matched `samples`, sky masking, the grid the metrics were computed on and benchmark depth bins |
-| `method` | How they were scored: alignment modes, the sky-depth cap and whether the prediction's `sky_mask` was used, how GT and prediction resolutions were reconciled, the FID backend and `metrics_revision` |
+| `task`, `vocabularies` | The task (`depth.dense`, `depth.sparse`, `rgb.restoration`, `rays.directions`, `points3d.dense`, `points3d.sparse`) and the vocabulary versions the terms come from |
+| `parameters` | Settings and resolved choices, as flat scalars or lists of scalars (the v1 limits) |
+| `descriptors` | For every parameter, observation and reference: its role (`definition`, `provenance`, `domain`, …), how a difference is judged, which metrics it affects and when it is inert — copied from the vocabularies, so consumers never need them |
+| `references` | Every GT input the evaluation **read**, by content (below) |
+| `observations` | Measured properties of what was scored: the scored region or grid, resampling, depth-cap clipping, excluded predicted sky, frames without segmentation |
+| `population` | The evaluated items: the manifest hash of their ids and how the pairs came about |
+| `stratifications`, `axes`, `reducers`, `metrics` | How metric names decompose (which axis is the space, the reduction, a stratum), the bins of a stratum, how each reduction is recomputed and each metric's definition (`rev`, direction, pool form and weight) |
+| `items` | Per-item sufficient statistics: the pixel/point counts that weight pooled metrics |
 
-What is recorded, per modality:
+**References.** A reference's `identity` is the hash of its dataset (`id` and
+`variant` of its `dataset-head.json`, metadata `scope`, `split`), the
+**manifest** of its sample ids as euler-loading paired them, and its dataset
+head without volatile fields (paths, timestamps). Two crops of one dataset
+(`cerema` `cropped` and `full_crop`) therefore differ, and the same data
+stored elsewhere does not. A head that records an euler-preprocess crop
+(`modality.meta.crop.boxes`) also gives a `view`: the `region`
+`[top, left, height, width]` in its `source` frame, named
+`<dataset id>/<camera or modality>@<height>x<width>`. GT inputs that were
+configured but not read are absent: GT segmentation without `--mask-sky` or
+`--sky-iou`, GT depth and calibration of an RGB evaluation without `gt.rgb`.
 
-| Modality | `reference` inputs besides `gt` | `population` | `method` |
-|---|---|---|---|
-| `depth` | `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `pred_sky_masking`, `evaluated_resolution`, `benchmark_depth_range_m` | `depth_alignment`, `sky_depth_m`, `pred_sky_mask`, `spatial_alignment` |
-| `sparsedepth` | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | as `depth` | `depth_alignment`, `sky_depth_m`, `pred_sky_mask` |
-| `rgb` | `input_rgb`, `depth`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `evaluated_resolution`, `benchmark_depth_range_m` | `fid_backend`, `spatial_alignment`, `input_alignment` |
-| `rays` | `calibration` | `samples`, `evaluated_resolution` | `spatial_alignment` |
-| `points3d` (dense) | `intrinsics`, `calibration`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `evaluated_resolution` | `points_3d_alignment`, `spatial_alignment` |
-| `points3d` (sparse GT) | `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` | `samples`, `gt_sky_masking`, `missing_segmentation`, `evaluated_resolution` | `points_3d_alignment` |
+| Modality | References (when read) |
+|---|---|
+| `depth` | `gt`, `calibration`, `segmentation` |
+| `sparsedepth` | `gt` (`sparse_depth`), `intrinsics`, `camera_extrinsics`, `lidar_extrinsics`, `segmentation` |
+| `rgb` | `gt` (`rgb`), `input` (`input_rgb`), `depth`, `calibration`, `segmentation` |
+| `rays` | `gt`, `calibration` |
+| `points3d` (dense) | `gt` (`points_3d`, or `depth` it is synthesized from), `intrinsics`, `calibration`, `segmentation` |
+| `points3d` (sparse GT) | as `sparsedepth` |
 
-Every modality also has `method.metrics_revision`.
+**Population.** The item ids are the per-file tree paths of
+`per_file_metrics` — the `children` keys from the root down, then the file
+`id`, joined with `~` (`euler.item_id/1`), in Unicode NFC (euler-eval writes
+the per-file tree in NFC). `manifest` is the hash of exactly the ids that
+appear there. `accounting` records the GT and prediction sample counts, the
+pairs evaluated and how many pairs each id-paired optional input dropped
+(`segmentation`, `sky_mask`, `input`, `gt_depth`; inputs not read are
+absent).
 
-RGB evaluated without `gt.rgb`, against [`gt.input_rgb`](configuration.md#rgb-references)
-only, computes no full-reference metric, so the settings that act on them are
-recorded as off: `reference.gt`, `reference.depth`, `reference.calibration` and
-`reference.segmentation` are `null`, as are `population.missing_segmentation`,
-`population.benchmark_depth_range_m`, `method.fid_backend` and
-`method.spatial_alignment`, and `population.gt_sky_masking` is `false`.
-`method.input_alignment` is `none`, `crop_input`, `upscale_input`,
-`upscale_prediction` or `warp_input` when `gt.input_rgb` is configured, else
-`null` ([how the input is aligned](configuration.md#rgb-references)).
+**Parameters**, per modality (`spatial.*`, `sky.*` and the policy keys below
+are shared):
 
-Rules that keep comparisons a plain map comparison:
+| Modality | Parameters |
+|---|---|
+| `depth`, `sparsedepth` | `depth.alignment.mode` (configured) and `depth.alignment.applied` (whether a fit ran), `depth.alignment.fit`, `fit_trim`, `fit_max_gt_percentile`, `depth.input_space`, `depth.cap.max_m` (`--sky-depth`), `depth.benchmark.range_m`, `depth.invalid.policy`, `depth.conversion`, `sky.gt.masking`, `sky.gt.missing_policy`, `sky.pred.masking`, `sky.pred.fill`, `sky.iou`, `spatial.policy`, `spatial.method`, `spatial.uniform`, `spatial.mask_resample`; dense depth also `spatial.resize_target` |
+| `rgb` | `sky.gt.masking`, `sky.gt.missing_policy`, `spatial.policy`, `spatial.method`, `spatial.uniform`, `spatial.resize_target`, `spatial.mask_resample`, `spatial.gt_resample` (with `gt.rgb`), `rgb.fid.backend`, `rgb.input.alignment`, `rgb.input.alignment_policy`, `rgb.depth_bins.policy`, `rgb.depth_bins.edges_m`, `depth.benchmark.range_m`, `depth.invalid.policy` |
+| `rays` | `spatial.policy`, `spatial.method`, `spatial.uniform`, `spatial.resize_target`, `spatial.gt_resample`, `rays.fov_policy`, `rays.rho_a.threshold_deg` (resolved) |
+| `points3d` | `points3d.alignment.mode` and `points3d.alignment.applied` (`auto` resolves to no alignment from the CLI), `points3d.f_a.threshold_m`, `rays.fov_policy`, `rays.rho_a.threshold_deg`, `sky.gt.masking`, `sky.gt.missing_policy`, `spatial.policy`, `spatial.method`, `spatial.uniform`, `spatial.mask_resample`; dense also `spatial.resize_target` and, for a GT synthesized from depth, `depth.invalid.policy` |
 
-- Only settings that change the value of a metric both files contain are
-  parameters. `--domain`, `--sky-iou` and histogram settings only add metrics
-  (histograms describe their bins in the distribution registry); device, batch
-  size, workers, paths and `--eval-name` do not change values.
-- Every key of a modality is always written, `null` or `false` when off, so a
-  key missing from one side means "not recorded", never "off". Compare the union
-  of both key sets.
-- Values are scalars or lists of scalars, never objects.
-- `method.metrics_revision` changes only when a release changes metric values
-  for identical inputs and settings, which the [changelog](../CHANGELOG.md)
-  then says. Different revisions are not comparable even when every other
-  key matches.
-- Settings are recorded, not what they caused. `population.pred_sky_masking`
-  is the `--mask-sky-prediction` flag, and `method.pred_sky_mask` says whether
-  the prediction's `sky_mask` was loaded and scored with (filled at
-  `--sky-depth`, or excluded by `--mask-sky-prediction`). It is `false` for a
-  prediction without one, or an [experiment](configuration.md#experiments-section-optional)
-  that leaves it out. How much each model's own sky removed is in
-  `meta.pred_sky_masking`, and `metricSet.metadata` records whether an
-  alignment was actually applied.
-- Renaming or removing a key bumps the major `schemaVersion`; adding one bumps
-  the minor version.
+Settings that only add metrics (`--domain`, histogram settings) or only affect
+the run (device, batch size, workers, paths, `--eval-name`) are not
+parameters; `--sky-iou` is recorded as `sky.iou` with role `provenance`, which
+never makes evaluations incomparable.
+
+**Policies instead of `metrics_revision`.** Version 1 had one global
+`method.metrics_revision`. Version 2 records each rule whose revision changed
+values as its own parameter, so a change makes only the metrics it affects
+incomparable: `spatial.resize_target` (`gt_grid` for dense depth and
+`points_3d`, `prediction_grid` for RGB and rays), `spatial.mask_resample`
+(`nearest_exact`), `depth.invalid.policy` (`exclude_sentinel`),
+`rgb.input.alignment_policy` (`follow_gt`), `rays.fov_policy` (`v2`) and
+`rgb.depth_bins.policy` (`v3`: an empty depth bin has no value). A
+definition change of one metric bumps its `rev` in `metrics` instead.
+
+**Observations.** Dense depth and `points_3d` record `domain.region`: the box
+of the scored grid in the GT view's source frame when the GT has a view, else
+in the GT's own pixels with the GT's identity as frame — a crop of the GT
+(`vae_crop`, a recorded crop) starts at its origin. Other modalities record
+`domain.grid` (`[height, width]`). `prediction.resample` is the factor by
+which `resize_prediction`/`warp_prediction` resampled the prediction
+(`[1, 1]` when it was not). `depth.cap.clipped` is the largest fraction, over
+the emitted spaces, of scored pixels whose GT or prediction the depth cap
+clipped or filled; a cap that changed nothing is inert. `sky.pred.excluded` and
+`sky.gt.unsegmented` come from `meta.pred_sky_masking` and
+`meta.gt_sky_masking`.
+
+**First sample, `spatial.uniform`.** `spatial.method` and the domain
+observations describe the first sample, as `meta.spatial_alignment` does.
+`spatial.uniform` is `true` when every sample was scored with the same method
+on the same grid (same GT and prediction sizes, same crop origin); `false`
+means those values describe the first sample only, and such an evaluation is
+not comparable with a uniform one.
+
+**Strata and per-item values.** The benchmark bins
+(`--benchmark-depth-range`) are the stratification `depth.gt_range` (edges as
+computed, square-root rule, after the depth cap for depth; RGB's GT depth is
+not capped). Dense and sparse depth write the `standard` metrics of every bin
+per file, `depth.eval.<space>.standard.<bin>.<metric>` (the aggregate name
+without its reduction), next to the unbinned per-file values, and the number
+of scored pixels per file and bin goes to `items.series`
+(`depth.eval.<space>.standard.count`, `….standard.<bin>.count`). `points_3d`
+writes the scored points per file (`points3d.eval.<space>.point_error.count`).
+With them a consumer recomputes `image_mean`, `image_median` and `pixel_pool`
+(for metrics with a pool form) on any subset of files, which is what
+"compared on N shared files" does. RGB writes its benchmark bins per file too
+(`rgb.eval.<bin>.mae`); RGB metrics have no reduction axis, so they are not
+recomputed. RGB's fixed depth bins (`depth_binned_photometric`, near ≤ 1 m,
+mid ≤ 5 m, far beyond) are recorded as the categorical stratification
+`rgb.depth_bins`, since the far bin has no upper edge.
+
+Everything new lives inside `protocol`: no top-level block and no per-file
+entry property was added, and the metric paths of 2.x are unchanged, so
+readers of schema 1 (which read only `schemaVersion` and `parameters`) keep
+working.
+
+### Schema 1.x
+
+euler-eval 2.x wrote `schemaVersion` `1.x`: a flat map of
+`reference.<input>.{dataset,scope,split}`, `population.*` and `method.*` keys,
+compared by strict equality, with `method.metrics_revision`. Such files are
+still compared: euler-metric-naming normalizes them through its frozen legacy
+table (`contract/legacy/protocol-1.json`), which maps each key to its v2
+counterpart. Their limits remain: a v1 GT is identified only by dataset id,
+scope and split (two crops of one dataset look like the same GT),
+`population.samples` is a count rather than the evaluated files, and without
+per-item weights a pooled metric cannot be compared on shared files.
 
 ## Spaces and canonical aliases
 
@@ -358,6 +478,14 @@ attributable to the scene or sequence they came from:
   }
 }
 ```
+
+Hierarchy keys and file ids are written in Unicode NFC; joined with `~` they
+are the item ids of `protocol.population`. Besides the metric tree's per-image
+values, dense and sparse depth write the `standard` metrics of every benchmark
+bin per file (`depth.eval.metric.standard.near.absrel`), and RGB its benchmark
+bins (`rgb.eval.near.mae`); a bin without pixels in an image has no value
+there. The per-file pixel counts that weight pooled metrics are in
+`protocol.items`, not in the metric tree.
 
 Non-finite values (`NaN`, `Inf`) and `None` are stripped from every metric tree
 before writing, so the JSON stays schema-valid. A file whose metrics all fail to
