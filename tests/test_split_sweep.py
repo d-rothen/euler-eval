@@ -72,7 +72,7 @@ def test_each_split_writes_its_own_results(monkeypatch, capsys, tmp_path, fog_gt
         saved = _results(pred, split)
         assert saved["dataset_info"]["num_pairs"] == 1
         assert saved["meta"]["gt"]["split"] == split
-        assert saved["protocol"]["parameters"]["reference.gt.split"] == split
+        assert saved["protocol"]["references"]["gt"]["dataset"]["split"] == split
         assert frame in json.dumps(saved["per_file_metrics"])
     assert _results(pred, "all") is None
     assert _results(pred, None) is None
@@ -155,10 +155,10 @@ def test_experiments_run_once_per_split(monkeypatch, capsys, tmp_path, fog_gt):
     pred = fog_gt["pred"]
     for split in ("fog25", "fog100"):
         assert _results(pred, split, "eval")["protocol"]["parameters"][
-            "method.depth_alignment"
+            "depth.alignment.mode"
         ] == "none"
         assert _results(pred, split, "affine")["protocol"]["parameters"][
-            "method.depth_alignment"
+            "depth.alignment.mode"
         ] == "affine"
         for name in ("eval", "affine"):
             assert (tmp_path / f"sanity_check_report_split_{split}_{name}.json").is_file()

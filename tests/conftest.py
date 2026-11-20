@@ -121,3 +121,38 @@ def indexed_sky_prediction(tmp_path):
             "index": {"files": files},
         }, metadata_scope=modality)
     return paths
+
+
+@pytest.fixture(autouse=True)
+def _strict_protocol(monkeypatch):
+    """Every ``protocol`` block the CLI writes in a test is valid (contract v2).
+
+    The CLI writes results without a protocol rather than fail an evaluation
+    whose block is invalid; in tests an invalid block is an error, checked by
+    euler-metric-naming's validator and, when installed, its JSON Schema.
+    """
+    from euler_metric_naming.contract import check_protocol
+
+    from euler_eval import cli
+    from euler_eval.protocol import build_protocol
+
+    def strict(save, label, **kwargs):
+        block = build_protocol(eval_json=save, **kwargs)
+        check_protocol(block)
+        _validate_protocol_schema(block)
+        return block
+
+    monkeypatch.setattr(cli, "_protocol", strict)
+
+
+def _validate_protocol_schema(block):
+    try:
+        import jsonschema
+    except ImportError:
+        return
+    import importlib.util
+
+    origin = Path(importlib.util.find_spec("euler_metric_naming").origin).parent
+    schema_path = origin / "contract" / "schema" / "protocol-2.schema.json"
+    schema = json.loads(schema_path.read_text())
+    jsonschema.Draft202012Validator(schema).validate(block)

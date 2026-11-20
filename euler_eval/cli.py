@@ -23,7 +23,9 @@ import torch
 
 from .config_paths import (
     GT_SEGMENTATION_KEYS,
+    gt_default_scope,
     normalize_modality_path,
+    parse_modality_path,
     resolve_dataset_location,
     resolve_gt_segmentation_path,
 )
@@ -61,7 +63,19 @@ from .metric_sets import (
     resolve_metric_sets,
     selected_domain_categories,
 )
-from .protocol import build_protocol, evaluated_resolution, reference_identities
+from .protocol import (
+    POLICIES,
+    RGB_DEPTH_BIN_EDGES_M,
+    ReferenceInput,
+    build_protocol,
+    depth_gt_range,
+    domain_region,
+    evaluated_resolution,
+    nfc_per_file_metrics,
+    pairing_accounting,
+    read_references,
+    rgb_depth_bins,
+)
 from .sanity_checker import SanityChecker
 from .split_sweep import (
     SplitSweep,
@@ -766,16 +780,165 @@ def _resolve_distribution_config(value, args) -> DistributionConfig | None:
     return DistributionConfig.from_config(settings if enabled else False)
 
 
+# ── Protocol (evaluation-protocol contract v2) ──────────────────────────────
+
 #: Result keys of the evaluators that are bookkeeping, not printed metrics.
 _NOT_PRINTED = ("per_file_metrics", "spatial_info", "item_statistics", "depth_cap")
 
+_DEPTH_VOCABULARIES = ("euler.core", "euler.sky", "euler.depth")
+_RGB_VOCABULARIES = ("euler.core", "euler.sky", "euler.rgb", "euler.depth")
+_RAYS_VOCABULARIES = ("euler.core", "euler.rays")
+_POINTS_3D_VOCABULARIES = (
+    "euler.core", "euler.sky", "euler.depth", "euler.rays", "euler.points3d",
+)
 
-def _without_inputs(identities: dict, keys: tuple[str, ...]) -> dict:
-    """Return protocol *identities* with *keys* recorded as not configured."""
+#: metricSet axis name -> contract axis role (``(role, stratification)``).
+_DEPTH_AXIS_ROLES = {
+    "space": "space",
+    "category": "family",
+    "reduction": "reduction",
+    "bin": ("stratum", "depth.gt_range"),
+    "variant": "variant",
+}
+_RGB_AXIS_ROLES = {"category": "family", "bin": ("stratum", "depth.gt_range")}
+_POINTS_3D_AXIS_ROLES = {"space": "space", "category": "family", "reduction": "reduction"}
+
+
+def _reference_input(
+    role: str,
+    key: str | None,
+    path: str | None,
+    split: str | None,
+    modality: str,
+    scope: str | None = None,
+) -> ReferenceInput:
+    """A GT input as a dataset builder received it (see ``read_references``)."""
+    key = key or role
+    return ReferenceInput(
+        role=role,
+        key=key,
+        path=path,
+        split=split,
+        modality=modality,
+        scope=scope or gt_default_scope(key),
+    )
+
+
+def _sparse_reference_inputs(
+    *,
+    gt: tuple,
+    intrinsics: tuple,
+    camera_extrinsics: tuple,
+    lidar_extrinsics: tuple,
+    segmentation: tuple,
+) -> list[ReferenceInput]:
+    """GT inputs of the sparse-GT evaluations (sparse depth, sparse points_3d)."""
+    lidar_path, lidar_split = lidar_extrinsics
+    lidar_scope = (
+        parse_modality_path(lidar_path, split=lidar_split).metadata_scope
+        if lidar_path is not None
+        else None
+    ) or "lidar_extrinsics"
+    segmentation_key, segmentation_path, segmentation_split = segmentation
+    return [
+        _reference_input("gt", "sparse_depth", *gt, "gt"),
+        _reference_input("intrinsics", "intrinsics", *intrinsics, "intrinsics"),
+        _reference_input(
+            "camera_extrinsics", "camera_extrinsics", *camera_extrinsics,
+            "camera_extrinsics",
+        ),
+        _reference_input(
+            "lidar_extrinsics", "lidar_extrinsics", lidar_path, lidar_split,
+            "lidar_extrinsics", scope=lidar_scope,
+        ),
+        _reference_input(
+            "segmentation", segmentation_key, segmentation_path,
+            segmentation_split, "segmentation",
+        ),
+    ]
+
+
+def _qualified_statistics(statistics: dict | None, namespace: str) -> dict | None:
+    """Per-item statistics named under the modality's metric namespace."""
+    if not statistics:
+        return None
     return {
-        **identities,
-        **{key: {"dataset": None, "scope": None, "split": None} for key in keys},
+        item: {f"{namespace}.{name}": value for name, value in values.items()}
+        for item, values in statistics.items()
     }
+
+
+def _sky_gt_parameters(args, applies: bool = True) -> dict:
+    """GT sky masking parameters (``--mask-sky``, ``--missing-segmentation``)."""
+    masking = bool(args.mask_sky) and applies
+    return {
+        "sky.gt.masking": masking,
+        "sky.gt.missing_policy": args.missing_segmentation if masking else None,
+    }
+
+
+def _sky_observations(results: dict) -> dict:
+    """``sky.gt.unsegmented`` and ``sky.pred.excluded`` from evaluator provenance."""
+    observations = {}
+    coverage = results.get("gt_sky_masking")
+    if isinstance(coverage, dict):
+        observations["sky.gt.unsegmented"] = coverage.get(
+            "samples_without_segmentation"
+        )
+    pred_masking = results.get("pred_sky_masking")
+    if isinstance(pred_masking, dict):
+        observations["sky.pred.excluded"] = pred_masking.get("excluded_gt_fraction")
+    return observations
+
+
+def _depth_parameters(args, space_info: dict, *, conversion: str) -> dict:
+    """Depth alignment, cap and invalid-value parameters (dense and sparse)."""
+    fitted = args.depth_alignment != "none"
+    return {
+        "depth.alignment.mode": args.depth_alignment,
+        "depth.alignment.applied": bool(space_info.get("calibration_applied", False)),
+        "depth.alignment.fit": "scale_shift" if fitted else None,
+        "depth.alignment.fit_trim": 0.0 if fitted else None,
+        "depth.alignment.fit_max_gt_percentile": (
+            95.0 if fitted and args.mask_sky else None
+        ),
+        "depth.input_space": space_info.get("input_space_detected"),
+        "depth.cap.max_m": args.sky_depth,
+        "depth.benchmark.range_m": (
+            list(args.benchmark_depth_range) if args.benchmark_depth_range else None
+        ),
+        "depth.invalid.policy": POLICIES["depth.invalid.policy"],
+        "depth.conversion": conversion,
+    }
+
+
+def _spatial_parameters(spatial_mode: str, spatial: dict, **extra) -> dict:
+    """How GT and prediction grids were reconciled (configured and resolved)."""
+    return {
+        "spatial.policy": spatial_mode,
+        "spatial.method": spatial.get("method", "none"),
+        "spatial.uniform": spatial.get("uniform"),
+        **extra,
+    }
+
+
+def _protocol(save: dict, label: str, **kwargs) -> dict:
+    """The v2 ``protocol`` block of *save*, never failing the evaluation.
+
+    A block that violates the contract is a bug of euler-eval; the metrics are
+    still written, with a block that records only the schema version, so
+    every consumer reports the evaluation as not comparable.
+    """
+    try:
+        return build_protocol(eval_json=save, **kwargs)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(
+            f"Warning: could not build the {label} protocol block ({exc}); "
+            "the results are written without one and are not comparable.",
+            file=sys.stderr,
+        )
+        traceback.print_exc()
+        return {"schemaVersion": "2.0", "parameters": {}}
 
 
 def _get_version() -> str:
@@ -901,8 +1064,13 @@ def _clean_per_file_metrics(tree: dict, *, label: str = "per_file_metrics") -> d
     failed computation or an invalid sample.  The generic cleaner prunes empty
     dicts, but per-file entries are schema-shaped as ``{"id", "metrics"}``;
     dropping the empty ``metrics`` object leaves an id-only file entry.
+
+    Hierarchy keys and file ids are written in Unicode NFC, as the item ids
+    of the protocol's population are (``euler.item_id/1``).
     """
-    cleaned = _clean_metric_tree(tree, preserve_empty_dict_keys={"metrics"})
+    cleaned = nfc_per_file_metrics(
+        _clean_metric_tree(tree, preserve_empty_dict_keys={"metrics"})
+    )
     empty_ids = _empty_per_file_metric_ids(cleaned)
     if empty_ids:
         sample = ", ".join(empty_ids[:10])
@@ -2321,10 +2489,6 @@ def _evaluate(
 
 
     gt = config["gt"]
-    protocol_identities = reference_identities(gt)
-    protocol_benchmark_range = (
-        list(args.benchmark_depth_range) if args.benchmark_depth_range else None
-    )
     gt_depth_path = gt.get("depth", {}).get("path")
     gt_sparse_depth_path = gt.get("sparse_depth", {}).get("path")
     gt_rgb_path = gt.get("rgb", {}).get("path")
@@ -2537,29 +2701,7 @@ def _evaluate(
                         "canonical_space": space_info.get("canonical_space", "metric"),
                     },
                 ),
-                "protocol": build_protocol(
-                    protocol_identities,
-                    gt="depth",
-                    inputs=("calibration", "segmentation"),
-                    population={
-                        "samples": depth_dataset_info.get("num_pairs"),
-                        "gt_sky_masking": bool(args.mask_sky),
-                        "missing_segmentation": (
-                            args.missing_segmentation if args.mask_sky else None
-                        ),
-                        "pred_sky_masking": bool(args.mask_sky_prediction),
-                        "evaluated_resolution": evaluated_resolution(depth_spatial),
-                        "benchmark_depth_range_m": protocol_benchmark_range,
-                    },
-                    method={
-                        "depth_alignment": args.depth_alignment,
-                        "sky_depth_m": args.sky_depth,
-                        "pred_sky_mask": bool(
-                            pred_sky_mask_path and sky_mask_scores_depth
-                        ),
-                        "spatial_alignment": depth_spatial.get("method", "none"),
-                    },
-                ),
+                "protocol": None,  # written below, once the metrics are in place
                 "dataset_info": depth_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -2679,6 +2821,72 @@ def _evaluate(
                     label="depth per_file_metrics",
                 )
             all_results.setdefault("per_file_metrics", {}).update(depth_pfm)
+
+            depth_references = read_references(depth_dataset, [
+                _reference_input("gt", "depth", gt_depth_path, gt_depth_split, "gt"),
+                _reference_input(
+                    "calibration", "calibration", calibration_path,
+                    calibration_split, "calibration",
+                ),
+                _reference_input(
+                    "segmentation", segmentation_key, depth_segmentation_path,
+                    depth_segmentation_split, "segmentation",
+                ),
+            ])
+            depth_save["protocol"] = _protocol(
+                depth_save,
+                "depth",
+                task="depth.dense",
+                vocabularies=_DEPTH_VOCABULARIES,
+                references=depth_references,
+                parameters={
+                    **_depth_parameters(
+                        args,
+                        space_info,
+                        conversion=(
+                            "planar_to_radial"
+                            if not depth_meta["radial_depth"]
+                            and "calibration" in depth_references
+                            else "none"
+                        ),
+                    ),
+                    **_sky_gt_parameters(args),
+                    "sky.pred.masking": bool(args.mask_sky_prediction),
+                    "sky.pred.fill": bool(pred_sky_mask_path and sky_mask_scores_depth),
+                    "sky.iou": bool(args.sky_iou),
+                    **_spatial_parameters(
+                        spatial_mode,
+                        depth_spatial,
+                        **{
+                            "spatial.resize_target": "gt_grid",
+                            "spatial.mask_resample": POLICIES["spatial.mask_resample"],
+                        },
+                    ),
+                },
+                observations={
+                    "domain.region": domain_region(
+                        depth_references.get("gt"),
+                        evaluated_resolution(depth_spatial),
+                        depth_spatial.get("crop_origin"),
+                    ),
+                    "prediction.resample": depth_spatial.get("prediction_resample"),
+                    "depth.cap.clipped": (depth_results.get("depth_cap") or {}).get(
+                        "clipped_fraction"
+                    ),
+                    **_sky_observations(depth_results),
+                },
+                axis_roles=_DEPTH_AXIS_ROLES,
+                stratifications={
+                    "depth.gt_range": depth_gt_range(
+                        (depth_benchmark or {}).get("boundaries"),
+                        args.benchmark_depth_range,
+                    ),
+                },
+                accounting=pairing_accounting(depth_dataset),
+                item_statistics=_qualified_statistics(
+                    depth_results.get("item_statistics"), "depth.eval"
+                ),
+            )
 
             print_results(
                 {k: v for k, v in depth_results.items()
@@ -2805,35 +3013,7 @@ def _evaluate(
                         "canonical_space": space_info.get("canonical_space", "metric"),
                     },
                 ),
-                "protocol": build_protocol(
-                    protocol_identities,
-                    gt="sparse_depth",
-                    inputs=(
-                        "intrinsics",
-                        "camera_extrinsics",
-                        "lidar_extrinsics",
-                        "segmentation",
-                    ),
-                    population={
-                        "samples": sparse_depth_dataset_info.get("num_pairs"),
-                        "gt_sky_masking": bool(args.mask_sky),
-                        "missing_segmentation": (
-                            args.missing_segmentation if args.mask_sky else None
-                        ),
-                        "pred_sky_masking": bool(args.mask_sky_prediction),
-                        "evaluated_resolution": evaluated_resolution(
-                            sparse_depth_spatial
-                        ),
-                        "benchmark_depth_range_m": protocol_benchmark_range,
-                    },
-                    method={
-                        "depth_alignment": args.depth_alignment,
-                        "sky_depth_m": args.sky_depth,
-                        "pred_sky_mask": bool(
-                            pred_sky_mask_path and sky_mask_scores_depth
-                        ),
-                    },
-                ),
+                "protocol": None,  # written below, once the metrics are in place
                 "dataset_info": sparse_depth_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -2969,6 +3149,68 @@ def _evaluate(
                 )
             all_results.setdefault("per_file_metrics", {}).update(sparse_depth_pfm)
 
+            sparse_references = read_references(
+                sparse_depth_dataset,
+                _sparse_reference_inputs(
+                    gt=(gt_sparse_depth_path, gt_sparse_depth_split),
+                    intrinsics=(intrinsics_path, intrinsics_split),
+                    camera_extrinsics=(camera_extrinsics_path, camera_extrinsics_split),
+                    lidar_extrinsics=(lidar_extrinsics_path, lidar_extrinsics_split),
+                    segmentation=(
+                        segmentation_key,
+                        depth_segmentation_path,
+                        depth_segmentation_split,
+                    ),
+                ),
+            )
+            depth_save["protocol"] = _protocol(
+                depth_save,
+                "sparse depth",
+                task="depth.sparse",
+                vocabularies=_DEPTH_VOCABULARIES,
+                references=sparse_references,
+                parameters={
+                    **_depth_parameters(
+                        args,
+                        space_info,
+                        conversion=(
+                            "none"
+                            if sparse_depth_meta["pred_radial_depth"]
+                            else "planar_to_radial"
+                        ),
+                    ),
+                    **_sky_gt_parameters(args),
+                    "sky.pred.masking": bool(args.mask_sky_prediction),
+                    "sky.pred.fill": bool(pred_sky_mask_path and sky_mask_scores_depth),
+                    "sky.iou": bool(args.sky_iou),
+                    **_spatial_parameters(
+                        spatial_mode,
+                        {"method": "pointcloud_projection", **sparse_depth_spatial},
+                        **{"spatial.mask_resample": POLICIES["spatial.mask_resample"]},
+                    ),
+                },
+                observations={
+                    "domain.grid": evaluated_resolution(sparse_depth_spatial),
+                    "depth.cap.clipped": (
+                        sparse_depth_results.get("depth_cap") or {}
+                    ).get("clipped_fraction"),
+                    **_sky_observations(sparse_depth_results),
+                },
+                axis_roles=_DEPTH_AXIS_ROLES,
+                stratifications={
+                    "depth.gt_range": depth_gt_range(
+                        (sparse_depth_benchmark or {}).get("boundaries"),
+                        args.benchmark_depth_range,
+                    ),
+                },
+                accounting=pairing_accounting(sparse_depth_dataset),
+                item_statistics=_qualified_statistics(
+                    sparse_depth_results.get("item_statistics"),
+                    _SPARSE_DEPTH_METRIC_NAMESPACE,
+                ),
+                unit="image",
+            )
+
             print_results(
                 {
                     k: v
@@ -3097,44 +3339,7 @@ def _evaluate(
                         ]
                     },
                 ),
-                "protocol": build_protocol(
-                    (
-                        protocol_identities
-                        if rgb_full_reference
-                        else _without_inputs(
-                            protocol_identities,
-                            ("depth", "calibration", "segmentation"),
-                        )
-                    ),
-                    gt="rgb",
-                    inputs=("input_rgb", "depth", "calibration", "segmentation"),
-                    # Sky masking, benchmark bins, FID and GT alignment act on
-                    # full-reference metrics only; without gt.rgb they are off.
-                    population={
-                        "samples": rgb_dataset_info.get("num_pairs"),
-                        "gt_sky_masking": bool(args.mask_sky) and rgb_full_reference,
-                        "missing_segmentation": (
-                            args.missing_segmentation
-                            if args.mask_sky and rgb_full_reference
-                            else None
-                        ),
-                        "evaluated_resolution": evaluated_resolution(rgb_spatial),
-                        "benchmark_depth_range_m": (
-                            protocol_benchmark_range if rgb_full_reference else None
-                        ),
-                    },
-                    method={
-                        "fid_backend": (
-                            args.rgb_fid_backend if rgb_full_reference else None
-                        ),
-                        "spatial_alignment": (
-                            rgb_spatial.get("method", "none")
-                            if rgb_full_reference
-                            else None
-                        ),
-                        "input_alignment": rgb_spatial.get("input_alignment"),
-                    },
-                ),
+                "protocol": None,  # written below, once the metrics are in place
                 "dataset_info": rgb_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -3224,6 +3429,87 @@ def _evaluate(
                 )
             all_results.setdefault("per_file_metrics", {}).update(rgb_pfm)
 
+            rgb_references = read_references(rgb_dataset, [
+                _reference_input("gt", "rgb", gt_rgb_path, gt_rgb_split, "gt"),
+                _reference_input(
+                    "input", "input_rgb", gt_input_rgb_path, gt_input_rgb_split, "input"
+                ),
+                _reference_input("depth", "depth", gt_depth_path, gt_depth_split, "gt_depth"),
+                _reference_input(
+                    "calibration", "calibration", calibration_path,
+                    calibration_split, "calibration",
+                ),
+                _reference_input(
+                    "segmentation", segmentation_key, segmentation_path,
+                    segmentation_split, "segmentation",
+                ),
+            ])
+            if not rgb_full_reference:
+                rgb_references.pop("gt", None)
+            rgb_parameters = {
+                # Sky masking, benchmark bins, FID and GT alignment act on
+                # full-reference metrics only; without gt.rgb they are off.
+                **_sky_gt_parameters(args, rgb_full_reference),
+                **_spatial_parameters(
+                    spatial_mode,
+                    {
+                        **rgb_spatial,
+                        "method": (
+                            rgb_spatial.get("method", "none")
+                            if rgb_full_reference
+                            else None
+                        ),
+                    },
+                    **{
+                        "spatial.resize_target": "prediction_grid",
+                        "spatial.mask_resample": POLICIES["spatial.mask_resample"],
+                    },
+                ),
+                "rgb.fid.backend": args.rgb_fid_backend if rgb_full_reference else None,
+                "rgb.input.alignment": rgb_spatial.get("input_alignment"),
+                "rgb.input.alignment_policy": POLICIES["rgb.input.alignment_policy"],
+                "rgb.depth_bins.policy": POLICIES["rgb.depth_bins.policy"],
+                "rgb.depth_bins.edges_m": list(RGB_DEPTH_BIN_EDGES_M),
+                "depth.benchmark.range_m": (
+                    list(args.benchmark_depth_range)
+                    if args.benchmark_depth_range and rgb_full_reference
+                    else None
+                ),
+                "depth.invalid.policy": POLICIES["depth.invalid.policy"],
+            }
+            if rgb_full_reference:
+                # Without gt.rgb no GT was resampled: the key is left out and
+                # reads as its default [1, 1].
+                rgb_parameters["spatial.gt_resample"] = rgb_spatial.get(
+                    "gt_resample", [1, 1]
+                )
+            rgb_save["protocol"] = _protocol(
+                rgb_save,
+                "RGB",
+                task="rgb.restoration",
+                vocabularies=_RGB_VOCABULARIES,
+                references=rgb_references,
+                parameters=rgb_parameters,
+                observations={
+                    "domain.grid": evaluated_resolution(rgb_spatial),
+                    **_sky_observations(rgb_results),
+                },
+                axis_roles=_RGB_AXIS_ROLES,
+                stratifications={
+                    "depth.gt_range": depth_gt_range(
+                        (rgb_benchmark or {}).get("boundaries"),
+                        args.benchmark_depth_range if rgb_full_reference else None,
+                        after_cap=False,
+                    ),
+                    "rgb.depth_bins": (
+                        rgb_depth_bins() if "depth" in rgb_references else None
+                    ),
+                },
+                accounting=pairing_accounting(
+                    rgb_dataset, reference="gt" if rgb_full_reference else "input"
+                ),
+            )
+
             print_results(
                 {k: v for k, v in rgb_results.items()
                  if k not in _NOT_PRINTED},
@@ -3287,18 +3573,7 @@ def _evaluate(
                         "threshold_deg": rays_dataset_info.get("threshold_deg"),
                     },
                 ),
-                "protocol": build_protocol(
-                    protocol_identities,
-                    gt="rays",
-                    inputs=("calibration",),
-                    population={
-                        "samples": rays_dataset_info.get("num_pairs"),
-                        "evaluated_resolution": evaluated_resolution(rays_spatial),
-                    },
-                    method={
-                        "spatial_alignment": rays_spatial.get("method", "none"),
-                    },
-                ),
+                "protocol": None,  # written below, once the metrics are in place
                 "dataset_info": rays_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -3343,6 +3618,36 @@ def _evaluate(
                     label="rays per_file_metrics",
                 )
             all_results.setdefault("per_file_metrics", {}).update(rays_pfm)
+
+            rays_save["protocol"] = _protocol(
+                rays_save,
+                "rays",
+                task="rays.directions",
+                vocabularies=_RAYS_VOCABULARIES,
+                references=read_references(rays_dataset, [
+                    _reference_input("gt", "rays", gt_rays_path, gt_rays_split, "gt"),
+                    _reference_input(
+                        "calibration", "calibration", calibration_path,
+                        calibration_split, "calibration",
+                    ),
+                ]),
+                parameters={
+                    **_spatial_parameters(
+                        spatial_mode,
+                        rays_spatial,
+                        **{
+                            "spatial.resize_target": "prediction_grid",
+                            "spatial.gt_resample": rays_spatial.get(
+                                "gt_resample", [1, 1]
+                            ),
+                        },
+                    ),
+                    "rays.fov_policy": POLICIES["rays.fov_policy"],
+                    "rays.rho_a.threshold_deg": rays_dataset_info.get("threshold_deg"),
+                },
+                observations={"domain.grid": evaluated_resolution(rays_spatial)},
+                accounting=pairing_accounting(rays_dataset),
+            )
 
             print_results(
                 {k: v for k, v in rays_results.items()
@@ -3466,23 +3771,7 @@ def _evaluate(
                         "threshold_deg": p3_dataset_info.get("threshold_deg"),
                     },
                 ),
-                "protocol": build_protocol(
-                    protocol_identities,
-                    gt="depth" if p3d_gt_is_depth else "points_3d",
-                    inputs=("intrinsics", "calibration", "segmentation"),
-                    population={
-                        "samples": p3_dataset_info.get("num_pairs"),
-                        "gt_sky_masking": bool(args.mask_sky),
-                        "missing_segmentation": (
-                            args.missing_segmentation if args.mask_sky else None
-                        ),
-                        "evaluated_resolution": evaluated_resolution(p3_spatial),
-                    },
-                    method={
-                        "points_3d_alignment": args.points_3d_alignment,
-                        "spatial_alignment": p3_spatial.get("method", "none"),
-                    },
-                ),
+                "protocol": None,  # written below, once the metrics are in place
                 "dataset_info": p3_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -3548,6 +3837,72 @@ def _evaluate(
                     label="points_3d per_file_metrics",
                 )
             all_results.setdefault("per_file_metrics", {}).update(points_3d_pfm)
+
+            p3_references = read_references(points_3d_dataset, [
+                _reference_input(
+                    "gt", "depth" if p3d_gt_is_depth else "points_3d",
+                    p3d_gt_path, p3d_gt_split, "gt",
+                ),
+                _reference_input(
+                    "intrinsics",
+                    "intrinsics" if intrinsics_path else "calibration",
+                    p3d_intrinsics_path,
+                    p3d_intrinsics_split,
+                    "intrinsics",
+                    scope="intrinsics",
+                ),
+                _reference_input(
+                    "calibration", "calibration", calibration_path,
+                    calibration_split, "calibration",
+                ),
+                _reference_input(
+                    "segmentation", segmentation_key, segmentation_path,
+                    segmentation_split, "segmentation",
+                ),
+            ])
+            p3_parameters = {
+                "points3d.alignment.mode": args.points_3d_alignment,
+                "points3d.alignment.applied": bool(
+                    p3_space_info.get("calibration_applied", False)
+                ),
+                "points3d.f_a.threshold_m": p3_dataset_info.get("f_a_max_threshold"),
+                "rays.fov_policy": POLICIES["rays.fov_policy"],
+                "rays.rho_a.threshold_deg": p3_dataset_info.get("threshold_deg"),
+                **_sky_gt_parameters(args),
+                **_spatial_parameters(
+                    spatial_mode,
+                    p3_spatial,
+                    **{
+                        "spatial.resize_target": "gt_grid",
+                        "spatial.mask_resample": POLICIES["spatial.mask_resample"],
+                    },
+                ),
+            }
+            if p3d_gt_is_depth:
+                p3_parameters["depth.invalid.policy"] = POLICIES["depth.invalid.policy"]
+            points_3d_save["protocol"] = _protocol(
+                points_3d_save,
+                "points_3d",
+                task="points3d.dense",
+                vocabularies=_POINTS_3D_VOCABULARIES,
+                references=p3_references,
+                parameters=p3_parameters,
+                observations={
+                    "domain.region": domain_region(
+                        p3_references.get("gt"),
+                        evaluated_resolution(p3_spatial),
+                        p3_spatial.get("crop_origin"),
+                    ),
+                    "prediction.resample": p3_spatial.get("prediction_resample"),
+                    **_sky_observations(points_3d_results),
+                },
+                axis_roles=_POINTS_3D_AXIS_ROLES,
+                accounting=pairing_accounting(points_3d_dataset),
+                item_statistics=_qualified_statistics(
+                    points_3d_results.get("item_statistics"),
+                    _POINTS_3D_METRIC_NAMESPACE,
+                ),
+            )
 
             print_results(
                 {k: v for k, v in points_3d_results.items()
@@ -3669,27 +4024,7 @@ def _evaluate(
                         "threshold_deg": p3s_dataset_info.get("threshold_deg"),
                     },
                 ),
-                "protocol": build_protocol(
-                    protocol_identities,
-                    gt="sparse_depth",
-                    inputs=(
-                        "intrinsics",
-                        "camera_extrinsics",
-                        "lidar_extrinsics",
-                        "segmentation",
-                    ),
-                    population={
-                        "samples": p3s_dataset_info.get("num_pairs"),
-                        "gt_sky_masking": bool(args.mask_sky),
-                        "missing_segmentation": (
-                            args.missing_segmentation if args.mask_sky else None
-                        ),
-                        "evaluated_resolution": evaluated_resolution(p3s_spatial),
-                    },
-                    method={
-                        "points_3d_alignment": p3s_alignment_mode,
-                    },
-                ),
+                "protocol": None,  # written below, once the metrics are in place
                 "dataset_info": p3s_dataset_info,
                 "meta": _clean_metric_tree({
                     "version": _get_version(),
@@ -3758,6 +4093,54 @@ def _evaluate(
                     label="points_3d sparse per_file_metrics",
                 )
             all_results.setdefault("per_file_metrics", {}).update(p3s_pfm)
+
+            points_3d_sparse_save["protocol"] = _protocol(
+                points_3d_sparse_save,
+                "sparse points_3d",
+                task="points3d.sparse",
+                vocabularies=_POINTS_3D_VOCABULARIES,
+                references=read_references(
+                    points_3d_sparse_dataset,
+                    _sparse_reference_inputs(
+                        gt=(gt_sparse_depth_path, gt_sparse_depth_split),
+                        intrinsics=(intrinsics_path, intrinsics_split),
+                        camera_extrinsics=(
+                            camera_extrinsics_path, camera_extrinsics_split
+                        ),
+                        lidar_extrinsics=(lidar_extrinsics_path, lidar_extrinsics_split),
+                        segmentation=(
+                            segmentation_key, segmentation_path, segmentation_split
+                        ),
+                    ),
+                ),
+                parameters={
+                    "points3d.alignment.mode": p3s_alignment_mode,
+                    "points3d.alignment.applied": bool(
+                        p3s_space_info.get("calibration_applied", False)
+                    ),
+                    "points3d.f_a.threshold_m": p3s_dataset_info.get(
+                        "f_a_max_threshold"
+                    ),
+                    "rays.fov_policy": POLICIES["rays.fov_policy"],
+                    "rays.rho_a.threshold_deg": p3s_dataset_info.get("threshold_deg"),
+                    **_sky_gt_parameters(args),
+                    **_spatial_parameters(
+                        spatial_mode,
+                        {"method": "pointcloud_projection", **p3s_spatial},
+                        **{"spatial.mask_resample": POLICIES["spatial.mask_resample"]},
+                    ),
+                },
+                observations={
+                    "domain.grid": evaluated_resolution(p3s_spatial),
+                    **_sky_observations(points_3d_sparse_results),
+                },
+                axis_roles=_POINTS_3D_AXIS_ROLES,
+                accounting=pairing_accounting(points_3d_sparse_dataset),
+                item_statistics=_qualified_statistics(
+                    points_3d_sparse_results.get("item_statistics"),
+                    _POINTS_3D_METRIC_NAMESPACE,
+                ),
+            )
 
             print_results(
                 {k: v for k, v in points_3d_sparse_results.items()

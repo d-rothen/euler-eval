@@ -220,9 +220,16 @@ def test_missing_segmentation_unmasked_evaluates_those_frames_unmasked(
     assert saved["meta"]["gt_sky_masking"] == {
         "samples": 3, "samples_without_segmentation": 1, "samples_with_sky": 2,
     }
-    parameters = saved["protocol"]["parameters"]
-    assert parameters["population.gt_sky_masking"] is True
-    assert parameters["population.missing_segmentation"] == "unmasked"
+    protocol = saved["protocol"]
+    assert protocol["parameters"]["sky.gt.masking"] is True
+    assert protocol["parameters"]["sky.gt.missing_policy"] == "unmasked"
+    # The frame without segmentation is kept, not dropped.
+    assert protocol["observations"]["sky.gt.unsegmented"] == 1
+    assert protocol["population"]["count"] == 3
+    assert "segmentation" not in protocol["population"]["accounting"].get(
+        "dropped", {}
+    )
+    assert protocol["references"]["segmentation"]["manifest"]["count"] == 2
     out = capsys.readouterr().out
     assert (
         "the GT segmentation of 'model' lacks 1 pairs that the other inputs "
@@ -246,7 +253,11 @@ def test_missing_segmentation_unmasked_matches_drop_on_covered_frames(
 
     covered = {k: v for k, v in _per_file_mae(kept).items() if k != "f2"}
     assert covered == _per_file_mae(dropped)
-    assert dropped["protocol"]["parameters"]["population.missing_segmentation"] == "drop"
+    assert dropped["protocol"]["parameters"]["sky.gt.missing_policy"] == "drop"
+    assert dropped["protocol"]["population"]["accounting"]["dropped"] == {
+        "segmentation": 1,
+    }
+    assert dropped["protocol"]["population"]["count"] == 2
 
 
 def test_missing_segmentation_unmasked_scores_sky_iou_on_covered_frames(
@@ -266,7 +277,7 @@ def test_missing_segmentation_unmasked_scores_sky_iou_on_covered_frames(
     assert meta["samples"] == 3
     assert meta["samples_without_gt"] == 1
     # Without --mask-sky, the policy is not a comparison parameter.
-    assert saved["protocol"]["parameters"]["population.missing_segmentation"] is None
+    assert saved["protocol"]["parameters"]["sky.gt.missing_policy"] is None
 
 
 def test_missing_segmentation_unmasked_with_prefetch_workers(monkeypatch, flat_frames):

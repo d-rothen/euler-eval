@@ -180,6 +180,37 @@ def resolve_dataset_location(
     return root, (scope if has_scoped_metadata(root, scope) else None), parsed.split
 
 
+def read_dataset_head(
+    path: str | Path, *, modality_key: str, split: str | None = None
+) -> tuple[str | None, str | None, dict | None]:
+    """Return ``(metadata scope, split, dataset head)`` of a configured dataset.
+
+    The scope and split are resolved as euler-loading resolves them
+    (:func:`resolve_dataset_location`); the head is the parsed
+    ``dataset-head.json`` of that scope, ``None`` when there is none.
+    """
+    root, scope, split = resolve_dataset_location(
+        path, modality_key=modality_key, split=split
+    )
+    head = _read_metadata_safe(root, DATASET_HEAD_FILENAME, scope)
+    return scope, split, head if isinstance(head, dict) else None
+
+
+def head_dataset_id(head: dict | None) -> str | None:
+    """The ``dataset.id`` of a dataset head, its name without an id, else ``None``."""
+    dataset = head.get("dataset") if isinstance(head, dict) else None
+    if not isinstance(dataset, dict):
+        return None
+    return next(
+        (
+            value
+            for value in (dataset.get("id"), dataset.get("name"))
+            if isinstance(value, str) and value
+        ),
+        None,
+    )
+
+
 def dataset_identity(
     path: str | Path, *, modality_key: str, split: str | None = None
 ) -> dict[str, str | None]:
@@ -189,22 +220,8 @@ def dataset_identity(
     the head has no id, ``None`` without a head), the effective metadata
     scope and the split.
     """
-    root, scope, split = resolve_dataset_location(
-        path, modality_key=modality_key, split=split
-    )
-    head = _read_metadata_safe(root, DATASET_HEAD_FILENAME, scope)
-    dataset = head.get("dataset") if isinstance(head, dict) else None
-    dataset_id = None
-    if isinstance(dataset, dict):
-        dataset_id = next(
-            (
-                value
-                for value in (dataset.get("id"), dataset.get("name"))
-                if isinstance(value, str) and value
-            ),
-            None,
-        )
-    return {"dataset": dataset_id, "scope": scope, "split": split}
+    scope, split, head = read_dataset_head(path, modality_key=modality_key, split=split)
+    return {"dataset": head_dataset_id(head), "scope": scope, "split": split}
 
 
 def _scope_modality_key(root: Path, scope: str) -> str | None:

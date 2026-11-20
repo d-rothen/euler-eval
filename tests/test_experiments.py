@@ -55,11 +55,11 @@ def test_each_experiment_writes_its_named_results(
     saved = {name: _results(pred, name) for name in ("eval", "capped", "affine")}
     # The command line is the base; each experiment's args come after it.
     parameters = {name: s["protocol"]["parameters"] for name, s in saved.items()}
-    assert parameters["eval"]["method.depth_alignment"] == "none"
-    assert parameters["eval"]["method.sky_depth_m"] is None
-    assert parameters["capped"]["method.sky_depth_m"] == 50.0
-    assert parameters["capped"]["method.depth_alignment"] == "none"
-    assert parameters["affine"]["method.depth_alignment"] == "affine"
+    assert parameters["eval"]["depth.alignment.mode"] == "none"
+    assert parameters["eval"]["depth.cap.max_m"] is None
+    assert parameters["capped"]["depth.cap.max_m"] == 50.0
+    assert parameters["capped"]["depth.alignment.mode"] == "none"
+    assert parameters["affine"]["depth.alignment.mode"] == "affine"
     assert {name: s["meta"]["eval_name"] for name, s in saved.items()} == {
         "eval": "eval", "capped": "capped", "affine": "affine",
     }
@@ -285,9 +285,9 @@ def test_modalities_decide_whether_the_sky_mask_is_used(
     filled, capped = _results(pred, "filled"), _results(pred, "capped")
     p_filled = filled["protocol"]["parameters"]
     p_capped = capped["protocol"]["parameters"]
-    assert p_filled["method.pred_sky_mask"] is True
-    assert p_capped["method.pred_sky_mask"] is False
-    assert {k for k in p_filled if p_filled[k] != p_capped[k]} == {"method.pred_sky_mask"}
+    assert p_filled["sky.pred.fill"] is True
+    assert p_capped["sky.pred.fill"] is False
+    assert {k for k in p_filled if p_filled[k] != p_capped[k]} == {"sky.pred.fill"}
     mae = "depth.eval.metric.standard.pixel_pool.mae".split(".")
 
     def pick(tree):
@@ -310,9 +310,9 @@ def test_modalities_keep_every_gt_input(monkeypatch, tmp_path, indexed_sky_predi
         gt_extra={"segmentation": {"path": seg}},
     ))
 
-    parameters = _results(pred, "eval")["protocol"]["parameters"]
-    assert parameters["population.gt_sky_masking"] is True
-    assert parameters["reference.segmentation.dataset"] == "sky_iou_test"
+    protocol = _results(pred, "eval")["protocol"]
+    assert protocol["parameters"]["sky.gt.masking"] is True
+    assert protocol["references"]["segmentation"]["dataset"]["id"] == "sky_iou_test"
 
 
 def test_unconfigured_modalities_only_warn(
@@ -433,7 +433,7 @@ def test_sparse_gt_config_with_prediction_modalities(monkeypatch, tmp_path):
             name: json.loads(zf.read(f".eval/{name}.json"))
             for name in ("eval", "gt_sky_with_mask", "gt_and_pred_sky")
         }
-    assert [s["protocol"]["parameters"]["method.pred_sky_mask"]
+    assert [s["protocol"]["parameters"]["sky.pred.fill"]
             for s in saved.values()] == [False, False, True]
 
 

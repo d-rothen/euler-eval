@@ -160,8 +160,8 @@ def test_the_protocol_records_only_the_selected_gt_inputs(
         ),
     )
 
-    masked = _results(pred, "eval")["protocol"]["parameters"]
-    unmasked = _results(pred, "unmasked")["protocol"]["parameters"]
-    assert masked["reference.segmentation.dataset"] == "sky_iou_test"
-    assert unmasked["reference.segmentation.dataset"] is None
-    assert unmasked["population.gt_sky_masking"] is False
+    masked = _results(pred, "eval")["protocol"]
+    unmasked = _results(pred, "unmasked")["protocol"]
+    assert masked["references"]["segmentation"]["dataset"]["id"] == "sky_iou_test"
+    assert "segmentation" not in unmasked["references"]
+    assert unmasked["parameters"]["sky.gt.masking"] is False

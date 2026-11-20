@@ -635,12 +635,13 @@ def test_cli_evaluates_rgb_against_the_input_alone(monkeypatch, tmp_path):
     saved = json.loads((pred / ".eval" / "eval.json").read_text())
     assert saved["rgb"]["eval"] == {"dehazing": {"hautiere_e": 0.5}}
     assert saved["metricSet"]["axes"]["category"]["values"] == []
-    parameters = saved["protocol"]["parameters"]
-    assert saved["protocol"]["schemaVersion"] == "1.3"
-    assert parameters["reference.input_rgb.dataset"] == "hazy_inputs"
-    assert parameters["reference.gt.dataset"] is None
-    assert parameters["reference.calibration.dataset"] is None
-    assert parameters["method.input_alignment"] == "upscale_prediction"
-    assert parameters["method.fid_backend"] is None
-    assert parameters["method.spatial_alignment"] is None
+    protocol = saved["protocol"]
+    parameters = protocol["parameters"]
+    assert protocol["schemaVersion"] == "2.0"
+    assert set(protocol["references"]) == {"input"}
+    assert protocol["references"]["input"]["dataset"]["id"] == "hazy_inputs"
+    assert parameters["rgb.input.alignment"] == "upscale_prediction"
+    assert parameters["rgb.fid.backend"] is None
+    assert parameters["spatial.method"] is None
+    assert parameters["sky.gt.masking"] is False
     assert saved["meta"]["input"]["dimensions"] == {"height": 8, "width": 12}
