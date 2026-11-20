@@ -1706,6 +1706,15 @@ wheels = [
 ]
 
 [[package]]
+name = "euler-connector"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e3/d9/113f367fbce55075e123f013a20e2e69d07e0cddad8dae354591b14e0f33/euler_connector-0.1.1.tar.gz", hash = "sha256:268d5f9f928f1a89e81c23ac906cf587c512134a79cc0a6a2e8f53613a07357b", size = 31792, upload-time = "2026-11-19T18:25:36.682Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/35/c5/2454aadfffeb86f627ada3618d2b78c85be07abd99774e040b542982eacb/euler_connector-0.1.1-py3-none-any.whl", hash = "sha256:e3f4e753f67edab7ddc402da1118b80a8bdc3c5e3948e8d9a79784608ec7bf53", size = 27464, upload-time = "2026-11-19T18:25:35.448Z" },
+]
+
+[[package]]
 name = "euler-dataset-contract"
 version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1716,10 +1725,11 @@ wheels = [
 
 [[package]]
 name = "euler-eval"
-version = "2.43.0"
+version = "3.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "ds-crawler" },
+    { name = "euler-connector" },
     { name = "euler-loading" },
     { name = "euler-metric-naming" },
     { name = "lpips" },
@@ -1770,8 +1780,9 @@ requires-dist = [
     { name = "black", marker = "extra == 'dev'", specifier = ">=22.0.0" },
     { name = "clean-fid", marker = "extra == 'fid'", specifier = ">=0.1.35" },
     { name = "ds-crawler", git = "https://github.com/d-rothen/ds-crawler" },
+    { name = "euler-connector", specifier = ">=0.1" },
     { name = "euler-loading", git = "https://github.com/d-rothen/euler-loading" },
-    { name = "euler-metric-naming", git = "https://github.com/d-rothen/euler-metric-naming" },
+    { name = "euler-metric-naming", specifier = ">=0.3" },
     { name = "euler-train", marker = "extra == 'logging'", git = "https://github.com/d-rothen/euler-train" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.18" },
     { name = "lpips", specifier = ">=0.1.4" },
@@ -1807,8 +1818,12 @@ dependencies = [
 
 [[package]]
 name = "euler-metric-naming"
-version = "0.2.0"
-source = { git = "https://github.com/d-rothen/euler-metric-naming#03c4b051dd1aecdae5e05415d6deaf12d84b7f6d" }
+version = "0.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1c/02/af654189c766c238164542d2ae6634b1a739bd0c4cc65d80da73c6b76a9e/euler_metric_naming-0.3.0.tar.gz", hash = "sha256:1f5819bd7e04e172a8d83f67c82287afc99b729f12fd07daa9c9e41ba57cf787", size = 171557, upload-time = "2026-11-20T18:24:09.394Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0d/59/6fc3404607c1fae1c412daefe7fce51b0e619bd5b905b0971a3dcfdd05bc/euler_metric_naming-0.3.0-py3-none-any.whl", hash = "sha256:994a174fd0eeda1852e81ced89e33c73b3d71b3c7303b83df46c84ad2eccf82e", size = 229014, upload-time = "2026-11-20T18:24:08.183Z" },
+]
 
 [[package]]
 name = "euler-train"

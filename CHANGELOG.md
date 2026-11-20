@@ -61,7 +61,7 @@ the git history for those.
   [Comparing evaluations](docs/output.md#comparing-evaluations).
   `euler_eval.protocol.build_protocol` has a new signature and
   `METRICS_REVISION` is gone; `reference_identities` (the 1.x identities)
-  remains. Requires `euler-metric-naming>=0.3`.
+  remains. Requires `euler-metric-naming>=0.3` (from PyPI).
 - Per-file trees are written in Unicode NFC (hierarchy keys and file ids), as
   the contract's item ids are. Ids that were already NFC, all ASCII ids among
   them, are unchanged.

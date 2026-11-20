@@ -14,8 +14,10 @@ The released package depends on the PyPI releases of the companion packages
 ([euler-loading](https://github.com/d-rothen/euler-loading),
 [ds-crawler](https://github.com/d-rothen/ds-crawler),
 [euler-metric-naming](https://github.com/d-rothen/euler-metric-naming)). For
-development, `[tool.uv.sources]` resolves them from GitHub instead, so a
-`uv sync` tracks the ecosystem's main branches.
+development, `[tool.uv.sources]` resolves euler-loading and ds-crawler from
+GitHub instead, so a `uv sync` tracks their main branches; euler-metric-naming
+always comes from PyPI (`>=0.3`, the release that carries the evaluation
+protocol contract).
 
 ## Running tests
 

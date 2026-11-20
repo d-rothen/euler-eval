@@ -91,10 +91,6 @@ euler_eval = ["THIRD_PARTY_NOTICES.md", "schemas/*.schema.json"]
 ds-crawler = { git = "https://github.com/d-rothen/ds-crawler" }
 euler-loading = { git = "https://github.com/d-rothen/euler-loading" }
 euler-train = { git = "https://github.com/d-rothen/euler-train" }
-# The evaluation-protocol contract v2 (euler_metric_naming.contract) lives on
-# euler-metric-naming's eval-contract-v2 branch until it is released as 0.3;
-# that branch is not pushed yet, so `uv lock` cannot resolve it until it is.
-euler-metric-naming = { git = "https://github.com/d-rothen/euler-metric-naming", branch = "eval-contract-v2" }
 
 [tool.setuptools.packages.find]
 where = ["."]
