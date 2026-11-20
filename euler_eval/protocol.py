@@ -98,32 +98,6 @@ POLICIES = {
 #: far ``> 5`` m).
 RGB_DEPTH_BIN_EDGES_M = (1.0, 5.0)
 
-#: Descriptors of keys euler-eval records that the vocabularies do not
-#: (yet) define. They travel in every file that uses them.
-EXTRA_DESCRIPTORS = {
-    "spatial.uniform": {
-        "label": "uniform evaluated grid",
-        "role": "definition",
-        "description": (
-            "Whether every item was scored with the same spatial method on "
-            "the same grid (same GT and prediction sizes, same crop origin). "
-            "When false, spatial.method and the domain observations describe "
-            "the first item only."
-        ),
-    },
-    "depth.alignment.fit_max_gt_percentile": {
-        "label": "depth alignment GT percentile",
-        "role": "definition",
-        "appliesWhen": {"param": "depth.alignment.applied", "op": "eq", "value": True},
-        "affects": {"axes": {"space": ["metric"]}},
-        "description": (
-            "Upper GT-depth percentile of the pixels the scale/shift fit "
-            "uses (95 under GT sky masking); null when every valid pixel is "
-            "used."
-        ),
-    },
-}
-
 #: Vocabulary whose metric terms a namespace root's base metrics are.
 _PRIMARY_VOCABULARY = {
     "depth": "euler.depth",
@@ -548,22 +522,24 @@ def depth_gt_range(
 def rgb_depth_bins() -> dict:
     """The fixed GT-depth bins of RGB's ``depth_binned_photometric`` metrics.
 
-    The far bin is open-ended (``> 5`` m), which stratification ``edges``
-    cannot express, so the bins are categorical; their thresholds are the
+    Edges ``[0, 1, 5, null]``: near ``(0, 1]``, mid ``(1, 5]``, far above
+    5 m, open-ended (a ``null`` last edge). The thresholds are also the
     ``rgb.depth_bins.edges_m`` parameter. The bin is part of these metrics'
-    base names (``mae.near``), not an axis.
+    base names (``depth_binned_photometric.mae.near``), not an axis value, so
+    no metricSet axis references this stratification; it enters the
+    definition key.
     """
     near, far = RGB_DEPTH_BIN_EDGES_M
     return {
         "label": "GT depth (fixed photometric bins)",
         "variable": "gt_depth_m",
         "unit": "m",
-        "categories": ["near", "mid", "far"],
-        "total": "all",
+        "edges": [0, _number(near), _number(far), None],
+        "labels": ["near", "mid", "far"],
         "closed": "right",
+        "total": "all",
         "description": (
-            f"near (0, {near:g}] m, mid ({near:g}, {far:g}] m, far > {far:g} m of "
-            "valid GT depth on the prediction grid; an empty bin has no value."
+            "Valid GT depth on the prediction grid; an empty bin has no value."
         ),
     }
 
@@ -677,9 +653,10 @@ def build_protocol(
             tree and ``per_file_metrics`` (ids and metric names are read
             from it).
         references: :func:`read_references` of the inputs read.
-        parameters: Flat scalar parameters; keys are vocabulary terms or
-            :data:`EXTRA_DESCRIPTORS`.
-        observations: Observation values by key; ``None`` values are left out.
+        parameters: Flat scalar parameters, keyed by vocabulary terms (their
+            descriptors are copied into the block; an unknown key raises).
+        observations: Observation values by vocabulary key; ``None`` values
+            are left out.
         axis_roles: ``metricSet`` axis name -> role, or ``(role,
             stratification id)`` for a stratum axis. Undeclared axes are
             ``family``.
@@ -700,10 +677,10 @@ def build_protocol(
     for role, reference in references.items():
         builder.reference(role, **reference.builder_kwargs())
     for key, value in parameters.items():
-        builder.param(key, value, descriptor=EXTRA_DESCRIPTORS.get(key))
+        builder.param(key, value)
     for key, value in (observations or {}).items():
         if value is not None:
-            builder.observe(key, value, descriptor=EXTRA_DESCRIPTORS.get(key))
+            builder.observe(key, value)
 
     per_file = eval_json.get("per_file_metrics")
     ids = item_ids(per_file) if isinstance(per_file, Mapping) else None

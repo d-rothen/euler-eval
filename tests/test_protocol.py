@@ -579,6 +579,8 @@ def test_a_subset_of_files_is_compared_on_the_shared_files(synthetic):
         "depth.eval.metric.standard.pixel_pool.absrel",
         "depth.eval.metric.standard.pixel_pool.near.rmse",
         "depth.eval.metric.standard.image_mean.far.delta1",
+        # No reduction segment: the definition's implicit reducer (image_mean).
+        "depth.eval.metric.image_quality.psnr",
     ):
         verdict = compare_files(full, subset, name)
         assert verdict.tier == "paired", (name, verdict.label)
@@ -643,6 +645,120 @@ def test_crops_of_one_source_are_comparable_with_a_region_difference(
     assert verdict.label == "comparable · GT region differs by 46.8 %"
     assert verdict.codes == ["domain", "domain"]
     assert definition_key(runs["a"].contract) == definition_key(runs["b"].contract)
+
+
+class _RgbDataset(list):
+    def modality_paths(self):
+        return {"gt": "gt", "pred": "pred", "gt_depth": "gt_depth"}
+
+
+class _ConstantLPIPS:
+    def __init__(self, device="cpu"):
+        pass
+
+    def compute(self, prediction, ground_truth):
+        return float(np.mean(np.abs(prediction - ground_truth)))
+
+
+class _ConstantFID:
+    def __init__(self, device="cpu"):
+        pass
+
+    def compute_rgb_fid(self, *args, **kwargs):
+        return 1.0
+
+
+def _rgb_samples():
+    rng = np.random.default_rng(11)
+    samples = []
+    for scene, frame_id in FRAMES:
+        gt = rng.uniform(0.0, 1.0, size=(32, 32, 3)).astype(np.float32)
+        noise = rng.normal(0.0, 0.05, size=gt.shape).astype(np.float32)
+        samples.append({
+            "id": frame_id,
+            "full_id": f"/{scene}/{frame_id}",
+            "gt": gt,
+            "pred": np.clip(gt + noise, 0.0, 1.0),
+            "gt_depth": rng.uniform(0.5, 60.0, size=(32, 32)).astype(np.float32),
+        })
+    return samples
+
+
+def test_rgb_on_a_subset_of_files_is_compared_on_the_shared_files(
+    monkeypatch, tmp_path
+):
+    import euler_eval.evaluate as eval_mod
+
+    monkeypatch.setattr(eval_mod, "RGBLPIPSMetric", _ConstantLPIPS)
+    monkeypatch.setattr(eval_mod, "FIDKIDMetric", _ConstantFID)
+    monkeypatch.setattr(eval_mod, "tqdm", lambda iterable, *args, **kwargs: iterable)
+    monkeypatch.setattr(cli, "get_rgb_metadata", lambda ds: {"rgb_range": [0, 1]})
+    monkeypatch.setattr(cli, "get_depth_metadata", lambda ds, modality="gt": {
+        "radial_depth": True, "sparse": False, "invalid_sentinel": None,
+    })
+    samples = _rgb_samples()
+
+    def run(name, chosen):
+        pred = tmp_path / f"pred_{name}"
+        pred.mkdir()
+        for gt_dir in ("gt_rgb", "gt_depth"):
+            (tmp_path / gt_dir).mkdir(exist_ok=True)
+        config_path = tmp_path / f"config_{name}.json"
+        config_path.write_text(json.dumps({
+            "gt": {
+                "rgb": {"path": str(tmp_path / "gt_rgb")},
+                "depth": {"path": str(tmp_path / "gt_depth")},
+            },
+            "datasets": [{"name": name, "rgb": {"path": str(pred)}}],
+        }))
+        monkeypatch.setattr(
+            cli, "build_rgb_eval_dataset", lambda **kw: _RgbDataset(chosen)
+        )
+        monkeypatch.setattr(cli.sys, "argv", [
+            "euler-eval", str(config_path), "--device", "cpu", "--num-workers", "0",
+            "--no-sanity-check", "--benchmark-depth-range", "1", "80",
+        ])
+        cli.main()
+        saved = json.loads((pred / ".eval" / "eval.json").read_text())
+        assert_valid_protocol(saved["protocol"])
+        return saved
+
+    full_saved = run("full", samples)
+    subset_saved = run("subset", samples[:3])
+    full, subset = load_eval_file(full_saved), load_eval_file(subset_saved)
+
+    bins = full.contract["stratifications"]["rgb.depth_bins"]
+    assert bins["edges"] == [0, 1, 5, None]
+    assert full.contract["metrics"]["psnr"]["reducer"] == "image_mean"
+    assert full.contract["metrics"]["fid"]["reducer"] == "dataset"
+
+    shared = file_evidence(full)[0] & file_evidence(subset)[0]
+    assert len(shared) == 3
+    for name in (
+        "rgb.eval.image_quality.psnr",
+        "rgb.eval.image_quality.ssim",
+        "rgb.eval.near.mae",
+        "rgb.eval.all.mse",
+        "rgb.eval.depth_binned_photometric.mae.far",
+        "rgb.eval.high_frequency.relative_diff",
+    ):
+        verdict = compare_files(full, subset, name)
+        assert verdict.label == "compared on 3 shared files", (name, verdict.label)
+        assert verdict.shared == 3
+        # The per-item values reproduce each file's aggregate, and both files
+        # agree on the shared files.
+        for loaded in (full, subset):
+            got = recompute_cell(loaded.contract, loaded, name)
+            assert got == pytest.approx(loaded.metrics[name], rel=1e-9), name
+        assert recompute_cell(full.contract, full, name, shared) == pytest.approx(
+            recompute_cell(subset.contract, subset, name, shared), rel=1e-9
+        ), name
+
+    for name in ("rgb.eval.image_quality.fid", "rgb.eval.edge_f1.f1"):
+        verdict = compare_files(full, subset, name)
+        assert verdict.label == (
+            "comparable · computed on different files: 3 of 4 shared"
+        ), name
 
 
 # ---------------------------------------------------------------------------
@@ -858,6 +974,8 @@ def test_points_3d_pixel_pool_recomputes_from_per_item_counts(monkeypatch, tmp_p
         "points3d.eval.native.point_error.image_mean.mae3d",
         "points3d.eval.native.point_error.image_median.rmse3d",
         "points3d.eval.native.point_error.pixel_pool.mae3d",
+        "points3d.eval.native.error_decomposition.radial_mae",
+        "points3d.eval.native.cloud_distance.chamfer.distance",
     ):
         got = recompute_cell(loaded.contract, loaded, name)
         assert got == pytest.approx(loaded.metrics[name], rel=1e-6), name

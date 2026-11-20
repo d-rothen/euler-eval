@@ -327,7 +327,7 @@ A dense depth evaluation of a cropped GT (trimmed):
 | `references` | Every GT input the evaluation **read**, by content (below) |
 | `observations` | Measured properties of what was scored: the scored region or grid, resampling, depth-cap clipping, excluded predicted sky, frames without segmentation |
 | `population` | The evaluated items: the manifest hash of their ids and how the pairs came about |
-| `stratifications`, `axes`, `reducers`, `metrics` | How metric names decompose (which axis is the space, the reduction, a stratum), the bins of a stratum, how each reduction is recomputed and each metric's definition (`rev`, direction, pool form and weight) |
+| `stratifications`, `axes`, `reducers`, `metrics` | How metric names decompose (which axis is the space, the reduction, a stratum), the bins of a stratum, how each reduction is recomputed and each metric's definition (`rev`, direction, pool form and weight, the implicit `reducer` of a name without a reduction segment) |
 | `items` | Per-item sufficient statistics: the pixel/point counts that weight pooled metrics |
 
 **References.** A reference's `identity` is the hash of its dataset (`id` and
@@ -415,11 +415,23 @@ of scored pixels per file and bin goes to `items.series`
 writes the scored points per file (`points3d.eval.<space>.point_error.count`).
 With them a consumer recomputes `image_mean`, `image_median` and `pixel_pool`
 (for metrics with a pool form) on any subset of files, which is what
-"compared on N shared files" does. RGB writes its benchmark bins per file too
-(`rgb.eval.<bin>.mae`); RGB metrics have no reduction axis, so they are not
-recomputed. RGB's fixed depth bins (`depth_binned_photometric`, near ≤ 1 m,
-mid ≤ 5 m, far beyond) are recorded as the categorical stratification
-`rgb.depth_bins`, since the far bin has no upper edge.
+"compared on N shared files" does.
+
+A metric whose name has no reduction segment — every RGB metric, and depth's
+and `points_3d`'s `image_quality`, `error_decomposition`, `cloud_distance`
+values — is its own per-item name, and its definition says which reducer
+produced the aggregate (`metrics.<base>.reducer`): `image_mean` for per-image
+values such as PSNR, SSIM, the high-frequency ratios, the depth-binned errors
+and the domain metrics, `dataset` (not recomputable) for FID and KID. RGB
+writes its benchmark bins per file too (`rgb.eval.<bin>.mae`), so an RGB
+evaluation of a subset of files is compared on the shared files like depth.
+Metrics without a reducer (pooled quantiles such as `tail_errors.p95`, the
+edge F1 pooled over images) stay "computed on different files". RGB's fixed
+depth bins (`depth_binned_photometric`, near ≤ 1 m, mid ≤ 5 m, far beyond) are
+the stratification `rgb.depth_bins` with edges `[0, 1, 5, null]` (`null`: the
+far bin is open above); their bin is part of the base name
+(`depth_binned_photometric.mae.near`), so no axis refers to it and the
+thresholds are also the parameter `rgb.depth_bins.edges_m`.
 
 Everything new lives inside `protocol`: no top-level block and no per-file
 entry property was added, and the metric paths of 2.x are unchanged, so

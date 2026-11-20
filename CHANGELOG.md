@@ -44,9 +44,11 @@ the git history for those.
   - `spatial.uniform` says whether every sample was scored with the same
     method on the same grid; `spatial.method` and the domain observations
     still describe the first sample.
-  - The benchmark bins are the stratification `depth.gt_range`; metric
-    definitions (`rev`, direction, pool form and weight), reducers and axis
-    roles travel in the file.
+  - The benchmark bins are the stratification `depth.gt_range`, RGB's fixed
+    depth bins the stratification `rgb.depth_bins` (edges `[0, 1, 5, null]`,
+    the far bin open above); metric definitions (`rev`, direction, pool form
+    and weight, the implicit `reducer` of names without a reduction segment),
+    reducers and axis roles travel in the file.
 
   Everything new is inside `protocol`; no top-level block, per-file entry
   property or existing metric path changed, so euler-view before its v2
@@ -69,6 +71,10 @@ the git history for those.
   `points3d.eval.<space>.point_error.count`), consumers recompute
   `image_mean`, `image_median` and `pixel_pool` aggregates on any subset of
   files, so evaluations of different file sets compare on their shared files.
+  Per-image metrics without a reduction segment (RGB's PSNR, SSIM,
+  depth-binned errors and domain metrics, depth's `image_quality`,
+  `points_3d`'s `error_decomposition` and `cloud_distance`) are recomputed
+  the same way through their definition's `reducer` (`image_mean`).
 - Evaluator results carry `item_statistics` (those counts), `depth_cap`
   (`clipped_fraction`) and, in `spatial_info`, `uniform`, `crop_origin`,
   `prediction_resample` (dense depth, `points_3d`) and `gt_resample` (RGB,
