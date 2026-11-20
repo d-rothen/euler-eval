@@ -1725,7 +1725,7 @@ wheels = [
 
 [[package]]
 name = "euler-eval"
-version = "3.0.0"
+version = "3.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "ds-crawler" },
@@ -1782,7 +1782,7 @@ requires-dist = [
     { name = "ds-crawler", git = "https://github.com/d-rothen/ds-crawler" },
     { name = "euler-connector", specifier = ">=0.1" },
     { name = "euler-loading", git = "https://github.com/d-rothen/euler-loading" },
-    { name = "euler-metric-naming", specifier = ">=0.3" },
+    { name = "euler-metric-naming", specifier = ">=0.4" },
     { name = "euler-train", marker = "extra == 'logging'", git = "https://github.com/d-rothen/euler-train" },
     { name = "jsonschema", marker = "extra == 'dev'", specifier = ">=4.18" },
     { name = "lpips", specifier = ">=0.1.4" },
@@ -1818,11 +1818,11 @@ dependencies = [
 
 [[package]]
 name = "euler-metric-naming"
-version = "0.3.0"
+version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1c/02/af654189c766c238164542d2ae6634b1a739bd0c4cc65d80da73c6b76a9e/euler_metric_naming-0.3.0.tar.gz", hash = "sha256:1f5819bd7e04e172a8d83f67c82287afc99b729f12fd07daa9c9e41ba57cf787", size = 171557, upload-time = "2026-11-20T18:24:09.394Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/10/d0/012abad7c3022fc17211aa1932e506f37f6ac47a7521607b3607d9676127/euler_metric_naming-0.4.0.tar.gz", hash = "sha256:7244938c23fc64d8a314945be3c0da33ce77d4fcb716baa56ddb1a70f42bc4bc", size = 215586, upload-time = "2026-11-20T20:32:13.53Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0d/59/6fc3404607c1fae1c412daefe7fce51b0e619bd5b905b0971a3dcfdd05bc/euler_metric_naming-0.3.0-py3-none-any.whl", hash = "sha256:994a174fd0eeda1852e81ced89e33c73b3d71b3c7303b83df46c84ad2eccf82e", size = 229014, upload-time = "2026-11-20T18:24:08.183Z" },
+    { url = "https://files.pythonhosted.org/packages/13/4e/e09eac4d879a3a0fa506f61b2b984e7f9035edbc659ba6252d8f914584dc/euler_metric_naming-0.4.0-py3-none-any.whl", hash = "sha256:02565961c9150b0003680e00aac25d431f40c42cf9a362e621b0b8b5c1f7e9c5", size = 259659, upload-time = "2026-11-20T20:32:12.268Z" },
 ]
 
 [[package]]

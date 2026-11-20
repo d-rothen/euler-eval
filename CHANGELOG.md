@@ -34,9 +34,7 @@ the git history for those.
   `sky_gt_parameters`, `reference_input`, `sparse_reference_inputs`,
   `qualified_statistics`, `protocol_block`), shared by the CLI and validation
   sets. CLI output is unchanged.
-- Requires `euler-metric-naming>=0.4`. Until 0.4 is released, the dependency
-  resolves from its `training-naming-v2` branch (`[tool.uv.sources]`);
-  `uv.lock` still records 0.3.0 and is re-locked once 0.4.0 is on PyPI.
+- Requires `euler-metric-naming>=0.4` (from PyPI).
 - `requirements.txt` mirrors `[project.dependencies]` again (it lagged on
   euler-loading, euler-metric-naming and euler-connector);
   `tests/test_packaging.py` keeps them equal.

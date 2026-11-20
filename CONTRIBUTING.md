@@ -16,9 +16,8 @@ The released package depends on the PyPI releases of the companion packages
 [euler-metric-naming](https://github.com/d-rothen/euler-metric-naming)). For
 development, `[tool.uv.sources]` resolves euler-loading and ds-crawler from
 GitHub instead, so a `uv sync` tracks their main branches. euler-metric-naming
-comes from PyPI (`>=0.4`, the release with validation sets); until 0.4 is
-released it temporarily resolves from its `training-naming-v2` branch, see
-the plan in euler-metric-naming's `docs/training-alignment-plan.md`.
+always comes from PyPI (`>=0.4`, the release with validation sets; see its
+`docs/training-alignment-plan.md`).
 
 ## Running tests
 
