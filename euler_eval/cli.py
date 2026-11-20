@@ -23,9 +23,7 @@ import torch
 
 from .config_paths import (
     GT_SEGMENTATION_KEYS,
-    gt_default_scope,
     normalize_modality_path,
-    parse_modality_path,
     resolve_dataset_location,
     resolve_gt_segmentation_path,
 )
@@ -63,18 +61,38 @@ from .metric_sets import (
     resolve_metric_sets,
     selected_domain_categories,
 )
+
+# The eval namespace, the depth axes and descriptions live in .naming (shared
+# with in-training validation sets); the private names stay for this module.
+from .naming import (
+    _DEPTH_EVAL_DESCRIPTIONS,
+    _SPARSE_DEPTH_EVAL_DESCRIPTIONS,
+    _SPARSE_DEPTH_METRIC_NAMESPACE,
+    _SPARSE_DEPTH_METRIC_ROOT,
+    _depth_eval_axes,
+    _distribution_category,
+    _EvalNamespace,
+    _sparse_depth_eval_axes,
+)
 from .protocol import (
+    DEPTH_AXIS_ROLES,
+    DEPTH_VOCABULARIES,
     POLICIES,
     RGB_DEPTH_BIN_EDGES_M,
-    ReferenceInput,
     build_protocol,
     depth_gt_range,
+    depth_parameters,
     domain_region,
     evaluated_resolution,
     nfc_per_file_metrics,
     pairing_accounting,
+    qualified_statistics,
     read_references,
+    reference_input,
     rgb_depth_bins,
+    sky_gt_parameters,
+    sparse_reference_inputs,
+    spatial_parameters,
 )
 from .sanity_checker import SanityChecker
 from .split_sweep import (
@@ -98,66 +116,10 @@ try:
 except ImportError:
     _euler_train = None
 
-from euler_metric_naming import AxisDeclaration, MetricDescription, MetricNamespace
+from euler_metric_naming import AxisDeclaration, MetricDescription
 from euler_connector import progress as euler_progress
 
-# ── Eval namespace ──────────────────────────────────────────────────────────
-# MetricNamespace subclass for eval context with custom axis declarations,
-# following the Normed Metric Namespacing convention (§3.6, §4, §5.2).
-
-
-class _EvalNamespace(MetricNamespace):
-    """MetricNamespace for eval context with caller-supplied axes."""
-
-    def __init__(
-        self,
-        *,
-        axes: dict[str, AxisDeclaration],
-        **kwargs,
-    ):
-        self._eval_axes = dict(axes)
-        super().__init__(context="eval", **kwargs)
-
-    def _build_axes(self) -> dict[str, AxisDeclaration]:
-        return dict(self._eval_axes)
-
-
 # ── Axis declarations ───────────────────────────────────────────────────────
-
-_DEPTH_SPACE_AXIS = AxisDeclaration(
-    position=0,
-    values=("native", "metric"),
-    optional=False,
-    description="Depth space semantics",
-)
-
-_DEPTH_CATEGORY_AXIS = AxisDeclaration(
-    position=1,
-    values=("image_quality", "standard", "depth_metrics", "geometric_metrics"),
-    optional=True,
-    description="Metric category",
-)
-
-_DEPTH_REDUCTION_AXIS = AxisDeclaration(
-    position=2,
-    values=("image_mean", "image_median", "pixel_pool"),
-    optional=True,
-    description="Dataset reduction mode",
-)
-
-_SPARSE_DEPTH_CATEGORY_AXIS = AxisDeclaration(
-    position=1,
-    values=("standard", "depth_metrics"),
-    optional=True,
-    description="Sparse depth metric category",
-)
-
-_BENCHMARK_BIN_AXIS = AxisDeclaration(
-    position=3,
-    values=("all", "near", "mid", "far"),
-    optional=True,
-    description="Depth benchmark bin",
-)
 
 _RGB_CORE_CATEGORIES = (
     "image_quality",
@@ -188,41 +150,6 @@ _RGB_BENCHMARK_BIN_AXIS = AxisDeclaration(
 )
 
 
-def _distribution_category(axis: AxisDeclaration, enabled: bool) -> AxisDeclaration:
-    if not enabled:
-        return axis
-    return AxisDeclaration(
-        position=axis.position,
-        values=(*axis.values, "distributions"),
-        optional=axis.optional,
-        description=axis.description,
-    )
-
-
-def _depth_eval_axes(
-    *, benchmark: bool = False, distributions: bool = False
-) -> dict[str, AxisDeclaration]:
-    axes = {
-        "space": _DEPTH_SPACE_AXIS,
-        "category": _distribution_category(_DEPTH_CATEGORY_AXIS, distributions),
-        "reduction": _DEPTH_REDUCTION_AXIS,
-    }
-    if benchmark:
-        axes["bin"] = _BENCHMARK_BIN_AXIS
-    return axes
-
-
-def _sparse_depth_eval_axes(
-    *, benchmark: bool = False, distributions: bool = False
-) -> dict[str, AxisDeclaration]:
-    axes = {
-        "space": _DEPTH_SPACE_AXIS,
-        "category": _distribution_category(_SPARSE_DEPTH_CATEGORY_AXIS, distributions),
-        "reduction": _DEPTH_REDUCTION_AXIS,
-    }
-    if benchmark:
-        axes["bin"] = _BENCHMARK_BIN_AXIS
-    return axes
 
 
 _SKY_SEGMENTATION_CATEGORY = "sky_segmentation"
@@ -344,13 +271,6 @@ _GT_FOR_PREDICTION = {
     "points_3d": ("points_3d", "depth", "sparse_depth"),
 }
 
-# Downstream eval consumers validate metricSet.metricNamespace with a stricter
-# first-segment rule than euler_metric_naming's modality validator. Keep the
-# public Python sparse_depth result keys, but use a wire-compatible metric root
-# in eval.json so flattened metric paths live under the declared namespace.
-_SPARSE_DEPTH_METRIC_ROOT = "sparsedepth"
-_SPARSE_DEPTH_METRIC_NAMESPACE = f"{_SPARSE_DEPTH_METRIC_ROOT}.eval"
-
 # points_3d serializes under a wire-safe root (no underscore) so flattened
 # metric paths satisfy the stricter first-segment namespace rule, mirroring
 # the sparse-depth handling above.
@@ -360,142 +280,6 @@ _POINTS_3D_METRIC_NAMESPACE = f"{_POINTS_3D_METRIC_ROOT}.eval"
 # ── Metric descriptions ─────────────────────────────────────────────────────
 # Keys are *base metric names* (after stripping namespace + axes).
 # The same description applies across all axis combinations.
-
-_DEPTH_EVAL_DESCRIPTIONS = {
-    "psnr": MetricDescription(is_higher_better=True, unit="dB", display_name="PSNR"),
-    "ssim": MetricDescription(
-        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="SSIM"
-    ),
-    "lpips": MetricDescription(is_higher_better=False, display_name="LPIPS"),
-    "fid": MetricDescription(is_higher_better=False, display_name="FID"),
-    "kid_mean": MetricDescription(is_higher_better=False, display_name="KID Mean"),
-    "kid_std": MetricDescription(is_higher_better=False, display_name="KID Std"),
-    "absrel": MetricDescription(
-        is_higher_better=False, display_name="AbsRel"
-    ),
-    "sqrel": MetricDescription(
-        is_higher_better=False, display_name="SqRel"
-    ),
-    "mae": MetricDescription(
-        is_higher_better=False, unit="meters", display_name="MAE"
-    ),
-    "rmse": MetricDescription(
-        is_higher_better=False, unit="meters", display_name="RMSE"
-    ),
-    "rmse_log": MetricDescription(
-        is_higher_better=False, scale="log", display_name="RMSE Log"
-    ),
-    "log10": MetricDescription(
-        is_higher_better=False, scale="log", display_name="Log10 Error"
-    ),
-    "silog": MetricDescription(
-        is_higher_better=False, scale="log", display_name="SILog"
-    ),
-    "delta1": MetricDescription(
-        is_higher_better=True,
-        min_value=0.0,
-        max_value=1.0,
-        display_name="δ < 1.25",
-    ),
-    "delta2": MetricDescription(
-        is_higher_better=True,
-        min_value=0.0,
-        max_value=1.0,
-        display_name="δ < 1.25²",
-    ),
-    "delta3": MetricDescription(
-        is_higher_better=True,
-        min_value=0.0,
-        max_value=1.0,
-        display_name="δ < 1.25³",
-    ),
-    "absrel.median": MetricDescription(
-        is_higher_better=False, display_name="AbsRel (Median)"
-    ),
-    "absrel.p90": MetricDescription(
-        is_higher_better=False, display_name="AbsRel (P90)"
-    ),
-    "rmse.median": MetricDescription(
-        is_higher_better=False, unit="meters", display_name="RMSE (Median)"
-    ),
-    "rmse.p90": MetricDescription(
-        is_higher_better=False, unit="meters", display_name="RMSE (P90)"
-    ),
-    "silog.mean": MetricDescription(
-        is_higher_better=False, scale="log", display_name="SILog (Mean)"
-    ),
-    "silog.median": MetricDescription(
-        is_higher_better=False, scale="log", display_name="SILog (Median)"
-    ),
-    "silog.p90": MetricDescription(
-        is_higher_better=False, scale="log", display_name="SILog (P90)"
-    ),
-    "normal_consistency.mean_angle": MetricDescription(
-        is_higher_better=False, unit="degrees", display_name="Normal Mean Angle"
-    ),
-    "normal_consistency.median_angle": MetricDescription(
-        is_higher_better=False, unit="degrees", display_name="Normal Median Angle"
-    ),
-    "normal_consistency.percent_below_11_25": MetricDescription(
-        is_higher_better=True,
-        scale="percentage",
-        min_value=0.0,
-        max_value=100.0,
-        display_name="Normal < 11.25°",
-    ),
-    "normal_consistency.percent_below_22_5": MetricDescription(
-        is_higher_better=True,
-        scale="percentage",
-        min_value=0.0,
-        max_value=100.0,
-        display_name="Normal < 22.5°",
-    ),
-    "normal_consistency.percent_below_30": MetricDescription(
-        is_higher_better=True,
-        scale="percentage",
-        min_value=0.0,
-        max_value=100.0,
-        display_name="Normal < 30°",
-    ),
-    "depth_edge_f1.precision": MetricDescription(
-        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="Edge Precision"
-    ),
-    "depth_edge_f1.recall": MetricDescription(
-        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="Edge Recall"
-    ),
-    "depth_edge_f1.f1": MetricDescription(
-        is_higher_better=True, min_value=0.0, max_value=1.0, display_name="Edge F1"
-    ),
-}
-
-_SPARSE_DEPTH_EVAL_DESCRIPTIONS = {
-    key: value
-    for key, value in _DEPTH_EVAL_DESCRIPTIONS.items()
-    if key
-    in {
-        "absrel",
-        "sqrel",
-        "mae",
-        "rmse",
-        "rmse_log",
-        "log10",
-        "silog",
-        "delta1",
-        "delta2",
-        "delta3",
-        "absrel.median",
-        "absrel.p90",
-        "rmse.median",
-        "rmse.p90",
-        "silog.mean",
-        "silog.median",
-        "silog.p90",
-    }
-}
-_SPARSE_DEPTH_EVAL_DESCRIPTIONS["valid_pixel_count"] = MetricDescription(
-    unit="pixels",
-    display_name="Valid Pixel Count",
-)
 
 # Base names below ``sky_segmentation.{variant}.{reduction}`` (--sky-iou).
 _SKY_SEGMENTATION_EVAL_DESCRIPTIONS = {
@@ -785,7 +569,7 @@ def _resolve_distribution_config(value, args) -> DistributionConfig | None:
 #: Result keys of the evaluators that are bookkeeping, not printed metrics.
 _NOT_PRINTED = ("per_file_metrics", "spatial_info", "item_statistics", "depth_cap")
 
-_DEPTH_VOCABULARIES = ("euler.core", "euler.sky", "euler.depth")
+_DEPTH_VOCABULARIES = DEPTH_VOCABULARIES
 _RGB_VOCABULARIES = ("euler.core", "euler.sky", "euler.rgb", "euler.depth")
 _RAYS_VOCABULARIES = ("euler.core", "euler.rays")
 _POINTS_3D_VOCABULARIES = (
@@ -793,88 +577,23 @@ _POINTS_3D_VOCABULARIES = (
 )
 
 #: metricSet axis name -> contract axis role (``(role, stratification)``).
-_DEPTH_AXIS_ROLES = {
-    "space": "space",
-    "category": "family",
-    "reduction": "reduction",
-    "bin": ("stratum", "depth.gt_range"),
-    "variant": "variant",
-}
+_DEPTH_AXIS_ROLES = DEPTH_AXIS_ROLES
 _RGB_AXIS_ROLES = {"category": "family", "bin": ("stratum", "depth.gt_range")}
 _POINTS_3D_AXIS_ROLES = {"space": "space", "category": "family", "reduction": "reduction"}
 
 
-def _reference_input(
-    role: str,
-    key: str | None,
-    path: str | None,
-    split: str | None,
-    modality: str,
-    scope: str | None = None,
-) -> ReferenceInput:
-    """A GT input as a dataset builder received it (see ``read_references``)."""
-    key = key or role
-    return ReferenceInput(
-        role=role,
-        key=key,
-        path=path,
-        split=split,
-        modality=modality,
-        scope=scope or gt_default_scope(key),
-    )
-
-
-def _sparse_reference_inputs(
-    *,
-    gt: tuple,
-    intrinsics: tuple,
-    camera_extrinsics: tuple,
-    lidar_extrinsics: tuple,
-    segmentation: tuple,
-) -> list[ReferenceInput]:
-    """GT inputs of the sparse-GT evaluations (sparse depth, sparse points_3d)."""
-    lidar_path, lidar_split = lidar_extrinsics
-    lidar_scope = (
-        parse_modality_path(lidar_path, split=lidar_split).metadata_scope
-        if lidar_path is not None
-        else None
-    ) or "lidar_extrinsics"
-    segmentation_key, segmentation_path, segmentation_split = segmentation
-    return [
-        _reference_input("gt", "sparse_depth", *gt, "gt"),
-        _reference_input("intrinsics", "intrinsics", *intrinsics, "intrinsics"),
-        _reference_input(
-            "camera_extrinsics", "camera_extrinsics", *camera_extrinsics,
-            "camera_extrinsics",
-        ),
-        _reference_input(
-            "lidar_extrinsics", "lidar_extrinsics", lidar_path, lidar_split,
-            "lidar_extrinsics", scope=lidar_scope,
-        ),
-        _reference_input(
-            "segmentation", segmentation_key, segmentation_path,
-            segmentation_split, "segmentation",
-        ),
-    ]
-
-
-def _qualified_statistics(statistics: dict | None, namespace: str) -> dict | None:
-    """Per-item statistics named under the modality's metric namespace."""
-    if not statistics:
-        return None
-    return {
-        item: {f"{namespace}.{name}": value for name, value in values.items()}
-        for item, values in statistics.items()
-    }
+_reference_input = reference_input
+_sparse_reference_inputs = sparse_reference_inputs
+_qualified_statistics = qualified_statistics
 
 
 def _sky_gt_parameters(args, applies: bool = True) -> dict:
     """GT sky masking parameters (``--mask-sky``, ``--missing-segmentation``)."""
-    masking = bool(args.mask_sky) and applies
-    return {
-        "sky.gt.masking": masking,
-        "sky.gt.missing_policy": args.missing_segmentation if masking else None,
-    }
+    return sky_gt_parameters(
+        mask_sky=bool(args.mask_sky),
+        missing_policy=args.missing_segmentation,
+        applies=applies,
+    )
 
 
 def _sky_observations(results: dict) -> dict:
@@ -893,33 +612,18 @@ def _sky_observations(results: dict) -> dict:
 
 def _depth_parameters(args, space_info: dict, *, conversion: str) -> dict:
     """Depth alignment, cap and invalid-value parameters (dense and sparse)."""
-    fitted = args.depth_alignment != "none"
-    return {
-        "depth.alignment.mode": args.depth_alignment,
-        "depth.alignment.applied": bool(space_info.get("calibration_applied", False)),
-        "depth.alignment.fit": "scale_shift" if fitted else None,
-        "depth.alignment.fit_trim": 0.0 if fitted else None,
-        "depth.alignment.fit_max_gt_percentile": (
-            95.0 if fitted and args.mask_sky else None
-        ),
-        "depth.input_space": space_info.get("input_space_detected"),
-        "depth.cap.max_m": args.sky_depth,
-        "depth.benchmark.range_m": (
-            list(args.benchmark_depth_range) if args.benchmark_depth_range else None
-        ),
-        "depth.invalid.policy": POLICIES["depth.invalid.policy"],
-        "depth.conversion": conversion,
-    }
+    return depth_parameters(
+        alignment_mode=args.depth_alignment,
+        alignment_applied=bool(space_info.get("calibration_applied", False)),
+        input_space=space_info.get("input_space_detected"),
+        sky_depth=args.sky_depth,
+        mask_sky=bool(args.mask_sky),
+        benchmark_depth_range=args.benchmark_depth_range,
+        conversion=conversion,
+    )
 
 
-def _spatial_parameters(spatial_mode: str, spatial: dict, **extra) -> dict:
-    """How GT and prediction grids were reconciled (configured and resolved)."""
-    return {
-        "spatial.policy": spatial_mode,
-        "spatial.method": spatial.get("method", "none"),
-        "spatial.uniform": spatial.get("uniform"),
-        **extra,
-    }
+_spatial_parameters = spatial_parameters
 
 
 def _protocol(save: dict, label: str, **kwargs) -> dict:

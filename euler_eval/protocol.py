@@ -49,11 +49,14 @@ from .config_paths import (
     dataset_identity,
     gt_default_scope,
     head_dataset_id,
+    parse_modality_path,
     read_dataset_head,
     resolve_gt_segmentation_path,
 )
 
 __all__ = [
+    "DEPTH_AXIS_ROLES",
+    "DEPTH_VOCABULARIES",
     "ID_SCHEME",
     "ITEM_ID_SEPARATOR",
     "POLICIES",
@@ -64,13 +67,20 @@ __all__ = [
     "build_protocol",
     "canonical_head",
     "depth_gt_range",
+    "depth_parameters",
     "domain_region",
     "item_ids",
     "nfc_per_file_metrics",
     "pairing_accounting",
+    "protocol_block",
+    "qualified_statistics",
     "read_references",
     "reference_identities",
+    "reference_input",
     "rgb_depth_bins",
+    "sky_gt_parameters",
+    "sparse_reference_inputs",
+    "spatial_parameters",
 ]
 
 #: Item id scheme of ``population`` (per-file tree path joined with ``~``).
@@ -91,6 +101,18 @@ POLICIES = {
     "rays.fov_policy": "v2",
     # The degraded input follows the GT's alignment (a crop is cropped).
     "rgb.input.alignment_policy": "follow_gt",
+}
+
+#: Vocabularies whose terms a dense or sparse depth protocol uses.
+DEPTH_VOCABULARIES = ("euler.core", "euler.sky", "euler.depth")
+
+#: Depth metricSet axis name -> contract axis role (``(role, stratification)``).
+DEPTH_AXIS_ROLES = {
+    "space": "space",
+    "category": "family",
+    "reduction": "reduction",
+    "bin": ("stratum", "depth.gt_range"),
+    "variant": "variant",
 }
 
 #: ``[near, far]`` thresholds of the fixed depth bins of RGB's
@@ -403,6 +425,126 @@ def _reference(dataset: Any, item: ReferenceInput) -> Reference:
     )
 
 
+def reference_input(
+    role: str,
+    key: Optional[str],
+    path: Optional[str],
+    split: Optional[str],
+    modality: str,
+    scope: Optional[str] = None,
+) -> ReferenceInput:
+    """A GT input as a dataset builder received it (see :func:`read_references`)."""
+    key = key or role
+    return ReferenceInput(
+        role=role,
+        key=key,
+        path=path,
+        split=split,
+        modality=modality,
+        scope=scope or gt_default_scope(key),
+    )
+
+
+def sparse_reference_inputs(
+    *,
+    gt: tuple,
+    intrinsics: tuple,
+    camera_extrinsics: tuple,
+    lidar_extrinsics: tuple,
+    segmentation: tuple,
+    gt_modality: str = "gt",
+) -> list[ReferenceInput]:
+    """GT inputs of the sparse-GT evaluations (sparse depth, sparse points_3d).
+
+    *gt_modality* is the name of the sparse GT in the evaluated dataset
+    (``gt`` in the CLI's, ``sparse_depth`` in a validation set's).
+    """
+    lidar_path, lidar_split = lidar_extrinsics
+    lidar_scope = (
+        parse_modality_path(lidar_path, split=lidar_split).metadata_scope
+        if lidar_path is not None
+        else None
+    ) or "lidar_extrinsics"
+    segmentation_key, segmentation_path, segmentation_split = segmentation
+    return [
+        reference_input("gt", "sparse_depth", *gt, gt_modality),
+        reference_input("intrinsics", "intrinsics", *intrinsics, "intrinsics"),
+        reference_input(
+            "camera_extrinsics", "camera_extrinsics", *camera_extrinsics,
+            "camera_extrinsics",
+        ),
+        reference_input(
+            "lidar_extrinsics", "lidar_extrinsics", lidar_path, lidar_split,
+            "lidar_extrinsics", scope=lidar_scope,
+        ),
+        reference_input(
+            "segmentation", segmentation_key, segmentation_path,
+            segmentation_split, "segmentation",
+        ),
+    ]
+
+
+def qualified_statistics(statistics: Optional[dict], namespace: str) -> Optional[dict]:
+    """Per-item statistics named under the modality's metric namespace."""
+    if not statistics:
+        return None
+    return {
+        item: {f"{namespace}.{name}": value for name, value in values.items()}
+        for item, values in statistics.items()
+    }
+
+
+def sky_gt_parameters(
+    *, mask_sky: bool, missing_policy: Optional[str], applies: bool = True
+) -> dict:
+    """GT sky masking parameters (``--mask-sky``, ``--missing-segmentation``)."""
+    masking = bool(mask_sky) and applies
+    return {
+        "sky.gt.masking": masking,
+        "sky.gt.missing_policy": missing_policy if masking else None,
+    }
+
+
+def depth_parameters(
+    *,
+    alignment_mode: str,
+    alignment_applied: bool,
+    input_space: Optional[str],
+    sky_depth: Optional[float],
+    mask_sky: bool,
+    benchmark_depth_range: Optional[Sequence[float]],
+    conversion: str,
+) -> dict:
+    """Depth alignment, cap and invalid-value parameters (dense and sparse)."""
+    fitted = alignment_mode != "none"
+    return {
+        "depth.alignment.mode": alignment_mode,
+        "depth.alignment.applied": bool(alignment_applied),
+        "depth.alignment.fit": "scale_shift" if fitted else None,
+        "depth.alignment.fit_trim": 0.0 if fitted else None,
+        "depth.alignment.fit_max_gt_percentile": (
+            95.0 if fitted and mask_sky else None
+        ),
+        "depth.input_space": input_space,
+        "depth.cap.max_m": sky_depth,
+        "depth.benchmark.range_m": (
+            list(benchmark_depth_range) if benchmark_depth_range else None
+        ),
+        "depth.invalid.policy": POLICIES["depth.invalid.policy"],
+        "depth.conversion": conversion,
+    }
+
+
+def spatial_parameters(spatial_mode: str, spatial: Mapping[str, Any], **extra) -> dict:
+    """How GT and prediction grids were reconciled (configured and resolved)."""
+    return {
+        "spatial.policy": spatial_mode,
+        "spatial.method": spatial.get("method", "none"),
+        "spatial.uniform": spatial.get("uniform"),
+        **extra,
+    }
+
+
 def domain_region(
     gt: Optional[Reference],
     evaluated: Optional[Sequence[int]],
@@ -670,7 +812,66 @@ def build_protocol(
         euler_metric_naming.contract.ProtocolValidationError: When the block
             violates the contract.
     """
-    metric_set = eval_json.get("metricSet") or {}
+    per_file = eval_json.get("per_file_metrics")
+    ids = item_ids(per_file) if isinstance(per_file, Mapping) else None
+    series: dict[str, list] = {}
+    if ids is not None and item_statistics:
+        stats = {_nfc(item): values for item, values in item_statistics.items()}
+        names = sorted({name for values in stats.values() for name in values})
+        for name in names:
+            series[name] = [
+                _series_value(stats.get(item, {}).get(name)) for item in ids
+            ]
+    per_item_names = {
+        name
+        for values in flatten_per_file(per_file or {}).values()
+        for name in values
+    }
+    return protocol_block(
+        task=task,
+        vocabularies=vocabularies,
+        metric_set=eval_json.get("metricSet") or {},
+        references=references,
+        parameters=parameters,
+        observations=observations,
+        ids=ids,
+        accounting=accounting,
+        unit=unit,
+        axis_roles=axis_roles,
+        stratifications=stratifications,
+        aggregate_names=flatten_metrics(eval_json),
+        per_item_names=per_item_names | set(series),
+        series=series,
+    )
+
+
+def protocol_block(
+    *,
+    task: str,
+    vocabularies: Sequence[str],
+    metric_set: Mapping[str, Any],
+    references: Mapping[str, Reference],
+    parameters: Mapping[str, Any],
+    observations: Optional[Mapping[str, Any]] = None,
+    ids: Optional[Sequence[str]] = None,
+    accounting: Optional[Mapping[str, Any]] = None,
+    unit: str = "image",
+    axis_roles: Optional[Mapping[str, Any]] = None,
+    stratifications: Optional[Mapping[str, Optional[dict]]] = None,
+    aggregate_names: Iterable[str] = (),
+    per_item_names: Iterable[str] = (),
+    series: Optional[Mapping[str, list]] = None,
+    described: Iterable[str] = (),
+) -> dict:
+    """The v2 ``protocol`` block from its parts (what :func:`build_protocol` reads).
+
+    *ids* are the evaluated items in order (``None``: not recorded);
+    *aggregate_names* and *per_item_names* the metric names whose base
+    definitions and reducers the block snapshots; *series* the per-item
+    series aligned with *ids*; *described* keys whose descriptors are
+    snapshotted without a value (the keys an in-training validation pass
+    records, ``docs/training.md`` of euler-metric-naming).
+    """
     namespace = metric_set.get("metricNamespace")
     builder = ProtocolBuilder(task, vocabularies)
 
@@ -681,9 +882,9 @@ def build_protocol(
     for key, value in (observations or {}).items():
         if value is not None:
             builder.observe(key, value)
+    for key in described:
+        builder.describe(key)
 
-    per_file = eval_json.get("per_file_metrics")
-    ids = item_ids(per_file) if isinstance(per_file, Mapping) else None
     if ids is not None:
         builder.population(ids, unit=unit, accounting=accounting, id_scheme=ID_SCHEME)
 
@@ -703,30 +904,16 @@ def build_protocol(
         if role == "reduction":
             reduction_axes.append(name)
 
-    series: dict[str, list] = {}
-    if ids is not None and item_statistics:
-        stats = {_nfc(item): values for item, values in item_statistics.items()}
-        names = sorted({name for values in stats.values() for name in values})
-        for name in names:
-            series[name] = [
-                _series_value(stats.get(item, {}).get(name)) for item in ids
-            ]
-
     if isinstance(namespace, str):
-        per_item_names = {
-            name
-            for values in flatten_per_file(per_file or {}).values()
-            for name in values
-        }
         _add_metrics(
             builder,
             namespace=namespace,
             metric_set=metric_set,
-            aggregate=flatten_metrics(eval_json),
-            per_item=per_item_names | set(series),
+            aggregate=aggregate_names,
+            per_item=set(per_item_names),
             reduction_axes=reduction_axes,
         )
-    for name, values in series.items():
+    for name, values in (series or {}).items():
         builder.series(name, values)
     return builder.build()
 
