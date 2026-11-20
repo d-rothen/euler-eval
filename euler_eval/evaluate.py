@@ -7,7 +7,7 @@ datasets loaded via euler_loading.
 import copy
 import tempfile
 from pathlib import Path
-from typing import Any, Iterator, Optional, Tuple
+from typing import Any, Iterable, Iterator, Optional, Tuple
 
 import numpy as np
 from euler_loading import MultiModalDataset
@@ -21,7 +21,11 @@ from .calibration import (
     get_sample_pointcloud_to_camera_extrinsics as _get_pointcloud_to_camera_extrinsics,
 )
 from .data import (
+    PREDICTION_RESIZE_METHOD,
+    PREDICTION_WARP_METHOD,
+    WARP_METHOD,
     SourceGrid,
+    _crop_origin,
     _warp_nearest,
     align_to_ground_truth,
     align_to_prediction,
@@ -920,6 +924,144 @@ class _SkyIoU:
                 print(f"{prefix}: {variant} variant skipped for {modality}: {reason}.")
 
 
+class _SpatialTracker:
+    """How the first sample was put on the evaluated grid, and whether all were.
+
+    Each sample contributes a signature (spatial method, GT and prediction
+    shapes, evaluated shape, crop origin). ``uniform`` stays true while every
+    signature equals the first; the protocol then describes all items by the
+    first one (``spatial.uniform``).
+    """
+
+    def __init__(self) -> None:
+        self.first: Optional[tuple] = None
+        self.uniform = True
+
+    def add(self, *signature: Any) -> None:
+        signature = tuple(
+            tuple(int(v) for v in part) if isinstance(part, (tuple, list)) else part
+            for part in signature
+        )
+        if self.first is None:
+            self.first = signature
+        elif signature != self.first:
+            self.uniform = False
+
+
+def _prediction_resample(
+    method: str,
+    alignment: Any,
+    gt_shape: tuple[int, int],
+    pred_shape: tuple[int, int],
+) -> list[float]:
+    """``[height, width]`` factor the prediction was resampled by (target/source).
+
+    For predictions moved onto the GT grid (dense depth, ``points_3d``);
+    ``[1, 1]`` when the prediction was not resampled (none, a crop of the GT).
+    """
+    if method == PREDICTION_RESIZE_METHOD:
+        return [gt_shape[0] / pred_shape[0], gt_shape[1] / pred_shape[1]]
+    if method == PREDICTION_WARP_METHOD and isinstance(alignment, SourceGrid):
+        return [1.0 / alignment.sy, 1.0 / alignment.sx]
+    return [1, 1]
+
+
+def _gt_resample(
+    method: str,
+    alignment: Any,
+    gt_shape: tuple[int, int],
+    pred_shape: tuple[int, int],
+) -> list[float]:
+    """``[height, width]`` factor the GT was resampled by onto the prediction grid.
+
+    For RGB and rays, whose GT goes onto the prediction grid; ``[1, 1]`` when
+    it was not resampled (none, a crop).
+    """
+    if method == "resize":
+        return [pred_shape[0] / gt_shape[0], pred_shape[1] / gt_shape[1]]
+    if method == WARP_METHOD and isinstance(alignment, SourceGrid):
+        return [alignment.sy, alignment.sx]
+    return [1, 1]
+
+
+def _changed(before: np.ndarray, after: np.ndarray) -> np.ndarray:
+    """Pixels whose value differs (NaN on both sides counts as unchanged)."""
+    with np.errstate(invalid="ignore"):
+        return ~((before == after) | (np.isnan(before) & np.isnan(after)))
+
+
+def _scored_depth_mask(
+    depth_gt: np.ndarray, depth_pred: np.ndarray, valid_mask: Optional[np.ndarray]
+) -> np.ndarray:
+    """The pixels the standard depth metrics score (their default valid mask)."""
+    if valid_mask is not None:
+        return valid_mask
+    return (
+        (depth_gt > 0)
+        & (depth_pred > 0)
+        & np.isfinite(depth_gt)
+        & np.isfinite(depth_pred)
+    )
+
+
+class _CapClipping:
+    """Count scored pixels whose GT or prediction the depth cap changed.
+
+    Per branch (``raw``, ``aligned``): the pixels a branch scored, and how
+    many of them the cap clipped or filled (``--sky-depth``). The
+    ``depth.cap.clipped`` observation is the largest fraction over the
+    emitted spaces, so a cap that changed nothing anywhere reads ``0``.
+    """
+
+    def __init__(self) -> None:
+        self.counts: dict[str, list[int]] = {}
+
+    def add(self, branch: str, scored: np.ndarray, changed: np.ndarray) -> None:
+        counts = self.counts.setdefault(branch, [0, 0])
+        counts[0] += int(np.count_nonzero(scored & changed))
+        counts[1] += int(np.count_nonzero(scored))
+
+    def fraction(self, branches: Iterable[str]) -> float:
+        fractions = [
+            self.counts[branch][0] / self.counts[branch][1]
+            for branch in branches
+            if branch in self.counts and self.counts[branch][1]
+        ]
+        return float(max(fractions)) if fractions else 0.0
+
+
+def _item_id(hierarchy: list[str], entry_id: str) -> str:
+    """The ``euler.item_id/1`` of a per-file entry (path joined with ``~``)."""
+    return "~".join((*hierarchy, entry_id))
+
+
+def _per_file_standard(metrics: dict) -> dict:
+    """Per-file values of the standard depth metrics (``None`` when undefined)."""
+    return {
+        key: float(value) if np.isfinite(value) else None
+        for key, value in metrics.items()
+    }
+
+
+def _space_statistics(
+    branch_stats: dict, emitted: Iterable[str], aligned: bool
+) -> dict:
+    """Map per-item ``raw``/``aligned`` statistics onto the emitted spaces.
+
+    ``native`` is the raw prediction; ``metric`` the aligned one when an
+    alignment ran, else the raw prediction as well.
+    """
+    sources = {"native": "raw", "metric": "aligned" if aligned else "raw"}
+    out = {}
+    for item, branches in branch_stats.items():
+        values = {}
+        for space in emitted:
+            for name, value in branches.get(sources[space], {}).items():
+                values[f"{space}.{name}"] = value
+        out[item] = values
+    return out
+
+
 def _apply_sky_depth(
     depth_gt: np.ndarray,
     depth_pred_raw: np.ndarray,
@@ -1353,10 +1495,7 @@ def evaluate_depth_samples(
                 if np.isfinite(metrics["lpips_val"])
                 else None,
             },
-            "standard": {
-                key: float(value) if np.isfinite(value) else None
-                for key, value in metrics["standard_metrics"].items()
-            },
+            "standard": _per_file_standard(metrics["standard_metrics"]),
             "depth_metrics": {
                 # absrel/rmse start None when the depth batcher is deferred; the
                 # enqueue callback patches them with the batched values.
@@ -1463,6 +1602,13 @@ def evaluate_depth_samples(
     pred_native_dims: Optional[tuple[int, int]] = None
     evaluated_dims: Optional[tuple[int, int]] = None
     spatial_method = "none"
+    # Protocol bookkeeping: how samples were put on the GT grid, what the
+    # depth cap changed, and per-item pixel counts (pooling weights).
+    spatial_tracker = _SpatialTracker()
+    crop_origin: Optional[tuple[int, int]] = None
+    prediction_resample: list = [1, 1]
+    cap_clipping = _CapClipping()
+    branch_stats: dict = {}
 
     if alignment_mode == "none":
         print("Depth alignment mode: none")
@@ -1554,10 +1700,19 @@ def evaluate_depth_samples(
                 depth_pred, depth_gt, sample_method = align_to_ground_truth(
                     depth_pred, depth_gt, spatial_alignment=alignment
                 )
+                sample_origin = _crop_origin(sample_method, alignment, pred_shape)
+                spatial_tracker.add(
+                    sample_method, gt_shape, pred_shape, depth_gt.shape[:2],
+                    sample_origin or (0, 0),
+                )
                 if i == 0:
                     gt_native_dims, pred_native_dims = gt_shape, pred_shape
                     spatial_method = sample_method
                     evaluated_dims = depth_gt.shape[:2]
+                    crop_origin = sample_origin
+                    prediction_resample = _prediction_resample(
+                        sample_method, alignment, gt_shape, pred_shape
+                    )
                 if sample_method != "none" and not logged_alignment:
                     print(
                         f"  Aligning GT {gt_shape} and pred {pred_shape} "
@@ -1672,6 +1827,7 @@ def evaluate_depth_samples(
                     else:
                         depth_pred_aligned = depth_pred_raw
 
+                uncapped = (depth_gt, depth_pred_raw, depth_pred_aligned)
                 depth_gt, depth_pred_raw, depth_pred_aligned = _apply_sky_depth(
                     depth_gt, depth_pred_raw, depth_pred_aligned,
                     sky_depth, pred_sky_mask,
@@ -1733,6 +1889,37 @@ def evaluate_depth_samples(
                         str(aligned_pred_dir), i, depth_pred_aligned
                     )
                     _append_metrics(stores["aligned"], aligned_metrics, aligned_pred_path)
+
+                if sky_depth is not None:
+                    gt_capped = _changed(uncapped[0], depth_gt)
+                    cap_clipping.add(
+                        "raw",
+                        _scored_depth_mask(depth_gt, depth_pred_raw, raw_valid_mask),
+                        gt_capped | _changed(uncapped[1], depth_pred_raw),
+                    )
+                    if depth_pred_aligned is not depth_pred_raw:
+                        cap_clipping.add(
+                            "aligned",
+                            _scored_depth_mask(
+                                depth_gt, depth_pred_aligned, aligned_valid_mask
+                            ),
+                            gt_capped | _changed(uncapped[2], depth_pred_aligned),
+                        )
+                item_stats = {
+                    "raw": {
+                        "standard.count": int(raw_metrics["standard_pool_stats"]["count"])
+                    }
+                }
+                item_stats["aligned"] = (
+                    item_stats["raw"]
+                    if aligned_metrics is raw_metrics
+                    else {
+                        "standard.count": int(
+                            aligned_metrics["standard_pool_stats"]["count"]
+                        )
+                    }
+                )
+                branch_stats[_item_id(hierarchy, entry_id)] = item_stats
 
                 raw_value = _build_per_file_depth_value(raw_metrics)
                 metric_value = (
@@ -1863,6 +2050,9 @@ def evaluate_depth_samples(
                         )
 
                 # -- Benchmark depth-range metrics per emitted semantic space --
+                # Per-file values of the standard metrics per bin (and their
+                # pixel counts, the pooling weights) let consumers recompute
+                # the bin aggregates on any subset of files.
                 if benchmark_stores is not None:
                     for bn in _BENCHMARK_BIN_NAMES:
                         native_bin_mask = bm_bins[bn].copy()
@@ -1871,6 +2061,9 @@ def evaluate_depth_samples(
                         )
                         if sky_valid is not None:
                             native_bin_mask &= sky_valid
+                        item_stats["raw"][f"standard.{bn}.count"] = int(
+                            np.count_nonzero(native_bin_mask)
+                        )
                         if native_bin_mask.any():
                             bm_store = benchmark_stores["native"][bn]
                             bm_absrel = compute_absrel(
@@ -1888,6 +2081,7 @@ def evaluate_depth_samples(
                             bm_standard, bm_standard_pool = compute_standard_depth_metrics(
                                 depth_pred_raw, depth_gt, valid_mask=native_bin_mask
                             )
+                            raw_value["standard"][bn] = _per_file_standard(bm_standard)
                             bm_normals = compute_normal_angles(
                                 depth_pred_raw,
                                 depth_gt,
@@ -1930,6 +2124,9 @@ def evaluate_depth_samples(
                             )
                             if sky_valid is not None:
                                 metric_bin_mask &= sky_valid
+                            item_stats["aligned"][f"standard.{bn}.count"] = int(
+                                np.count_nonzero(metric_bin_mask)
+                            )
                             if metric_bin_mask.any():
                                 bm_store = benchmark_stores["metric"][bn]
                                 bm_absrel = compute_absrel(
@@ -1956,6 +2153,9 @@ def evaluate_depth_samples(
                                     depth_pred_aligned,
                                     depth_gt,
                                     valid_mask=metric_bin_mask,
+                                )
+                                metric_value["standard"][bn] = _per_file_standard(
+                                    bm_standard
                                 )
                                 bm_normals = compute_normal_angles(
                                     depth_pred_aligned,
@@ -2126,6 +2326,18 @@ def evaluate_depth_samples(
                     }
                     if evaluated_dims
                     else None,
+                    "crop_origin": list(crop_origin) if crop_origin else None,
+                    "prediction_resample": prediction_resample,
+                    "uniform": spatial_tracker.uniform,
+                },
+                "item_statistics": _space_statistics(
+                    branch_stats, emitted_spaces, alignment_applied
+                ),
+                "depth_cap": {
+                    "clipped_fraction": cap_clipping.fraction(
+                        ["raw"]
+                        + (["aligned"] if alignment_applied and emit_metric else [])
+                    ),
                 },
             }
             if sky_iou_scores is not None:
@@ -2321,10 +2533,7 @@ def evaluate_sparse_depth_samples(
                 {"distributions": metrics["distributions"]}
                 if distribution_config else {}
             ),
-            "standard": {
-                key: float(value) if np.isfinite(value) else None
-                for key, value in metrics["standard_metrics"].items()
-            },
+            "standard": _per_file_standard(metrics["standard_metrics"]),
             "depth_metrics": {
                 "valid_pixel_count": metrics["valid_pixel_count"],
                 "absrel": float(np.mean(absrel_arr)) if len(absrel_arr) > 0 else None,
@@ -2348,6 +2557,9 @@ def evaluate_sparse_depth_samples(
     total_projected_pixels = 0
     total_evaluated_pixels = 0
     projection_extrinsics_source: Optional[str] = None
+    spatial_tracker = _SpatialTracker()
+    cap_clipping = _CapClipping()
+    branch_stats: dict = {}
 
     if alignment_mode == "none":
         print("Sparse depth alignment mode: none")
@@ -2436,6 +2648,7 @@ def evaluate_sparse_depth_samples(
                 if projection_extrinsics_source is None:
                     projection_extrinsics_source = extrinsics_source
 
+                spatial_tracker.add("pointcloud_projection", depth_pred.shape[:2])
                 if i == 0:
                     pred_native_dims = depth_pred.shape[:2]
                     finite_pred = depth_pred[np.isfinite(depth_pred)]
@@ -2536,6 +2749,7 @@ def evaluate_sparse_depth_samples(
                     else:
                         depth_pred_aligned = depth_pred_raw
 
+                uncapped = (sparse_depth_gt, depth_pred_raw, depth_pred_aligned)
                 sparse_depth_gt, depth_pred_raw, depth_pred_aligned = _apply_sky_depth(
                     sparse_depth_gt, depth_pred_raw, depth_pred_aligned,
                     sky_depth, pred_sky_mask,
@@ -2594,6 +2808,35 @@ def evaluate_sparse_depth_samples(
                 )
                 total_evaluated_pixels += int(canonical_valid_mask.sum())
 
+                if sky_depth is not None:
+                    gt_capped = _changed(uncapped[0], sparse_depth_gt)
+                    cap_clipping.add(
+                        "raw",
+                        raw_valid_mask,
+                        gt_capped | _changed(uncapped[1], depth_pred_raw),
+                    )
+                    if depth_pred_aligned is not depth_pred_raw:
+                        cap_clipping.add(
+                            "aligned",
+                            aligned_valid_mask,
+                            gt_capped | _changed(uncapped[2], depth_pred_aligned),
+                        )
+                item_stats = {
+                    "raw": {
+                        "standard.count": int(raw_metrics["standard_pool_stats"]["count"])
+                    }
+                }
+                item_stats["aligned"] = (
+                    item_stats["raw"]
+                    if aligned_metrics is raw_metrics
+                    else {
+                        "standard.count": int(
+                            aligned_metrics["standard_pool_stats"]["count"]
+                        )
+                    }
+                )
+                branch_stats[_item_id(hierarchy, entry_id)] = item_stats
+
                 raw_value = _build_per_file_sparse_value(raw_metrics)
                 metric_value = (
                     raw_value
@@ -2626,9 +2869,15 @@ def evaluate_sparse_depth_samples(
                     for bn in _BENCHMARK_BIN_NAMES:
                         native_bin_mask = bm_bins[bn].copy()
                         native_bin_mask &= raw_valid_mask
+                        item_stats["raw"][f"standard.{bn}.count"] = int(
+                            np.count_nonzero(native_bin_mask)
+                        )
                         if native_bin_mask.any():
                             bm_metrics = _compute_sparse_metrics(
                                 sparse_depth_gt, depth_pred_raw, native_bin_mask
+                            )
+                            raw_value["standard"][bn] = _per_file_standard(
+                                bm_metrics["standard_metrics"]
                             )
                             _append_sparse_metrics(
                                 benchmark_stores["native"][bn],
@@ -2639,11 +2888,17 @@ def evaluate_sparse_depth_samples(
                         if aligned_metrics is not raw_metrics:
                             metric_bin_mask = bm_bins[bn].copy()
                             metric_bin_mask &= aligned_valid_mask
+                            item_stats["aligned"][f"standard.{bn}.count"] = int(
+                                np.count_nonzero(metric_bin_mask)
+                            )
                             if metric_bin_mask.any():
                                 bm_metrics = _compute_sparse_metrics(
                                     sparse_depth_gt,
                                     depth_pred_aligned,
                                     metric_bin_mask,
+                                )
+                                metric_value["standard"][bn] = _per_file_standard(
+                                    bm_metrics["standard_metrics"]
                                 )
                                 _append_sparse_metrics(
                                     benchmark_stores["metric"][bn],
@@ -2782,6 +3037,16 @@ def evaluate_sparse_depth_samples(
                     }
                     if pred_native_dims
                     else None,
+                    "uniform": spatial_tracker.uniform,
+                },
+                "item_statistics": _space_statistics(
+                    branch_stats, emitted_spaces, alignment_applied
+                ),
+                "depth_cap": {
+                    "clipped_fraction": cap_clipping.fraction(
+                        ["raw"]
+                        + (["aligned"] if alignment_applied and emit_metric else [])
+                    ),
                 },
             }
             if sky_iou_scores is not None:
@@ -3009,6 +3274,8 @@ def evaluate_rgb_samples(
     input_native_dims: Optional[tuple[int, int]] = None
     spatial_method = "none"
     input_alignment: Optional[str] = None
+    spatial_tracker = _SpatialTracker()
+    gt_resample: list = [1, 1]
 
     with tempfile.TemporaryDirectory(prefix="euler_eval_rgb_") as temp_dir_str:
         temp_dir = Path(temp_dir_str)
@@ -3055,14 +3322,26 @@ def evaluate_rgb_samples(
                 img_gt = to_numpy_rgb(sample["gt"]) if has_gt else None
                 img_input = to_numpy_rgb(sample["input"]) if has_input else None
 
+                if has_gt:
+                    sample_method = classify_spatial_alignment(
+                        *img_gt.shape[:2], *img_pred.shape[:2], mode=alignment
+                    )
+                    spatial_tracker.add(
+                        sample_method,
+                        img_gt.shape[:2],
+                        img_pred.shape[:2],
+                        _crop_origin(sample_method, alignment, img_pred.shape[:2])
+                        or (0, 0),
+                    )
+                else:
+                    spatial_tracker.add("none", img_pred.shape[:2])
                 if i == 0:
                     pred_native_dims = img_pred.shape[:2]
                     if has_gt:
                         gt_native_dims = img_gt.shape[:2]
-                        spatial_method = classify_spatial_alignment(
-                            *gt_native_dims,
-                            *pred_native_dims,
-                            mode=alignment,
+                        spatial_method = sample_method
+                        gt_resample = _gt_resample(
+                            spatial_method, alignment, gt_native_dims, pred_native_dims
                         )
                     if has_input:
                         input_native_dims = img_input.shape[:2]
@@ -3230,6 +3509,7 @@ def evaluate_rgb_samples(
                 )
 
                 depth_binned_entry = None
+                bm_entry = None
                 if has_depth:
                     try:
                         gt_depth_raw = mask_invalid_sentinel(
@@ -3342,6 +3622,14 @@ def evaluate_rgb_samples(
                 rgb_metrics.update(domain_metrics)
                 if depth_binned_entry is not None:
                     rgb_metrics["depth_binned_photometric"] = depth_binned_entry
+                if bm_entry is not None:
+                    # Per-file benchmark bins: rgb.eval.{bin}.{mae,mse}.
+                    for bn in _BENCHMARK_BIN_NAMES:
+                        if bn in bm_entry["mae"]:
+                            rgb_metrics[bn] = {
+                                "mae": bm_entry["mae"][bn],
+                                "mse": bm_entry["mse"][bn],
+                            }
 
                 set_value(
                     per_file_metrics,
@@ -3556,6 +3844,8 @@ def evaluate_rgb_samples(
                     if input_native_dims
                     else None,
                     "input_alignment": input_alignment,
+                    "gt_resample": gt_resample,
+                    "uniform": spatial_tracker.uniform,
                 },
             }
         finally:
@@ -3631,6 +3921,8 @@ def evaluate_rays_samples(
     gt_native_dims: Optional[tuple[int, int]] = None
     pred_native_dims: Optional[tuple[int, int]] = None
     spatial_method = "none"
+    spatial_tracker = _SpatialTracker()
+    gt_resample: list = [1, 1]
     resolved_domain: Optional[str] = fov_domain
     threshold_deg: Optional[float] = None
 
@@ -3658,12 +3950,22 @@ def evaluate_rays_samples(
         dirs_gt = to_numpy_directions(sample["gt"])
         dirs_pred = to_numpy_directions(sample["pred"])
 
+        sample_method = classify_spatial_alignment(
+            *dirs_gt.shape[:2], *dirs_pred.shape[:2], mode=alignment
+        )
+        spatial_tracker.add(
+            sample_method,
+            dirs_gt.shape[:2],
+            dirs_pred.shape[:2],
+            _crop_origin(sample_method, alignment, dirs_pred.shape[:2]) or (0, 0),
+        )
         # Capture native dimensions from the first sample.
         if i == 0:
             gt_native_dims = dirs_gt.shape[:2]
             pred_native_dims = dirs_pred.shape[:2]
-            spatial_method = classify_spatial_alignment(
-                *gt_native_dims, *pred_native_dims, mode=alignment
+            spatial_method = sample_method
+            gt_resample = _gt_resample(
+                spatial_method, alignment, gt_native_dims, pred_native_dims
             )
 
         # Align GT to prediction dimensions if needed
@@ -3811,6 +4113,8 @@ def evaluate_rays_samples(
             "evaluated_dimensions": {"height": pred_native_dims[0], "width": pred_native_dims[1]}
             if pred_native_dims
             else None,
+            "gt_resample": gt_resample,
+            "uniform": spatial_tracker.uniform,
         },
     }
 
@@ -4069,6 +4373,10 @@ def evaluate_points_3d_samples(
     logged_alignment = False
     total_evaluated_points = 0
     canonical_sp = "metric" if emit_metric else "native"
+    spatial_tracker = _SpatialTracker()
+    crop_origin: Optional[tuple[int, int]] = None
+    prediction_resample: list = [1, 1]
+    item_statistics: dict = {}
 
     with tempfile.TemporaryDirectory(prefix="euler_eval_points_3d_") as temp_dir_str:
         temp_dir = Path(temp_dir_str)
@@ -4115,10 +4423,19 @@ def evaluate_points_3d_samples(
                 pts_pred, pts_gt, sample_method = align_to_ground_truth(
                     pts_pred, pts_gt, spatial_alignment=alignment
                 )
+                sample_origin = _crop_origin(sample_method, alignment, pred_shape)
+                spatial_tracker.add(
+                    sample_method, gt_shape, pred_shape, pts_gt.shape[:2],
+                    sample_origin or (0, 0),
+                )
                 if i == 0:
                     gt_native_dims, pred_native_dims = gt_shape, pred_shape
                     spatial_method = sample_method
                     evaluated_dims = pts_gt.shape[:2]
+                    crop_origin = sample_origin
+                    prediction_resample = _prediction_resample(
+                        sample_method, alignment, gt_shape, pred_shape
+                    )
                 if sample_method != "none" and not logged_alignment:
                     print(
                         f"  Aligning GT {gt_shape} and pred {pred_shape} "
@@ -4215,6 +4532,10 @@ def evaluate_points_3d_samples(
                     pe = dec = cd = ef = None
                     distribution_errors = np.empty(0)
                     per_img_normal_mean = None
+                    # Correspondences scored: the pixel_pool weight.
+                    item_statistics.setdefault(_item_id(hierarchy, entry_id), {})[
+                        f"{sp}.point_error.count"
+                    ] = int(pv_sp.shape[0])
                     if pv_sp.shape[0] > 0:
                         st = stores[sp]
                         dd = decompose_point_errors(pv_sp, gv)
@@ -4410,7 +4731,11 @@ def evaluate_points_3d_samples(
                     }
                     if evaluated_dims
                     else None,
+                    "crop_origin": list(crop_origin) if crop_origin else None,
+                    "prediction_resample": prediction_resample,
+                    "uniform": spatial_tracker.uniform,
                 },
+                "item_statistics": item_statistics,
             }
             if sky_mask_enabled:
                 result["gt_sky_masking"] = sky_coverage.info()
@@ -4704,6 +5029,8 @@ def evaluate_points_3d_sparse_samples(
     total_projected_pixels = 0
     total_evaluated_points = 0
     projection_extrinsics_source: Optional[str] = None
+    spatial_tracker = _SpatialTracker()
+    item_statistics: dict = {}
 
     # For a native points_3d prediction the 3D similarity gauge is resolved up
     # front (like the dense points_3d path); for a depth prediction the affine
@@ -4791,6 +5118,7 @@ def evaluate_points_3d_sparse_samples(
                 if projection_extrinsics_source is None:
                     projection_extrinsics_source = extrinsics_source
 
+                spatial_tracker.add("pointcloud_projection", pred_shape)
                 if i == 0:
                     pred_native_dims = pred_shape
                     if pred_is_depth:
@@ -5024,23 +5352,30 @@ def evaluate_points_3d_sparse_samples(
                 rho_a_values.append(rho_a_img)
 
                 file_space_values: dict = {}
-                native_fval, _ = _compute_space_metrics(
-                    stores["native"],
-                    pred_map_native,
-                    pred_ok_native,
-                    gt_point_map,
-                    gt_valid,
-                    gt_cloud,
+                item_counts = item_statistics.setdefault(
+                    _item_id(hierarchy, entry_id), {}
                 )
-                file_space_values["native"] = native_fval
-                if sample_aligned:
-                    metric_fval, _ = _compute_space_metrics(
-                        stores["metric"],
-                        pred_map_metric,
-                        pred_ok_metric,
+                native_fval, item_counts["native.point_error.count"] = (
+                    _compute_space_metrics(
+                        stores["native"],
+                        pred_map_native,
+                        pred_ok_native,
                         gt_point_map,
                         gt_valid,
                         gt_cloud,
+                    )
+                )
+                file_space_values["native"] = native_fval
+                if sample_aligned:
+                    metric_fval, item_counts["metric.point_error.count"] = (
+                        _compute_space_metrics(
+                            stores["metric"],
+                            pred_map_metric,
+                            pred_ok_metric,
+                            gt_point_map,
+                            gt_valid,
+                            gt_cloud,
+                        )
                     )
                     file_space_values["metric"] = metric_fval
 
@@ -5166,7 +5501,9 @@ def evaluate_points_3d_sparse_samples(
                     }
                     if pred_native_dims
                     else None,
+                    "uniform": spatial_tracker.uniform,
                 },
+                "item_statistics": item_statistics,
             }
             if sky_mask_enabled:
                 result["gt_sky_masking"] = sky_coverage.info()

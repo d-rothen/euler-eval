@@ -766,6 +766,10 @@ def _resolve_distribution_config(value, args) -> DistributionConfig | None:
     return DistributionConfig.from_config(settings if enabled else False)
 
 
+#: Result keys of the evaluators that are bookkeeping, not printed metrics.
+_NOT_PRINTED = ("per_file_metrics", "spatial_info", "item_statistics", "depth_cap")
+
+
 def _without_inputs(identities: dict, keys: tuple[str, ...]) -> dict:
     """Return protocol *identities* with *keys* recorded as not configured."""
     return {
@@ -2678,7 +2682,7 @@ def _evaluate(
 
             print_results(
                 {k: v for k, v in depth_results.items()
-                 if k not in ("per_file_metrics", "spatial_info")},
+                 if k not in _NOT_PRINTED},
                 f"DEPTH: {ds_name}",
             )
             sky_iou_line = _sky_iou_summary_line(ds_name, depth_results)
@@ -2969,7 +2973,7 @@ def _evaluate(
                 {
                     k: v
                     for k, v in sparse_depth_results.items()
-                    if k not in ("per_file_metrics", "spatial_info")
+                    if k not in _NOT_PRINTED
                 },
                 f"SPARSE_DEPTH: {ds_name}",
             )
@@ -3222,7 +3226,7 @@ def _evaluate(
 
             print_results(
                 {k: v for k, v in rgb_results.items()
-                 if k not in ("per_file_metrics", "spatial_info")},
+                 if k not in _NOT_PRINTED},
                 f"RGB: {ds_name}",
             )
 
@@ -3342,7 +3346,7 @@ def _evaluate(
 
             print_results(
                 {k: v for k, v in rays_results.items()
-                 if k not in ("per_file_metrics", "spatial_info")},
+                 if k not in _NOT_PRINTED},
                 f"RAYS: {ds_name}",
             )
 
@@ -3547,7 +3551,7 @@ def _evaluate(
 
             print_results(
                 {k: v for k, v in points_3d_results.items()
-                 if k not in ("per_file_metrics", "spatial_info")},
+                 if k not in _NOT_PRINTED},
                 f"POINTS_3D: {ds_name}",
             )
 
@@ -3757,7 +3761,7 @@ def _evaluate(
 
             print_results(
                 {k: v for k, v in points_3d_sparse_results.items()
-                 if k not in ("per_file_metrics", "spatial_info")},
+                 if k not in _NOT_PRINTED},
                 f"POINTS_3D · SPARSE: {ds_name}",
             )
 
