@@ -3852,7 +3852,16 @@ def _evaluate(
                 f"POINTS_3D · SPARSE: {ds_name}",
             )
 
-        # Save per-modality results to respective dataset paths
+        # Save per-modality results to respective dataset paths. The euler-train
+        # payload names them by metric namespace (results_files): the files
+        # carry the protocol, which the run's meta.json does not copy.
+        results_files: dict[str, str] = {}
+
+        def _saved(save: dict, path: Path) -> None:
+            namespace = (save.get("metricSet") or {}).get("metricNamespace")
+            if isinstance(namespace, str):
+                results_files[namespace] = str(path)
+
         if depth_save:
             depth_out = save_results(
                 depth_save,
@@ -3867,6 +3876,7 @@ def _evaluate(
                 else "Depth"
             )
             _print_saved(depth_label, depth_out)
+            _saved(depth_save, depth_out)
         if rgb_save:
             rgb_out = save_results(
                 rgb_save,
@@ -3876,6 +3886,7 @@ def _evaluate(
                 split=run.split,
             )
             _print_saved("RGB", rgb_out)
+            _saved(rgb_save, rgb_out)
         if rays_save:
             rays_out = save_results(
                 rays_save,
@@ -3885,6 +3896,7 @@ def _evaluate(
                 split=run.split,
             )
             _print_saved("Rays", rays_out)
+            _saved(rays_save, rays_out)
         if points_3d_save:
             points_3d_out = save_results(
                 points_3d_save,
@@ -3894,6 +3906,7 @@ def _evaluate(
                 split=run.split,
             )
             _print_saved("Points-3D", points_3d_out)
+            _saved(points_3d_save, points_3d_out)
         if points_3d_sparse_save:
             points_3d_sparse_out = save_results(
                 points_3d_sparse_save,
@@ -3903,6 +3916,7 @@ def _evaluate(
                 split=run.split,
             )
             _print_saved("Points-3D (sparse GT)", points_3d_sparse_out)
+            _saved(points_3d_sparse_save, points_3d_sparse_out)
 
         # Log to euler_train
         if et_run is not None and et_eval_datasets:
@@ -3915,7 +3929,8 @@ def _evaluate(
                     "package": package_metadata,
                     "results": {
                         k: v for k, v in all_results.items() if k != "per_file_metrics"
-                    }
+                    },
+                    "results_files": results_files,
                 },
             )
             et_run.finish_evaluation(et_key)

@@ -163,6 +163,46 @@ def test_euler_train_logs_one_evaluation_per_experiment(
     ]
 
 
+def test_euler_train_payload_names_the_results_files(
+    monkeypatch, tmp_path, indexed_sky_prediction
+):
+    _patch_depth_metrics(monkeypatch)
+    payloads = []
+
+    class FakeRun:
+        dir = tmp_path / "run"
+        run_id = "run-1"
+
+        def add_evaluation(self, key, **kwargs):
+            payloads.append(kwargs)
+
+        def finish_evaluation(self, key, **kwargs):
+            pass
+
+        def finish(self):
+            pass
+
+    class FakeEulerTrain:
+        @staticmethod
+        def init(**kwargs):
+            return FakeRun()
+
+    monkeypatch.setattr(cli, "_euler_train", FakeEulerTrain)
+    config_path = _config(
+        tmp_path, indexed_sky_prediction, [{"name": "eval"}],
+        euler_train={"dir": str(tmp_path / "runs")},
+    )
+    _main(monkeypatch, config_path)
+
+    metadata = payloads[-1]["metadata"]
+    files = metadata["results_files"]
+    assert list(files) == ["depth.eval"]
+    saved = json.loads(Path(files["depth.eval"]).read_text())
+    assert saved["metricSet"]["metricNamespace"] == "depth.eval"
+    assert saved["protocol"]["schemaVersion"] == "2.0"
+    assert "protocol" not in metadata["results"]
+
+
 @pytest.mark.parametrize(
     ("experiments", "message"),
     [
