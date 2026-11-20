@@ -22,6 +22,11 @@ the git history for those.
     (source frame and region), so crops of one source compare as
     `comparable · GT region differs by x %`. Only inputs the evaluation read
     are references (GT segmentation only with `--mask-sky`/`--sky-iou`).
+    `identityScheme` (`euler.reference/2`) says how the identity was
+    computed; consumers read 2.x results as `euler.reference/1`, so a 2.x
+    and a 3.0 evaluation of the same GT read `not comparable · GT identity
+    recorded in an older evaluation format` (re-evaluate both to compare),
+    and `GT differs` only when the recorded dataset, scope or split differ.
   - `population` records the manifest hash of the evaluated item ids (the
     per-file tree paths joined with `~`), not a count, and the pairing
     accounting (`reference`, `prediction`, `paired`, pairs `dropped` per

@@ -279,6 +279,7 @@ A dense depth evaluation of a cropped GT (trimmed):
       "modality": "depth",
       "dataset": { "id": "cerema", "variant": "full_crop", "split": null, "scope": "depth" },
       "identity": "sha256:4fbc81…",
+      "identityScheme": "euler.reference/2",
       "manifest": { "hash": "sha256:2df47b…", "count": 1600 },
       "view": { "source": "cerema/rgb_left@1024x1920", "region": [270, 170, 707, 1730] }
     }
@@ -335,7 +336,12 @@ A dense depth evaluation of a cropped GT (trimmed):
 **manifest** of its sample ids as euler-loading paired them, and its dataset
 head without volatile fields (paths, timestamps). Two crops of one dataset
 (`cerema` `cropped` and `full_crop`) therefore differ, and the same data
-stored elsewhere does not. A head that records an euler-preprocess crop
+stored elsewhere does not. `identityScheme` (`euler.reference/2`) names
+how the identity was computed: schema-1.x results are read as
+`euler.reference/1` (dataset, scope and split only), and two identities of
+different schemes are never equal — a consumer reports "GT identity recorded
+in an older evaluation format" unless the recorded dataset, scope or split
+already tell the inputs apart. A head that records an euler-preprocess crop
 (`modality.meta.crop.boxes`) also gives a `view`: the `region`
 `[top, left, height, width]` in its `source` frame, named
 `<dataset id>/<camera or modality>@<height>x<width>`. GT inputs that were
